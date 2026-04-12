@@ -1,0 +1,9 @@
+.env
+backup.py
+test.py
+sniffer.py
+notes.txt
+__pycache__/clControl.cpython-313.pyc
+clControl.bat
+clControl.vbs
+clMonitor.log
