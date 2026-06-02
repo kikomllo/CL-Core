@@ -1,18 +1,20 @@
 import argparse
 import os
 import asyncio
-import sys
 import time
 import logging
+import json
+import sys
 from bleak import BleakScanner
 from bleak.exc import BleakError
 from dotenv import load_dotenv
 
+import paho.mqtt.publish as publish 
+
 try:
     import clControl 
 except ImportError:
-    print("clControl.py not found in the same directory!")
-    sys.exit(1)
+    pass
 
 load_dotenv()
 
@@ -46,16 +48,20 @@ is_user_present = False
 tracked_devices = {}
 known_macs = {}
 
-# --- USE CLCONTROL SCRIPT ---
-async def trigger_light(action):
+# --- NEW SYNCHRONOUS EVENT PUBLISHER ---
+def trigger_light(action):    
+    clean_action = action[0].replace("--", "") 
+    payload = json.dumps({"action": clean_action})
+    
     try:
-        await clControl.execute_from_module(action)
+        # Fire and forget instantly. Blocks the loop for <2ms, which is imperceptible to the radar.
+        publish.single("home/room/desk_light/set", payload, hostname="localhost")
     except Exception as e:
         print("".ljust(80), end='\r')
-        logging.error(f"Failed to control light: {e}")
+        logging.error(f"Failed to publish MQTT message: {e}")
 
 # --- RADAR SCRIPT ---
-def detection_callback(device, advertisement_data):
+def detection_callback(device, advertisement_data):    
     global tracked_devices, known_macs
     
     current_mac = device.address
@@ -158,13 +164,13 @@ async def radar_loop():
             if best_rssi >= ROOM_THRESHOLD and not is_user_present:
                 print("")
                 logging.info(f"[+] Proximity Trigger! Lights ON.")
-                asyncio.create_task(trigger_light(["--on"]))
+                trigger_light(["--on"])
                 is_user_present = True
 
             elif best_rssi < EXIT_THRESHOLD and is_user_present:
                 print("")
                 logging.info(f"[-] All targets exited range. Turning OFF.")
-                asyncio.create_task(trigger_light(["--off"]))
+                trigger_light(["--off"])
                 is_user_present = False
 
 async def main():

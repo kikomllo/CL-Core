@@ -1,0 +1,15 @@
+{
+    "on": [
+        "ligar", "liga", "ligue", 
+        "acender", "acende", "acenda"
+    ],
+    "off": [
+        "desligar", "desliga", "desligue", 
+        "apagar", "apaga", "apague"
+    ],
+    "toggle": [
+        "alternar", "alterna", "alterne", 
+        "trocar", "troca", "troque", 
+        "mudar", "muda", "mude"
+    ]
+}
