@@ -1,6 +1,8 @@
 # --- IMPORTS ---
 import asyncio
 import argparse
+import platform
+import socket
 import sys
 import os
 from dotenv import load_dotenv, set_key
@@ -14,7 +16,10 @@ except Exception as e:
     sys.exit(1)
 
 # --- CREDENTIALS ---
-load_dotenv()
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ENV_PATH = os.path.join(BASE_DIR, ".env")
+
+load_dotenv(ENV_PATH)
 
 EMAIL = os.getenv("TAPO_EMAIL")
 PASSWORD = os.getenv("TAPO_PASSWORD")
@@ -100,51 +105,112 @@ def get_list():
     
     print("\n")
 
-# --- DISCOVERY ---
-async def discovery_mode(client):
-    print("Searching for Tapo devices...")
-    
+# --- HELPER: GET SUBNET BASE ---
+def get_subnet_base():
+    """Finds the local network base (e.g., 192.168.1)."""
     try:
-        devices_iter = await client.discover_devices("255.255.255.255")
-        
-        devices = []
-        for item in devices_iter:
-            if hasattr(item, "get"):
-                dev = item.get()
-                if dev:
-                    devices.append(dev)
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        parts = local_ip.split('.')
+        return f"{parts[0]}.{parts[1]}.{parts[2]}"
+    except Exception:
+        return "192.168.1"
 
-            else: devices.append(item)
+# --- HELPER: ASYNC PING SWEEP ---
+async def async_ping(ip, semaphore):
+    """Sends a single ICMP ping asynchronously to check if a host is up."""
+    
+    param_count = '-n' if platform.system().lower() == 'windows' else '-c'
+    param_timeout = '-w' if platform.system().lower() == 'windows' else '-W'
+    timeout_val = '500' if platform.system().lower() == 'windows' else '1' 
 
-        if not devices:
-            print("No devices found.")
-            return
-        
-        print(f"Found {len(devices)} device(s):")
-
-        print("{:<18} {:<18} {:<18}".format("#", 'MODEL', "IP"))
-        for i, info in enumerate(devices):
-            model = getattr(info, 'model', 'Unknown')
-            ip = getattr(info, 'ip', 'Unknown')
-            print("{:<18} {:<18} {:<18}".format(i, model, ip))
-
-        choice = input("\nSelect a device number to use (or press Enter to cancel): ")
-        if choice.isdigit() and int(choice) < len(devices):
-            selected_ip = devices[int(choice)].ip
-            selected_model = devices[int(choice)].model
-            print(f"Selected: {selected_ip}")
+    async with semaphore:
+        try:
+            # Spawn a silent OS-level ping subprocess
+            process = await asyncio.create_subprocess_exec(
+                'ping', param_count, '1', param_timeout, timeout_val, ip,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL
+            )
+            await process.wait()
             
-            update_env = input("Would you like to save this IP to your .env file? (y/n): ")
-            if update_env.lower() == 'y':
-                set_key(os.path.join(os.path.dirname(__file__), ".env"), "TAPO_IP", selected_ip)
-                set_key(os.path.join(os.path.dirname(__file__), ".env"), "TAPO_MODEL", selected_model)
-                print("IP updated in .env!")
-            
-    except Exception as e:
-        print(f"Discovery error: {e}")
+            # Return code 0 means the ping was successful
+            if process.returncode == 0:
+                return ip
+        except Exception:
+            pass
     return None
 
+# --- HELPER: ASYNC TCP PROBE (BATCHED) ---
+async def check_ip(client, ip, semaphore):
+    """Attempts a direct authenticated TCP handshake using a Semaphore to prevent socket exhaustion."""
+    async with semaphore:
+        try:
+            get_device = getattr(client, (BULB_MODEL).lower())
+            device = await get_device(ip)
 
+            # Fast timeout since host is alive
+            info = await asyncio.wait_for(device.get_device_info(), timeout=0.8)
+            model = getattr(info, 'model', 'Unknown')
+            return {"ip": ip, "model": model.upper()}
+        except Exception as e:
+            if ip == "192.168.1.90":
+                print(f"[DEBUG] .90 Failed! Error: {type(e).__name__} - {e}")
+            return None
+
+# --- DISCOVERY: ASYNC SUBNET SWEEP ---
+async def discovery_mode(client):
+    base_ip = get_subnet_base()
+    print(f"Initiating Two-Stage Network Sweep on {base_ip}.X...")
+    
+    ips_to_check = [f"{base_ip}.{i}" for i in range(1, 255)]
+    
+    # --- STAGE 1: ICMP PING SWEEP ---
+    print(f"Stage 1: Pinging 254 IPs to find active hosts...")
+    ping_sem = asyncio.Semaphore(150) # High concurrency is safe for ICMP
+    ping_tasks = [async_ping(ip, ping_sem) for ip in ips_to_check]
+    alive_ips_results = await asyncio.gather(*ping_tasks)
+    
+    alive_ips = [ip for ip in alive_ips_results if ip is not None]
+    
+    if not alive_ips:
+        print("\nSweep complete. No active devices found on the network.")
+        return
+        
+    print(f"-> Found {len(alive_ips)} active devices on the network.")
+
+    # --- STAGE 2: TCP KLAP HANDSHAKE ---
+    print("Stage 2: Probing active devices for Tapo bulbs...")
+    tcp_sem = asyncio.Semaphore(50)
+    tcp_tasks = [check_ip(client, ip, tcp_sem) for ip in alive_ips]
+    results = await asyncio.gather(*tcp_tasks)
+    
+    devices = [res for res in results if res is not None]
+    
+    if not devices:
+        print("\nSweep complete. None of the active hosts were Tapo devices.")
+        return
+
+    print(f"\nFound {len(devices)} device(s):")
+    print("{:<5} {:<18} {:<18}".format("#", 'MODEL', "IP"))
+    print("-" * 45)
+    
+    for i, dev in enumerate(devices):
+        print("{:<5} {:<18} {:<18}".format(i, dev['model'], dev['ip']))
+
+    choice = input("\nSelect a device number to use (or press Enter to cancel): ")
+    if choice.isdigit() and int(choice) < len(devices):
+        selected = devices[int(choice)]
+        
+        update_env = input(f"Save {selected['ip']} ({selected['model']}) to .env? (y/n): ")
+        if update_env.lower() == 'y':
+            env_path = os.path.join(os.path.dirname(__file__), ".env")
+            set_key(env_path, "TAPO_IP", selected["ip"])
+            set_key(env_path, "TAPO_MODEL", selected["model"])
+            print("Variables successfully written to .env!")
+            
 # --- MAIN CONTROL ---
 async def control_bulb(client, toggle=None, on=None, off=None, color=None, lum=None, temp=None):    
     try:
@@ -155,60 +221,63 @@ async def control_bulb(client, toggle=None, on=None, off=None, color=None, lum=N
             print(f"Error connecting to bulb with ip: {BULB_IP}. Make sure the bulb is on and connect to your current Network.")
             return
         
-        tasks = []
-        
-        if on:
-            tasks.append(device.on())
-        elif off:
-            tasks.append(device.off())
+        target_power_state = None
         
         if (toggle):
             info = await device.get_device_info()
-    
-            if (info.device_on):  tasks.append(device.off())
-            elif (not info.device_on): tasks.append(device.on())
+            if (info.device_on): 
+                await device.off()
+                target_power_state = False
+            else: 
+                await device.on()
+                target_power_state = True
+        elif on:
+            await device.on()
+            target_power_state = True
+        elif off:
+            await device.off()
+            target_power_state = False
 
-        if lum:
-            tasks.append(device.set_brightness(lum))
-            print(f"Set brightness to {lum}%")
+        if target_power_state is not False:
+            tasks = []
+            if lum:
+                tasks.append(device.set_brightness(lum))
+                print(f"Set brightness to {lum}%")
 
-        if temp:
-            tasks.append(device.set_color_temperature(int(2500 + temp*(6500-2500)/100))) #2500-6500 Kelvin to percent
-            print(f"Set color temperature to {temp}%")
+            if temp:
+                tasks.append(device.set_color_temperature(int(2500 + temp*(6500-2500)/100)))
+                print(f"Set color temperature to {temp}%")
 
-        if color:
-            input_clean = color.lower()
-            target_key = None
-            group = None
-
-            for group in CUSTOM_COLORS:
-                for k in CUSTOM_COLORS[group].keys(): 
-                    if k.lower() == input_clean:
-                        target_key = k
-                        h, s = CUSTOM_COLORS[group][target_key]
-                        break
-                if target_key: break
-            
-            #target_key = next((k for k in CUSTOM_COLORS.keys() if k.lower() == input_clean), None)
-            if (target_key):
-                tasks.append(device.set_hue_saturation(h, s))
-                print(f"Set color to: {target_key}")
-            else:
-                target_key = next((k for k in dir(Color) if k.lower() == input_clean), None)
-            
-                if target_key:
-                    target_obj = getattr(Color, target_key)
-                    tasks.append(device.set_color(target_obj))
+            if color:
+                input_clean = color.lower()
+                target_key = None
+                
+                for group in CUSTOM_COLORS:
+                    for k in CUSTOM_COLORS[group].keys(): 
+                        if k.lower() == input_clean:
+                            target_key = k
+                            h, s = CUSTOM_COLORS[group][target_key]
+                            break
+                    if target_key: break
+                
+                if (target_key):
+                    tasks.append(device.set_hue_saturation(h, s))
                     print(f"Set color to: {target_key}")
                 else:
-                    print(f"Error: '{color}' not recognized. Use --list to see all options.")
+                    target_key = next((k for k in dir(Color) if k.lower() == input_clean), None)
+                    if target_key:
+                        target_obj = getattr(Color, target_key)
+                        tasks.append(device.set_color(target_obj))
+                        print(f"Set color to: {target_key}")
+                    else:
+                        print(f"Error: '{color}' not recognized. Use --list to see all options.")
 
-        if tasks:
-            await asyncio.gather(*tasks)
+            if tasks:
+                await asyncio.gather(*tasks)
 
     except Exception as e:
-        print(f"Error connecting to bulb with ip: {BULB_IP}.\nMake sure the bulb is on, this is the correct ip (use --discovery) and it is connected to your current Network.\n\nError: {e}")
-
+        print(f"Error connecting to bulb with ip: {BULB_IP}.\nError: {e}")
+        
 async def execute_from_module(args_list):
     if not (BULB_IP and BULB_MODEL):
         print("Module Error: Missing IP/MODEL in .env")
