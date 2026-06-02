@@ -1,0 +1,44 @@
+{
+    "branco": "CoolWhite",
+    "vermelho": "Crimson",
+    "azul": "Ultramarine",
+    "verde": "ForestGreen",
+    "amarelo": "Gold",
+    "laranja": "OrangeRed",
+    "roxo": "MediumPurple",
+    "rosa": "Pink",
+    "castanho": "Chocolate",
+    "ciano": "Turquoise",
+
+    "branco quente": "WarmWhite",
+    "branco gelo": "GhostWhite",
+    "creme": "AntiqueWhite",
+    "marfim": "Ivory",
+    "luz do dia": "Daylight",
+
+    "vermelho escuro": "DarkRed",
+    "vermelho suave": "SoftRed",
+    "vermelhão": "Vermilion",
+
+    "azul claro": "LightSkyBlue",
+    "azul escuro": "NavyBlue",
+    "azul marinho": "NavyBlue",
+    "azul bebé": "AliceBlue",
+    "azul céu": "DeepSkyBlue",
+
+    "verde claro": "LightGreen",
+    "verde limão": "Lime",
+    "verde água": "Aquamarine",
+
+    "amarelo claro": "LemonChiffon",
+    "dourado": "Gold",
+
+    "rosa choque": "HotPink",
+    "lilás": "SoftMauve",
+    "turquesa": "Turquoise",
+
+    "âmbar": "AmberGlow",
+    "pêssego": "ZenPeach",
+    "areia": "DesertSand",
+    "luar": "Moonlight"
+}

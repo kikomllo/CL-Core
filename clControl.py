@@ -3,11 +3,15 @@ import asyncio
 import argparse
 import platform
 import socket
-import sys
 import os
 from dotenv import load_dotenv, set_key
-
 from tapo import ApiClient, requests
+import aiomqtt
+import json
+import sys
+
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 try:
     Color = getattr(requests, 'Color')
@@ -290,42 +294,66 @@ async def execute_from_module(args_list):
     
     await control_bulb(client, on=is_on, off=is_off)
 
+async def publish_command(payload):
+    """Instantly publishes the command to the local broker."""
+    try:
+        async with aiomqtt.Client("localhost") as client:
+            await client.publish("home/room/desk_light/set", json.dumps(payload))
+            print(f"Command sent in <5ms: {payload}")
+    except Exception as e:
+        print(f"Failed to reach local MQTT Broker: {e}")
+        print("Ensure Mosquitto is running and clDaemon.py is active.")
+
 # --- MAIN ---
 def main():
-    parser = argparse.ArgumentParser(description="CLI Control for Tapo Bulb")
+    parser = argparse.ArgumentParser(description="CLI Control for Tapo Bulb via MQTT")
     
-    parser.add_argument("--color", "-c", type=str, help="Color name (e.g., RED, BLUE, GREEN)")
-    parser.add_argument("-l", "--lum", "--Luminance", "-b", "--brightness", type=int, help="Luminance/Brightness level (1-100)")
-    parser.add_argument("-t", "--temp", "--temperature", type=int, help="Color Temperature level (1-100)")
+    parser.add_argument("--color", "-c", type=str, help="Color name (e.g., RED, BLUE, CyberpunkPink)")
+    parser.add_argument("-l", "--lum", "--Luminance", "-b", "--brightness", type=int, help="Luminance level (1-100)")
+    parser.add_argument("-t", "--temp", "--temperature", type=int, help="Color Temp level (1-100)")
     parser.add_argument("--toggle", action="store_true", help="Turn Light On/Off")
     parser.add_argument("--on", action="store_true", help="Turn Light On")
     parser.add_argument("--off", action="store_true", help="Turn Light Off")
+    
+    # Heavy network commands (These still use Tapo directly)
     parser.add_argument("--status", action="store_true", help="Check current Bulb state")
-    parser.add_argument("--list", action="store_true", help="Show all available color namesl")
+    parser.add_argument("--list", action="store_true", help="Show all available color names")
     parser.add_argument("-d", "--discovery", action="store_true", help="Show all available devices in network")
     
     args = parser.parse_args()
 
+    # 1. Handle Local/Heavy Commands
     if args.list: 
         get_list()
         return
-    
-    if not (BULB_IP and BULB_MODEL) and not args.discovery:
-        print("No IP address or MODEL found in .env. Run 'clControl --discover' to find your bulb.")
-        return
-    
-    client = ApiClient(EMAIL, PASSWORD)
+        
+    client = ApiClient(EMAIL, PASSWORD) if (EMAIL and PASSWORD) else None
 
     if args.discovery:
-        asyncio.run(discovery_mode(client))
+        if client: asyncio.run(discovery_mode(client))
+        return
+        
+    if args.status:
+        if client and BULB_IP and BULB_MODEL:
+            asyncio.run(get_status(client))
+        else:
+            print("Missing IP/MODEL in .env for status check.")
         return
 
-    if len(sys.argv) == 1:
-        asyncio.run(control_bulb(client, toggle=True))
-        return
+    # 2. Build the lightning-fast MQTT Payload
+    payload = {}
     
-    if args.status: asyncio.run(get_status(client))
-    else: asyncio.run(control_bulb(client, toggle=args.toggle, on=args.on, off=args.off, color=args.color, lum=args.lum, temp=args.temp))
+    if args.on: payload["action"] = "on"
+    elif args.off: payload["action"] = "off"
+    elif args.toggle or len(sys.argv) == 1: payload["action"] = "toggle"
+    
+    if args.color: payload["color"] = args.color
+    if args.lum: payload["lum"] = args.lum
+    if args.temp: payload["temp"] = args.temp
+
+    if payload:
+        # Fire and forget instantly
+        asyncio.run(publish_command(payload))
 
 # --- RUN MAIN ---
 if __name__ == "__main__":
