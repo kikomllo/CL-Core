@@ -1,11 +1,13 @@
 {
     "on": [
         "ligar", "liga", "ligue", 
-        "acender", "acende", "acenda"
+        "acender", "acende", "acenda",
+        "turn on", "on", "light up"
     ],
     "off": [
         "desligar", "desliga", "desligue", 
-        "apagar", "apaga", "apague"
+        "apagar", "apaga", "apague",
+        "turn off", "off", "shut down"
     ],
     "toggle": [
         "alternar", "alterna", "alterne", 

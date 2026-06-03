@@ -1,0 +1,11 @@
+{
+    "home/room/desk_light/set": [
+        "luz", "secretária", "quarto",
+        "luzes", "candeeiro",
+        "light", "lights", "desk", "room"
+    ],
+    "pc/spotify/control": [
+        "música", "músicas", "som", "spotify",
+        "music", "audio", "song"
+    ]
+}
