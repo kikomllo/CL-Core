@@ -1,44 +1,106 @@
 {
     "branco": "CoolWhite",
+    "white": "CoolWhite",
+    
     "vermelho": "Crimson",
+    "red": "Crimson",
+    
     "azul": "Ultramarine",
+    "blue": "Ultramarine",
+    
     "verde": "ForestGreen",
+    "green": "ForestGreen",
+    
     "amarelo": "Gold",
+    "yellow": "Gold",
+    
     "laranja": "OrangeRed",
+    "orange": "OrangeRed",
+    
     "roxo": "MediumPurple",
+    "purple": "MediumPurple",
+    
     "rosa": "Pink",
+    "pink": "Pink",
+    
     "castanho": "Chocolate",
+    "brown": "Chocolate",
+    
     "ciano": "Turquoise",
+    "cyan": "Turquoise",
 
     "branco quente": "WarmWhite",
+    "warm white": "WarmWhite",
+    
     "branco gelo": "GhostWhite",
+    "ghost white": "GhostWhite",
+    
     "creme": "AntiqueWhite",
+    "cream": "AntiqueWhite",
+    
     "marfim": "Ivory",
+    "ivory": "Ivory",
+    
     "luz do dia": "Daylight",
+    "daylight": "Daylight",
 
     "vermelho escuro": "DarkRed",
+    "dark red": "DarkRed",
+    
     "vermelho suave": "SoftRed",
+    "soft red": "SoftRed",
+    
     "vermelhão": "Vermilion",
+    "vermilion": "Vermilion",
 
     "azul claro": "LightSkyBlue",
+    "light blue": "LightSkyBlue",
+    
     "azul escuro": "NavyBlue",
+    "dark blue": "NavyBlue",
+    
     "azul marinho": "NavyBlue",
+    "navy blue": "NavyBlue",
+    
     "azul bebé": "AliceBlue",
+    "baby blue": "AliceBlue",
+    
     "azul céu": "DeepSkyBlue",
+    "sky blue": "DeepSkyBlue",
 
     "verde claro": "LightGreen",
+    "light green": "LightGreen",
+    
     "verde limão": "Lime",
+    "lime": "Lime",
+    
     "verde água": "Aquamarine",
+    "aquamarine": "Aquamarine",
 
     "amarelo claro": "LemonChiffon",
+    "light yellow": "LemonChiffon",
+    
     "dourado": "Gold",
+    "golden": "Gold",
 
     "rosa choque": "HotPink",
+    "hot pink": "HotPink",
+    
     "lilás": "SoftMauve",
+    "lilac": "SoftMauve",
+    
     "turquesa": "Turquoise",
+    "turquoise": "Turquoise",
 
     "âmbar": "AmberGlow",
+    "amber": "AmberGlow",
+    
     "pêssego": "ZenPeach",
+    "peach": "ZenPeach",
+    
     "areia": "DesertSand",
-    "luar": "Moonlight"
+    "sand": "DesertSand",
+    
+    "luar": "Moonlight",
+    "moonlight": "Moonlight"
 }
