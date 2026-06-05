@@ -7,5 +7,10 @@
     "pc/spotify/control": [
         "música", "músicas", "som", "spotify",
         "music", "audio", "song"
+    ],
+    "system/discovery": [
+        "rede", "network", "dispositivos", 
+        "devices", "sistema", "lâmpadas", 
+        "lamps", "discover", "discovery"
     ]
 }

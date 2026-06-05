@@ -1,3 +1,5 @@
 {
-    "language": "auto"
+    "language": "auto",
+    "hardware": "cpu",
+    "stt_model": "base"
 }

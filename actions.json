@@ -1,4 +1,5 @@
 {
+
     "on": [
         "ligar", "liga", "ligue", 
         "acender", "acende", "acenda",
@@ -13,5 +14,28 @@
         "alternar", "alterna", "alterne", 
         "trocar", "troca", "troque", 
         "mudar", "muda", "mude"
+    ],
+    "discover": [
+        "procurar", "descobrir", "scan", 
+        "encontrar", "discover", "discovery", 
+        "search"
+    ],
+    "play": [
+        "toca", "tocar", "reproduz", "play", 
+        "põe", "põe a tocar", "continua", 
+        "continuar", "start"
+    ],
+    "pause": [
+        "pausa", "pausar", "para",
+        "parar", "pause", "stop"
+    ],
+    "next": [
+        "próxima", "proxima", "seguinte",
+        "passa", "avançar", "next", "skip"
+    ],
+    "prev": [
+        "anterior", "atrás", "voltar",
+        "prev", "previous", "last"
     ]
+
 }

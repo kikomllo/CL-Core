@@ -137,7 +137,6 @@ async def radar_loop():
                 logging.warning(f"[!] Target {mac[-5:]} timed out. Dropping from active radar...")
                 del tracked_devices[mac]
 
-            # --- VIP MEMORY JANITOR CYCLE ---
             stale_memory = []
             for mac, last_seen in known_macs.items():
                 if (current_time - last_seen) > MAC_MEMORY_SECONDS:
