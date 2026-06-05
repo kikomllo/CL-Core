@@ -2,145 +2,226 @@ import sys
 import asyncio
 import os
 import json
+import re
+import logging
 import aiomqtt
-from dotenv import load_dotenv
-from tapo import ApiClient, requests
 
-# --- WINDOWS ASYNCIO FIX ---
+# --- LOGGING SETUP ---
+logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [DAEMON] %(message)s", datefmt="%H:%M:%S")
+
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-try:
-    Color = getattr(requests, 'Color')
-except Exception:
-    print("ERROR: Could not find 'Color' in tapo library.")
+# --- CACHE & MEMORY ---
+COMPILED_TOPICS = {} 
+COMPILED_ACTIONS = {}
+COMPILED_COLORS = []
+ROUTING_MAP = {}
+LAST_KNOWN_TOPIC = None
+AWAITING_DISCOVERY_CHOICE = False
 
-# --- CREDENTIALS ---
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ENV_PATH = os.path.join(BASE_DIR, ".env")
-load_dotenv(ENV_PATH)
-
-EMAIL = os.getenv("TAPO_EMAIL")
-PASSWORD = os.getenv("TAPO_PASSWORD")
-BULB_IP = os.getenv("TAPO_IP")
-BULB_MODEL = os.getenv("TAPO_MODEL")
-
-# --- CUSTOM COLORS ---
-CUSTOM_COLORS = {
-    "aesthetic": {
-        "AmberGlow": (35, 40), "CyberpunkPink": (320, 35), "DeepSea": (215, 30),
-        "ForestMist": (145, 20), "MidnightRose": (340, 20), "SoftMauve": (280, 15),
-        "SoftRed": (0, 20), "VaporwaveBlue": (190, 30), "ShadyPurple": (186, 100),
-    },
-    "productivity": {
-        "CleanSky": (200, 5), "DesertSand": (40, 8), "FocusGold": (45, 10),
-        "Moonlight": (220, 8), "ZenPeach": (25, 12)
-    }
+WORD_TO_NUMBER = {
+    "cem": "100", "hundred": "100", "noventa": "90", "oitenta": "80", 
+    "setenta": "70", "sessenta": "60", "cinquenta": "50", "quarenta": "40", 
+    "trinta": "30", "vinte": "20", "dez": "10",
+    "nove": "9", "oito": "8", "sete": "7", "seis": "6", "cinco": "5",
+    "quatro": "4", "três": "3", "dois": "2", "um": "1", "zero": "0",
+    "nine": "9", "eight": "8", "seven": "7", "six": "6", "five": "5",
+    "four": "4", "three": "3", "two": "2", "one": "1"
 }
 
-# --- THE SUBSCRIBER ENGINE ---
-async def process_payload(device, data):
-    """Safely executes complex commands without race conditions."""
-    target_power_state = None
+# --- LOAD CONFIGS ---
+def load_configs():
+    global COMPILED_TOPICS, COMPILED_ACTIONS, COMPILED_COLORS, ROUTING_MAP
+    base_dir = os.path.dirname(os.path.abspath(__file__))
     
-    # 1. RESOLVE POWER STATE FIRST
-    if "action" in data:
-        action = data["action"]
-        if action == "toggle":
-            info = await device.get_device_info()
-            if info.device_on:
-                await device.off()
-                target_power_state = False
-            else:
-                await device.on()
-                target_power_state = True
-        elif action == "on":
-            await device.on()
-            target_power_state = True
-        elif action == "off":
-            await device.off()
-            target_power_state = False
+    def safe_load(filename):
+        try:
+            with open(os.path.join(base_dir, filename), 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            logging.warning(f"File '{filename}' not found.")
+        except json.JSONDecodeError as e:
+            logging.critical(f"Syntax error in '{filename}': {e}")
+            sys.exit(1)
+        return None
+    
+    ROUTING_MAP = safe_load("routing.json") or {}
+    topics_data = safe_load("topics.json")
+    if topics_data:
+        for topic, words in topics_data.items():
+            COMPILED_TOPICS[topic] = re.compile(r'\b(' + '|'.join(words) + r')\b')
 
-    # 2. APPLY PROPERTIES IF ON
-    if target_power_state is not False:
-        tasks = []
-        if "lum" in data:
-            tasks.append(device.set_brightness(data["lum"]))
+    actions_data = safe_load("actions.json")
+    if actions_data:
+        for act, words in actions_data.items():
+            COMPILED_ACTIONS[act] = re.compile(r'\b(' + '|'.join(words) + r')\b')
+
+    colors_data = safe_load("colors.json")
+    if colors_data:
+        for name in sorted(colors_data.keys(), key=len, reverse=True):
+            regex_str = r'\b' + re.sub(r'o\b', r'[oa]s?', name) + r'\b'
+            COMPILED_COLORS.append((re.compile(regex_str), colors_data[name], name))
+
+
+# --- STT TEXT PROCESSING ---
+def process_voice_command(text):
+    global LAST_KNOWN_TOPIC, AWAITING_DISCOVERY_CHOICE
+    text = text.lower()
+    text = re.sub(r'[.,!?]', '', text)
+    
+    for word, digit in WORD_TO_NUMBER.items():
+        text = re.sub(rf'\b{word}\b', digit, text)
+
+    if AWAITING_DISCOVERY_CHOICE:
+        AWAITING_DISCOVERY_CHOICE = False
+        match = re.search(r'\d+', text)
+        if match:
+            return [({"action": "save_discovery", "index": int(match.group())}, "system/discovery")]
+
+    chunks = re.split(r'\b(?:e|and|depois|then|also)\b', text)
+    intents = []
+
+    for chunk in chunks:
+        chunk = chunk.strip()
+        if len(chunk) < 2: continue
+
+        payload = {}
+        target_topic = None
+
+        # 1: Action Extraction (Longest match wins)
+        best_action = None
+        longest_match = 0
+        for act, regex_obj in COMPILED_ACTIONS.items():
+            match = regex_obj.search(chunk)
+            if match:
+                matched_word = match.group(1)
+                if len(matched_word) > longest_match:
+                    longest_match = len(matched_word)
+                    best_action = act
         
-        if "temp" in data:
-            temp = data["temp"]
-            tasks.append(device.set_color_temperature(int(2500 + temp*(6500-2500)/100)))
+        if best_action:
+            payload["action"] = best_action
+            if best_action == "discover":
+                target_topic = "system/discovery"
+                AWAITING_DISCOVERY_CHOICE = True 
 
-        if "color" in data:
-            input_clean = data["color"].lower()
-            target_key = None
+        # 2: Entity Extraction (Slot Filling for Music)
+        if payload.get("action") == "play":
             
-            for group in CUSTOM_COLORS:
-                for k in CUSTOM_COLORS[group].keys(): 
-                    if k.lower() == input_clean:
-                        target_key = k
-                        h, s = CUSTOM_COLORS[group][target_key]
-                        tasks.append(device.set_hue_saturation(h, s))
-                        break
-                if target_key: break
+            topic_keywords = [word for words in [v.pattern for v in COMPILED_TOPICS.values()] for word in re.findall(r'\w+', words)]
+            topic_pattern = r'\b(?:' + '|'.join(topic_keywords) + r')\b'
             
-            if not target_key:
-                target_key = next((k for k in dir(Color) if k.lower() == input_clean), None)
-                if target_key:
-                    tasks.append(device.set_color(getattr(Color, target_key)))
-
-        if tasks:
-            await asyncio.gather(*tasks)
-
-async def listen_to_broker(tapo_client, initial_device):
-    device = initial_device
-    try:
-        async with aiomqtt.Client("localhost") as mqtt_client:
-            await mqtt_client.subscribe("home/room/desk_light/set")
-            print("[DAEMON] Listening to MQTT topic: home/room/desk_light/set")
+            stop_boundaries = rf'(?:\s+(?:on|no|em|by|artist|artista|de|do|da|playlist|lista|song|música|musica|track|som|{topic_pattern})|$)'
             
-            async for message in mqtt_client.messages:
-                payload_str = message.payload.decode()
-                print(f"\n[DAEMON] MQTT Received: {payload_str}")
+            # --- Slot 1: Playlist ---
+            playlist_match = re.search(rf'\b(?:playlist|lista)\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
+            if playlist_match:
+                payload["playlist_name"] = playlist_match.group(1).strip()
+                logging.info(f"Explicit playlist detected: {payload['playlist_name']}")
                 
-                try:
-                    data = json.loads(payload_str)
-                    
-                    # Attempt execution
-                    await process_payload(device, data)
-                    print("[DAEMON] Execution Successful.")
-                    
-                except json.JSONDecodeError:
-                    print("[DAEMON] Error: Invalid JSON payload.")
-                    
-                except Exception as e:
-                    # SELF-HEALING HOOK: If the bulb dropped the socket, catch it and rebuild!
-                    print(f"[DAEMON] Tapo execution failed (Session likely dropped): {type(e).__name__} - {e}")
-                    print("[DAEMON] Attempting to rebuild secure Tapo session...")
-                    try:
-                        get_device = getattr(tapo_client, (BULB_MODEL).lower())
-                        device = await get_device(BULB_IP)
-                        await process_payload(device, data)
-                        print("[DAEMON] Recovery Successful! Command executed.")
-                    except Exception as recovery_error:
-                        print(f"[DAEMON] Critical Recovery Failure: {recovery_error}")
-                        print("Ensure the bulb is powered on at the wall.")
-                        
-    except Exception as e:
-        print(f"[DAEMON] Critical MQTT Broker Error: {e}")
+            # --- Slot 2: Artist ---
+            artist_match = re.search(rf'\b(?:by|artist|artista|de|do|da)\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
+            if artist_match:
+                payload["artist_name"] = artist_match.group(1).strip()
+                logging.info(f"Explicit artist detected: {payload['artist_name']}")
+                
+            # --- Slot 3: Track ---
+            track_match = re.search(rf'\b(?:song|música|musica|track|som)\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
+            if track_match:
+                payload["track_name"] = track_match.group(1).strip()
+                logging.info(f"Explicit track detected: {payload['track_name']}")
+                
+            if not any(k in payload for k in ["playlist_name", "artist_name", "track_name"]):
+                logging.info("Generic play command detected (no explicit parameters found).")
 
-async def main():
-    print("[DAEMON] Booting up and warming Tapo connection...")
+        # 3: Topic Routing (User explicitly mentioned a topic)
+        if not target_topic:
+            for topic, regex_obj in COMPILED_TOPICS.items():
+                if regex_obj.search(chunk):
+                    target_topic = topic
+                    break
+        
+        # 4: Lookup Routing Map by Action
+        if not target_topic and best_action:
+            for topic, actions in ROUTING_MAP.items():
+                if best_action in actions:
+                    target_topic = topic
+                    break
+        
+        # 5: Fallback to Context Memory
+        if not target_topic and LAST_KNOWN_TOPIC:
+            target_topic = LAST_KNOWN_TOPIC
+            
+        if target_topic:
+            LAST_KNOWN_TOPIC = target_topic
+
+        # 6: Attributes & Colors
+        temp_match = re.search(r'(\d+)\s*(porcento|percent|%).*(temperatura|temp|temps|temperature|calor|frio|hot|cold)', chunk)
+        if temp_match: payload["temp"] = int(temp_match.group(1))
+        else:
+            pct_match = re.search(r'(\d+)\s*(porcento|percent|%)', chunk)
+            if pct_match:
+                valor = int(pct_match.group(1))
+                if target_topic and "spotify" in target_topic:
+                    payload["volume"] = valor
+                    if "action" not in payload: payload["action"] = "volume"
+                else: payload["lum"] = valor
+
+        for regex_obj, color_value, _ in COMPILED_COLORS:
+            if regex_obj.search(chunk):
+                payload["color"] = color_value
+                break
+
+        if payload:
+            intents.append((payload, target_topic))
+            
+    return intents
+
+async def run_daemon():
+    logging.info("Booting Central Brain...")
+    load_configs()
+    logging.info("Configurations loaded. Connecting to MQTT broker...")
+    
     try:
-        tapo_client = ApiClient(EMAIL, PASSWORD)
-        get_device = getattr(tapo_client, (BULB_MODEL).lower())
-        initial_device = await get_device(BULB_IP)
-        print("[DAEMON] Tapo connection established.")
-        
-        await listen_to_broker(tapo_client, initial_device)
-        
-    except Exception as e:
-        print(f"[DAEMON] Fatal Error on Boot: {e}")
+        async with aiomqtt.Client("localhost") as client:
+            await client.subscribe("jarvis/sensor/voice")
+            await client.subscribe("jarvis/feedback")
+            logging.info("Online. Listening on topics 'jarvis/sensor/voice' and 'jarvis/feedback'...")
+            
+            async for message in client.messages:
+                topic = message.topic.value
+                payload_data = message.payload.decode('utf-8')
+                
+                # --- SENSOR INGESTION ROUTING ---
+                if topic == "jarvis/sensor/voice":
+                    logging.info(f"Transcript Received: '{payload_data}'")
+                    intents = process_voice_command(payload_data)
+                    
+                    if intents:
+                        for command, target_topic in intents:
+                            if target_topic:
+                                logging.info(f"Intent Decoded: {command} -> Routing to [{target_topic}]")
+                                await client.publish(target_topic, json.dumps(command))
+                            else:
+                                logging.warning(f"Intent decoded ({command}), but no target topic known. Ignoring.")
+                            await asyncio.sleep(0.1)
+                    else:
+                        logging.warning("Could not extract a valid command.")
+                
+                # --- FEEDBACK OBSERVABILITY LOGGING ---
+                elif topic == "jarvis/feedback":
+                    try:
+                        fb = json.loads(payload_data)
+                        status_icon = "V" if fb.get('status') == "success" else "X"
+                        logging.info(f"Feedback [{fb.get('device', 'unknown')}]: {status_icon} {fb.get('message', '')}")
+                    except json.JSONDecodeError:
+                        logging.error("Received malformed feedback packet.")
+                        
+    except aiomqtt.MqttError as e:
+        logging.error(f"MQTT Connection Error: {e}")
+    except asyncio.CancelledError:
+        logging.info("Shutting down Central Brain.")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(run_daemon())

@@ -1,11 +1,9 @@
 .env
-backup.py
-test.py
-sniffer.py
+.cache
 notes.txt
+./venv
 __pycache__/clControl.cpython-313.pyc
 clControl.bat
 clControl.vbs
 clMonitor.log
-clVoice.py
 __pycache__/clControl.cpython-312.pyc
