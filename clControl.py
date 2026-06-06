@@ -329,17 +329,35 @@ async def mqtt_service_listener(client_api):
                     ip_target = payload.get("ip", BULB_IP)
                     model_target = payload.get("model", BULB_MODEL)
                     
-                    await control_bulb(
-                        client=client_api,
-                        target_ip=ip_target,
-                        target_model=model_target,
-                        on=(action == "on"),
-                        off=(action == "off"),
-                        toggle=(action == "toggle"),
-                        color=payload.get("color"),
-                        lum=payload.get("lum"),
-                        temp=payload.get("temp")
-                    )
+                    try:
+                        await control_bulb(
+                            client=client_api,
+                            target_ip=ip_target,
+                            target_model=model_target,
+                            on=(action == "on"),
+                            off=(action == "off"),
+                            toggle=(action == "toggle"),
+                            color=payload.get("color"),
+                            lum=payload.get("lum"),
+                            temp=payload.get("temp")
+                        )
+                        # --- SEND FEEDBACK TO BRAIN ---
+                        feedback = {
+                            "device": "tapo_lights",
+                            "status": "success",
+                            "message": f"Executed action '{action}' on {model_target}."
+                        }
+                        await mqtt_client.publish("jarvis/feedback", json.dumps(feedback))
+                        
+                    except Exception as e:
+                        # --- NEW: SEND ERROR TO BRAIN ---
+                        feedback = {
+                            "device": "tapo_lights",
+                            "status": "error",
+                            "message": str(e)
+                        }
+                        await mqtt_client.publish("jarvis/feedback", json.dumps(feedback))
+                        
                 except json.JSONDecodeError:
                     logging.error("Received malformed JSON data.")
     except aiomqtt.MqttError as e:

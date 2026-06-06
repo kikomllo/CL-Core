@@ -9,6 +9,9 @@ import aiomqtt
 # --- LOGGING SETUP ---
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [DAEMON] %(message)s", datefmt="%H:%M:%S")
 
+# --- DEBUG TOGGLES ---
+DEBUG_NLP = True
+
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
@@ -19,6 +22,7 @@ COMPILED_COLORS = []
 ROUTING_MAP = {}
 LAST_KNOWN_TOPIC = None
 AWAITING_DISCOVERY_CHOICE = False
+AWAITING_SPOTIFY_CHOICE = False # <-- ADDED
 
 WORD_TO_NUMBER = {
     "cem": "100", "hundred": "100", "noventa": "90", "oitenta": "80", 
@@ -66,12 +70,42 @@ def load_configs():
 
 # --- STT TEXT PROCESSING ---
 def process_voice_command(text):
-    global LAST_KNOWN_TOPIC, AWAITING_DISCOVERY_CHOICE
+    global LAST_KNOWN_TOPIC, AWAITING_DISCOVERY_CHOICE, AWAITING_SPOTIFY_CHOICE
     text = text.lower()
+    
+    # --- ADDED: KNOWN TYPO AUTOCORRECT ---
+    AUTOCORRECT = {
+        "martin monish": "martim moniz",
+        "martin moniche": "martim moniz",
+        "marty moines": "martim moniz",
+        "eric grant": "harry grande",
+        "erie grant": "harry grande",
+        "harry grant": "harry grande"
+    }
+    
+    for bad, good in AUTOCORRECT.items():
+        text = text.replace(bad, good)
+        
     text = re.sub(r'[.,!?]', '', text)
+    
+    # --- ADDED: DEBUG PRINTOUT ---
+    if DEBUG_NLP:
+        logging.info(f"[DEBUG NLP] Cleaned & Autocorrected Text: '{text}'")
     
     for word, digit in WORD_TO_NUMBER.items():
         text = re.sub(rf'\b{word}\b', digit, text)
+
+    # --- ADDED: SPOTIFY CHOICE INTERCEPTION ---
+    if AWAITING_SPOTIFY_CHOICE:
+        AWAITING_SPOTIFY_CHOICE = False
+        match = re.search(r'\b(\d+)\b', text)
+        if match:
+            choice = int(match.group(1))
+            logging.info(f"User selected Spotify option [{choice}]. Routing directly.")
+            return [({"action": "play_choice", "choice_index": choice}, "pc/spotify/control")]
+        else:
+            logging.warning("Expected a number for Spotify choice, but none was found. Canceling selection.")
+            return []
 
     if AWAITING_DISCOVERY_CHOICE:
         AWAITING_DISCOVERY_CHOICE = False
@@ -91,6 +125,7 @@ def process_voice_command(text):
 
         # 1: Action Extraction (Longest match wins)
         best_action = None
+        action_word_used = None 
         longest_match = 0
         for act, regex_obj in COMPILED_ACTIONS.items():
             match = regex_obj.search(chunk)
@@ -99,6 +134,7 @@ def process_voice_command(text):
                 if len(matched_word) > longest_match:
                     longest_match = len(matched_word)
                     best_action = act
+                    action_word_used = matched_word 
         
         if best_action:
             payload["action"] = best_action
@@ -108,32 +144,39 @@ def process_voice_command(text):
 
         # 2: Entity Extraction (Slot Filling for Music)
         if payload.get("action") == "play":
-            
+
             topic_keywords = [word for words in [v.pattern for v in COMPILED_TOPICS.values()] for word in re.findall(r'\w+', words)]
             topic_pattern = r'\b(?:' + '|'.join(topic_keywords) + r')\b'
-            
+
             stop_boundaries = rf'(?:\s+(?:on|no|em|by|artist|artista|de|do|da|playlist|lista|song|música|musica|track|som|{topic_pattern})|$)'
-            
+
             # --- Slot 1: Playlist ---
             playlist_match = re.search(rf'\b(?:playlist|lista)\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
             if playlist_match:
                 payload["playlist_name"] = playlist_match.group(1).strip()
                 logging.info(f"Explicit playlist detected: {payload['playlist_name']}")
-                
+
             # --- Slot 2: Artist ---
             artist_match = re.search(rf'\b(?:by|artist|artista|de|do|da)\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
             if artist_match:
                 payload["artist_name"] = artist_match.group(1).strip()
                 logging.info(f"Explicit artist detected: {payload['artist_name']}")
-                
+
             # --- Slot 3: Track ---
             track_match = re.search(rf'\b(?:song|música|musica|track|som)\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
             if track_match:
                 payload["track_name"] = track_match.group(1).strip()
                 logging.info(f"Explicit track detected: {payload['track_name']}")
-                
+
+            # --- Slot 4 (Greedy Positional Fallback) ---
             if not any(k in payload for k in ["playlist_name", "artist_name", "track_name"]):
-                logging.info("Generic play command detected (no explicit parameters found).")
+                if action_word_used:
+                    fallback_match = re.search(rf'\b{action_word_used}\b\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
+                    if fallback_match:
+                        payload["search_query"] = fallback_match.group(1).strip()
+                        logging.info(f"Greedy fallback captured query: '{payload['search_query']}'")
+                    else:
+                        logging.info("Generic play command detected (no explicit parameters found).")
 
         # 3: Topic Routing (User explicitly mentioned a topic)
         if not target_topic:
@@ -141,18 +184,18 @@ def process_voice_command(text):
                 if regex_obj.search(chunk):
                     target_topic = topic
                     break
-        
+
         # 4: Lookup Routing Map by Action
         if not target_topic and best_action:
             for topic, actions in ROUTING_MAP.items():
                 if best_action in actions:
                     target_topic = topic
                     break
-        
+
         # 5: Fallback to Context Memory
         if not target_topic and LAST_KNOWN_TOPIC:
             target_topic = LAST_KNOWN_TOPIC
-            
+
         if target_topic:
             LAST_KNOWN_TOPIC = target_topic
 
@@ -176,6 +219,10 @@ def process_voice_command(text):
         if payload:
             intents.append((payload, target_topic))
             
+            # --- ADDED: DEBUG PRINTOUT ---
+            if DEBUG_NLP:
+                logging.info(f"[DEBUG NLP] Extracted Payload: {json.dumps(payload, indent=2)}")
+
     return intents
 
 async def run_daemon():
@@ -213,8 +260,18 @@ async def run_daemon():
                 elif topic == "jarvis/feedback":
                     try:
                         fb = json.loads(payload_data)
-                        status_icon = "V" if fb.get('status') == "success" else "X"
-                        logging.info(f"Feedback [{fb.get('device', 'unknown')}]: {status_icon} {fb.get('message', '')}")
+                        msg = fb.get('message', '')
+                        
+                        # --- ADDED: TRIGGER SPOTIFY CHOICE STATE MACHINE ---
+                        if "CONFIDENCE_LOW|" in msg:
+                            global AWAITING_SPOTIFY_CHOICE
+                            AWAITING_SPOTIFY_CHOICE = True
+                            clean_msg = msg.replace("CONFIDENCE_LOW|", "Low Confidence. Please say the number of your choice:\n")
+                            logging.warning(f"Spotify requires user input:\n{clean_msg}")
+                        else:
+                            status_icon = "V" if fb.get('status') == "success" else "X"
+                            logging.info(f"Feedback [{fb.get('device', 'unknown')}]: {status_icon} {msg}")
+                            
                     except json.JSONDecodeError:
                         logging.error("Received malformed feedback packet.")
                         
