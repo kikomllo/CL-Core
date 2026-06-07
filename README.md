@@ -59,7 +59,7 @@ SPOTIPY_REDIRECT_URI="https://www.spotify.com/account/apps/"
 
 # Tapo Smart Home Credentials
 ```
-TAPO_USERNAME="your_tapo_account_email"
+TAPO_EMAIL="your_tapo_account_email"
 TAPO_PASSWORD="your_tapo_account_password"
 ```
 
