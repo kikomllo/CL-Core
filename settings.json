@@ -1,5 +1,5 @@
 {
     "language": "en",
-    "hardware": "cpu",
-    "stt_model": "small"
+    "hardware": "gpu",
+    "stt_model": "medium"
 }
