@@ -97,7 +97,7 @@ def load_settings():
         with open(config_path, 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception:
-        return {"language": "auto", "hardware": "cpu", "stt_model": "base"}
+        return {"language": "en", "hardware": "cpu", "stt_model": "small"}
 
 def init_wakeword(target_word):
     """Initializes the OpenWakeWord model."""

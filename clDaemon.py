@@ -148,10 +148,10 @@ def process_voice_command(text):
             topic_keywords = [word for words in [v.pattern for v in COMPILED_TOPICS.values()] for word in re.findall(r'\w+', words)]
             topic_pattern = r'\b(?:' + '|'.join(topic_keywords) + r')\b'
 
-            stop_boundaries = rf'(?:\s+(?:on|no|em|by|artist|artista|de|do|da|playlist|lista|song|música|musica|track|som|{topic_pattern})|$)'
+            stop_boundaries = rf'(?:\s+(?:no|em|by|artist|artista|de|do|da|playlist|lista|song|música|musica|track|som|{topic_pattern})|$)'
 
             # --- Slot 1: Playlist ---
-            playlist_match = re.search(rf'\b(?:playlist|lista)\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
+            playlist_match = re.search(rf'\b(?:playlist|lista|playlists|listas)\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
             if playlist_match:
                 payload["playlist_name"] = playlist_match.group(1).strip()
                 logging.info(f"Explicit playlist detected: {payload['playlist_name']}")
@@ -167,16 +167,6 @@ def process_voice_command(text):
             if track_match:
                 payload["track_name"] = track_match.group(1).strip()
                 logging.info(f"Explicit track detected: {payload['track_name']}")
-
-            # --- Slot 4 (Greedy Positional Fallback) ---
-            if not any(k in payload for k in ["playlist_name", "artist_name", "track_name"]):
-                if action_word_used:
-                    fallback_match = re.search(rf'\b{action_word_used}\b\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
-                    if fallback_match:
-                        payload["search_query"] = fallback_match.group(1).strip()
-                        logging.info(f"Greedy fallback captured query: '{payload['search_query']}'")
-                    else:
-                        logging.info("Generic play command detected (no explicit parameters found).")
 
         # 3: Topic Routing (User explicitly mentioned a topic)
         if not target_topic:
