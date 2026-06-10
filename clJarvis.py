@@ -33,6 +33,11 @@ def main():
         print(">>> Starting clVoice.py (Voice Sensor)...")
         p_voice = subprocess.Popen([python_bin, "clVoice.py"])
         processes.append(p_voice)
+        
+        # 5: Boot clTerminal.py
+        print(">>> Starting clTerminal.py (Terminal Actuator)...")
+        p_terminal = subprocess.Popen([python_bin, "clTerminal.py"])
+        processes.append(p_terminal)
 
         print("\n" + "="*50)
         print("ALL SYSTEMS ONLINE. Press Ctrl+C to shutdown.")

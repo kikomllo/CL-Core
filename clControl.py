@@ -122,9 +122,10 @@ def get_subnet_base():
 
 # --- HELPER: ASYNC PING SWEEP ---
 async def async_ping(ip, semaphore):
-    param_count = '-n' if platform.system().lower() == 'windows' else '-c'
-    param_timeout = '-w' if platform.system().lower() == 'windows' else '-W'
-    timeout_val = '500' if platform.system().lower() == 'windows' else '1' 
+    is_win = platform.system().lower() == 'windows'
+    param_count = '-n' if is_win else '-c'
+    param_timeout = '-w' if is_win else '-W'
+    timeout_val = '500' if is_win else '1' 
     async with semaphore:
         try:
             process = await asyncio.create_subprocess_exec(
@@ -139,52 +140,99 @@ async def async_ping(ip, semaphore):
             pass
     return None
 
-# --- HELPER: ASYNC TCP PROBE (BATCHED) ---
-async def check_ip(client, ip, semaphore):
-    async with semaphore:
-        try:
-            get_device = getattr(client, (BULB_MODEL).lower())
-            device = await get_device(ip)
-            info = await asyncio.wait_for(device.get_device_info(), timeout=0.8)
-            model = getattr(info, 'model', 'Unknown')
-            return {"ip": ip, "model": model.upper()}
-        except Exception:
-            return None
+# --- GLOBAL SUBNET HITLIST ---
+COMMON_SUBNETS = [
+    "192.168.0",  # TP-Link / D-Link defaults
+    "192.168.1",  # Asus / Netgear / Linksys defaults
+    "192.168.2",  # Belkin / Alternate defaults
+    "192.168.15", # Vivo / ISP Routers
+    "192.168.68", # TP-Link Deco Mesh (Extremely common for Tapo)
+    "192.168.86", # Google Nest Wi-Fi
+    "10.0.0",     # Comcast / Xfinity
+    "10.0.1"      # Apple Airport
+]
 
-# --- DISCOVERY: ASYNC SUBNET SWEEP ---
-async def discovery_mode(client, voice_mode=False):
-    global LAST_DISCOVERED_DEVICES
+# --- HELPER: BATCH SWEEP ENGINE ---
+async def sweep_ips(client, ips_to_check):
+    logging.info(f"Pinging {len(ips_to_check)} IPs to find active hosts...")
     
-    base_ip = get_subnet_base()
-    logging.info(f"Initiating Two-Stage Network Sweep on {base_ip}.X...")
-    
-    ips_to_check = [f"{base_ip}.{i}" for i in range(1, 255)]
-    
-    logging.info("Stage 1: Pinging 254 IPs to find active hosts...")
-    ping_sem = asyncio.Semaphore(150)
+    ping_sem = asyncio.Semaphore(300) 
     ping_tasks = [async_ping(ip, ping_sem) for ip in ips_to_check]
     alive_ips_results = await asyncio.gather(*ping_tasks)
     
     alive_ips = [ip for ip in alive_ips_results if ip is not None]
     if not alive_ips:
-        logging.warning("Sweep complete. No active devices found on the network.")
-        return
+        return []
         
-    logging.info(f"Found {len(alive_ips)} active devices on the network.")
-
-    logging.info("Stage 2: Probing active devices for Tapo bulbs...")
-    tcp_sem = asyncio.Semaphore(50)
+    logging.info(f"Found {len(alive_ips)} active devices. Probing for Tapo bulbs...")
+    
+    # FIX: Lowered TCP concurrency. 
+    # Blasting 100 simultaneous crypto-handshakes can cause packets to drop.
+    tcp_sem = asyncio.Semaphore(15) 
     tcp_tasks = [check_ip(client, ip, tcp_sem) for ip in alive_ips]
     results = await asyncio.gather(*tcp_tasks)
     
-    devices = [res for res in results if res is not None]
+    return [res for res in results if res is not None]
+
+
+# --- HELPER: ASYNC TCP PROBE (BATCHED) ---
+async def check_ip(client, ip, semaphore):
+    async with semaphore:
+        models_to_try = ["l530", "l510", "p100", "p110", "l900", "l920", "l930", "generic_device"]
+        
+        for model_guess in models_to_try:
+            try:
+                if not hasattr(client, model_guess):
+                    continue
+                    
+                get_device = getattr(client, model_guess)
+                device = await get_device(ip)
+                
+                # FIX: Increased timeout to 3.0s. Encryption handshakes take time!
+                info = await asyncio.wait_for(device.get_device_info(), timeout=3.0)
+                
+                true_model = getattr(info, 'model', 'Unknown').upper()
+                if not true_model or true_model == 'UNKNOWN':
+                    true_model = model_guess.upper()
+                    
+                return {"ip": ip, "model": true_model}
+                
+            except Exception as e:
+                # DEBUG: If this is your bulb's IP, force it to print the exact error!
+                if ip == "192.168.1.111":
+                    logging.warning(f"Probe '{model_guess}' failed on .111 -> {type(e).__name__}: {str(e)}")
+                continue 
+                
+        return None
+# --- DISCOVERY: ASYNC SUBNET SWEEP ---
+async def discovery_mode(client, voice_mode=False, forced_subnet=None):
+    global LAST_DISCOVERED_DEVICES
+    
+    base_ip = forced_subnet if forced_subnet else get_subnet_base()
+    
+    logging.info(f"Initiating Primary Network Sweep on {base_ip}.X...")
+    primary_ips = [f"{base_ip}.{i}" for i in range(1, 255)]
+    
+    devices = await sweep_ips(client, primary_ips)
+    
+    # --- GLOBAL FALLBACK ---
     if not devices:
-        logging.warning("Sweep complete. None of the active hosts were Tapo devices.")
+        logging.warning(f"No Tapo devices found on {base_ip}.X.")
+        logging.info("Initiating Global Network Sweep across common router subnets...")
+        
+        global_ips = []
+        for subnet in COMMON_SUBNETS:
+            if subnet != base_ip:
+                global_ips.extend([f"{subnet}.{i}" for i in range(1, 255)])
+                
+        devices = await sweep_ips(client, global_ips)
+
+    if not devices:
+        logging.warning("Global sweep complete. No Tapo devices found anywhere on the known network.")
         return
 
     LAST_DISCOVERED_DEVICES = devices
 
-    # Tabular data remains as print()
     print(f"\nFound {len(devices)} device(s):")
     print("{:<5} {:<18} {:<18}".format("#", 'MODEL', "IP"))
     print("-" * 45)
