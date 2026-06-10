@@ -22,17 +22,10 @@ COMPILED_COLORS = []
 ROUTING_MAP = {}
 LAST_KNOWN_TOPIC = None
 AWAITING_DISCOVERY_CHOICE = False
-AWAITING_SPOTIFY_CHOICE = False # <-- ADDED
+AWAITING_SPOTIFY_CHOICE = False
 
-WORD_TO_NUMBER = {
-    "cem": "100", "hundred": "100", "noventa": "90", "oitenta": "80", 
-    "setenta": "70", "sessenta": "60", "cinquenta": "50", "quarenta": "40", 
-    "trinta": "30", "vinte": "20", "dez": "10",
-    "nove": "9", "oito": "8", "sete": "7", "seis": "6", "cinco": "5",
-    "quatro": "4", "três": "3", "dois": "2", "um": "1", "zero": "0",
-    "nine": "9", "eight": "8", "seven": "7", "six": "6", "five": "5",
-    "four": "4", "three": "3", "two": "2", "one": "1"
-}
+NLP_RULES = {}
+COMPILED_ABORT_REGEX = None
 
 # --- LOAD CONFIGS ---
 def load_configs():
@@ -60,6 +53,13 @@ def load_configs():
     if actions_data:
         for act, words in actions_data.items():
             COMPILED_ACTIONS[act] = re.compile(r'\b(' + '|'.join(words) + r')\b')
+            
+    global NLP_RULES, COMPILED_ABORT_REGEX
+    NLP_RULES = safe_load("nlp_rules.json") or {}
+    
+    abort_words = NLP_RULES.get("abort_keywords", [])
+    if abort_words:
+        COMPILED_ABORT_REGEX = re.compile(r'\b(?:' + '|'.join(abort_words) + r')\b', re.IGNORECASE)
 
     colors_data = safe_load("colors.json")
     if colors_data:
@@ -73,29 +73,28 @@ def process_voice_command(text):
     global LAST_KNOWN_TOPIC, AWAITING_DISCOVERY_CHOICE, AWAITING_SPOTIFY_CHOICE
     text = text.lower()
     
-    # --- ADDED: KNOWN TYPO AUTOCORRECT ---
-    AUTOCORRECT = {
-        "martin monish": "martim moniz",
-        "martin moniche": "martim moniz",
-        "marty moines": "martim moniz",
-        "eric grant": "harry grande",
-        "erie grant": "harry grande",
-        "harry grant": "harry grande"
-    }
-    
-    for bad, good in AUTOCORRECT.items():
+    # --- GLOBAL ABORT INTERCEPTOR ---
+    if COMPILED_ABORT_REGEX and COMPILED_ABORT_REGEX.search(text):
+        logging.info("User explicitly cancelled the command. Dropping transcript.")
+        AWAITING_DISCOVERY_CHOICE = False
+        AWAITING_SPOTIFY_CHOICE = False
+        return []
+
+    # --- AUTOCORRECT & NUMBER PARSING ---
+    autocorrect_dict = NLP_RULES.get("autocorrect", {})
+    for bad, good in autocorrect_dict.items():
         text = text.replace(bad, good)
         
     text = re.sub(r'[.,!?]', '', text)
     
-    # --- ADDED: DEBUG PRINTOUT ---
     if DEBUG_NLP:
         logging.info(f"[DEBUG NLP] Cleaned & Autocorrected Text: '{text}'")
     
-    for word, digit in WORD_TO_NUMBER.items():
+    word_to_num = NLP_RULES.get("word_to_number", {})
+    for word, digit in word_to_num.items():
         text = re.sub(rf'\b{word}\b', digit, text)
 
-    # --- ADDED: SPOTIFY CHOICE INTERCEPTION ---
+    # SPOTIFY CHOICE INTERCEPTION
     if AWAITING_SPOTIFY_CHOICE:
         AWAITING_SPOTIFY_CHOICE = False
         match = re.search(r'\b(\d+)\b', text)
@@ -142,31 +141,40 @@ def process_voice_command(text):
                 target_topic = "system/discovery"
                 AWAITING_DISCOVERY_CHOICE = True 
 
-        # 2: Entity Extraction (Slot Filling for Music)
+        # 2: Entity Extraction (Slot Filling)
         if payload.get("action") == "play":
 
             topic_keywords = [word for words in [v.pattern for v in COMPILED_TOPICS.values()] for word in re.findall(r'\w+', words)]
             topic_pattern = r'\b(?:' + '|'.join(topic_keywords) + r')\b'
 
-            stop_boundaries = rf'(?:\s+(?:no|em|by|artist|artista|de|do|da|playlist|lista|song|música|musica|track|som|{topic_pattern})|$)'
+            stop_boundaries = rf'(?:\s+(?:on|no|em|by|artist|artista|de|do|da|playlist|lista|song|música|musica|track|som|{topic_pattern})|$)'
 
             # --- Slot 1: Playlist ---
-            playlist_match = re.search(rf'\b(?:playlist|lista|playlists|listas)\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
+            playlist_match = re.search(rf'\b(?:playlists?|listas?)\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
             if playlist_match:
                 payload["playlist_name"] = playlist_match.group(1).strip()
                 logging.info(f"Explicit playlist detected: {payload['playlist_name']}")
 
             # --- Slot 2: Artist ---
-            artist_match = re.search(rf'\b(?:by|artist|artista|de|do|da)\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
+            artist_match = re.search(rf'\b(?:by|artists?|artistas?|de|do|da)\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
             if artist_match:
                 payload["artist_name"] = artist_match.group(1).strip()
                 logging.info(f"Explicit artist detected: {payload['artist_name']}")
 
             # --- Slot 3: Track ---
-            track_match = re.search(rf'\b(?:song|música|musica|track|som)\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
+            track_match = re.search(rf'\b(?:songs?|músicas?|musicas?|tracks?|sons?)\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
             if track_match:
                 payload["track_name"] = track_match.group(1).strip()
                 logging.info(f"Explicit track detected: {payload['track_name']}")
+
+        # --- Slot 4 for System Targets (Open/Close) ---
+        elif payload.get("action") in ["open", "close"]:
+            if action_word_used:
+                # Ignores chained filler words (e.g., "to the folder") and captures the ENTIRE remaining phrase
+                sys_match = re.search(rf'\b{action_word_used}\b\s+(?:(?:to|para|the|o|a|pasta|folder|dir|directory|app|aplicativo)\s+)*(.+)', chunk, re.IGNORECASE)
+                if sys_match:
+                    payload["target"] = sys_match.group(1).strip()
+                    logging.info(f"System target detected: {payload['target']}")
 
         # 3: Topic Routing (User explicitly mentioned a topic)
         if not target_topic:
@@ -209,7 +217,6 @@ def process_voice_command(text):
         if payload:
             intents.append((payload, target_topic))
             
-            # --- ADDED: DEBUG PRINTOUT ---
             if DEBUG_NLP:
                 logging.info(f"[DEBUG NLP] Extracted Payload: {json.dumps(payload, indent=2)}")
 
@@ -252,7 +259,6 @@ async def run_daemon():
                         fb = json.loads(payload_data)
                         msg = fb.get('message', '')
                         
-                        # --- ADDED: TRIGGER SPOTIFY CHOICE STATE MACHINE ---
                         if "CONFIDENCE_LOW|" in msg:
                             global AWAITING_SPOTIFY_CHOICE
                             AWAITING_SPOTIFY_CHOICE = True

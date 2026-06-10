@@ -36,6 +36,15 @@
     "prev": [
         "anterior", "atrás", "voltar",
         "prev", "previous", "last"
+    ],
+    "open": [
+        "open", "launch", "start", "go", 
+        "navigate", "back", "abrir", 
+        "abre", "inicia"
+    ],
+    "close": [
+        "close", "kill", "terminate",
+        "fechar", "fecha", "mata"
     ]
 
 }
