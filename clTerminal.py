@@ -8,6 +8,7 @@ import asyncio
 import argparse
 import aiomqtt
 import time
+import re
 
 # --- LOGGING SETUP ---
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [TERMINAL] %(message)s", datefmt="%H:%M:%S")
@@ -57,7 +58,9 @@ def execute_command(action, target=None, level=None):
                 if CURRENT_OS == "linux":
                     subprocess.Popen(["gnome-terminal", "--working-directory", LAST_OPENED_DIR, "--", "bash", "-c", f"echo $$ > {pid_file}; exec bash"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 elif CURRENT_OS == "windows":
-                    subprocess.Popen(["wt.exe", "-d", LAST_OPENED_DIR, "cmd", "/k", "title JarvisNavigation"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    proc = subprocess.Popen(["cmd", "/k", f"title JarvisNavigation && cd /d {LAST_OPENED_DIR}"], creationflags=subprocess.CREATE_NEW_CONSOLE)
+                    with open(pid_file, 'w') as f:
+                        f.write(str(proc.pid))
                 TERMINAL_IS_OPEN = True
                 return True, "Launched Terminal."
 
@@ -74,35 +77,30 @@ def execute_command(action, target=None, level=None):
             # --- Check C: Path Resolution (Shortcuts, Back, or Smart Voice path) ---
             resolved_path = None
             
-            # Scenario 1: The user said "go back" or "go .."
             if any(target_clean.startswith(kw) for kw in go_back_keywords):
                 if LAST_OPENED_DIR and os.path.exists(LAST_OPENED_DIR):
                     resolved_path = os.path.abspath(os.path.join(LAST_OPENED_DIR, os.pardir))
             
-            # Scenario 2: It's an exact folder in shortcuts.json
             elif target_clean in SHORTCUTS.get("folders", {}):
                 raw_path = SHORTCUTS["folders"][target_clean]
                 guess = os.path.expanduser(raw_path)
                 if os.path.isdir(guess):
                     resolved_path = guess
             
-            # Scenario 3: Smart Directory Construction
             else:
                 home_dir = os.path.expanduser("~")
                 current_base = LAST_OPENED_DIR if LAST_OPENED_DIR else home_dir
                 
-                # Replace spoken spaces with OS slashes
                 voiced_path = target_clean.replace(" ", "/")
                 voiced_path_title = target.title().replace(" ", "/")
                 
-                # Create a hitlist of logical locations it might be
                 possible_paths = [
-                    os.path.expanduser(target_clean),              # Literal absolute path
-                    os.path.join(home_dir, voiced_path_title),     # E.g. ~/Downloads/Scripts
-                    os.path.join(home_dir, voiced_path),           # E.g. ~/downloads/scripts
-                    f"/{voiced_path}",                             # E.g. /var/log
-                    os.path.join(current_base, voiced_path),       # Relative to current folder
-                    os.path.join(current_base, voiced_path_title)  # Relative to current folder (Capitalized)
+                    os.path.expanduser(target_clean),
+                    os.path.join(home_dir, voiced_path_title),
+                    os.path.join(home_dir, voiced_path),
+                    f"/{voiced_path}",
+                    os.path.join(current_base, voiced_path),
+                    os.path.join(current_base, voiced_path_title)
                 ]
                 
                 for path_guess in possible_paths:
@@ -115,24 +113,21 @@ def execute_command(action, target=None, level=None):
                 LAST_OPENED_DIR = resolved_path
                 pid_file = os.path.join(os.path.expanduser("~"), ".jarvis_nav_pid")
                 
-                # 1. Kill the specific window by Title
+                # 1. Kill the specific window by PID
                 if TERMINAL_IS_OPEN:
-                    if CURRENT_OS == "linux":
-                        # wmctrl -c closes a window by matching its title
-                        subprocess.run(["wmctrl", "-c", "JarvisNavWindow"], 
-                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        
-                        # Also clean up the bash process if it's still lingering
-                        if os.path.exists(pid_file):
-                            try:
-                                with open(pid_file, 'r') as f:
-                                    target_pid = int(f.read().strip())
-                                os.kill(target_pid, 9) # Force kill the bash shell
-                            except: pass
-                    
-                    elif CURRENT_OS == "windows":
-                        subprocess.Popen(["taskkill", "/F", "/FI", "WINDOWTITLE eq JarvisNavigation*", "/IM", "WindowsTerminal.exe"], 
-                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    if os.path.exists(pid_file):
+                        try:
+                            with open(pid_file, 'r') as f:
+                                target_pid = int(f.read().strip())
+                            
+                            if CURRENT_OS == "linux":
+                                os.kill(target_pid, 9) 
+                            elif CURRENT_OS == "windows":
+                                # /T kills the specific cmd tree, leaving the WT app and your main script alive
+                                subprocess.Popen(["taskkill", "/F", "/PID", str(target_pid), "/T"], 
+                                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        except Exception:
+                            pass
                     
                     time.sleep(0.5) 
 
@@ -145,11 +140,13 @@ def execute_command(action, target=None, level=None):
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
                     )
                 elif CURRENT_OS == "windows":
-                    spawn_cmd = "dir && cmd /k title JarvisNavigation"
-                    subprocess.Popen(
-                        ["wt.exe", "-d", resolved_path, "cmd", "/c", spawn_cmd], 
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    # Capture the exact PID of the new command shell
+                    proc = subprocess.Popen(
+                        ["cmd", "/k", f"title JarvisNavigation && cd /d {resolved_path} && dir"], 
+                        creationflags=subprocess.CREATE_NEW_CONSOLE
                     )
+                    with open(pid_file, 'w') as f:
+                        f.write(str(proc.pid))
                 
                 TERMINAL_IS_OPEN = True
                 return True, f"Spawned terminal at: {resolved_path}"
@@ -163,36 +160,32 @@ def execute_command(action, target=None, level=None):
             sys_kw = SHORTCUTS.get("system_keywords", {})
             terminal_aliases = sys_kw.get("terminal_aliases", ["terminal", "console", "shell", "cmd"])
             
-            # Close ONLY the navigated terminal via the exact same surgical strike
-            if target_clean in terminal_aliases:
-                pid_file = os.path.join(os.path.expanduser("~"), ".jarvis_nav_pid")
-                if CURRENT_OS == "linux":
-                    try:
-                        if os.path.exists(pid_file):
-                            with open(pid_file, 'r') as f:
-                                target_pid = int(f.read().strip())
-                            os.kill(target_pid, 15)
-                    except Exception:
-                        pass
-                elif CURRENT_OS == "windows":
-                    subprocess.Popen(["taskkill", "/F", "/FI", "WINDOWTITLE eq JarvisNavigation*", "/IM", "WindowsTerminal.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                
-                TERMINAL_IS_OPEN = False
-                return True, "Closed the child terminal instance."
-            
             if target_clean in SHORTCUTS.get("apps", {}):
                 app_data = SHORTCUTS["apps"][target_clean]
-                kill_target = app_data.get(f"{CURRENT_OS}_kill") or app_data.get(CURRENT_OS)
                 
+                # 1. Attempt to grab the explicit kill target from shortcuts.json
+                kill_target = app_data.get(f"{CURRENT_OS}_kill")
+                
+                # 2. Smart Fallback: If no explicit kill target is defined, parse the launch command
                 if not kill_target:
-                    return False, f"No '{CURRENT_OS}' kill configuration found for app '{target_clean}'."
+                    launch_cmd = app_data.get(CURRENT_OS, "")
+                    if CURRENT_OS == "windows":
+                        exe_matches = re.findall(r'[\w.-]+\.exe', launch_cmd, re.IGNORECASE)
+                        kill_target = exe_matches[-1] if exe_matches else launch_cmd.split()[0]
+                    elif CURRENT_OS == "linux":
+                        kill_target = launch_cmd.split()[0].split('/')[-1]
 
+                if not kill_target:
+                    return False, f"Could not determine a kill target for '{target_clean}'."
+
+                # 3. Execute the termination
                 if CURRENT_OS == "linux":
                     subprocess.Popen(["pkill", "-f", kill_target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 elif CURRENT_OS == "windows":
-                    subprocess.Popen(["taskkill", "/F", "/IM", kill_target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    # Added /T to ensure it kills the app and any child processes it spawned
+                    subprocess.Popen(["taskkill", "/F", "/IM", kill_target, "/T"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     
-                return True, f"Sent termination signal to: {target_clean}"
+                return True, f"Sent termination signal to process: {kill_target}"
                 
             return False, f"Target '{target}' not found in shortcuts.json apps."
 

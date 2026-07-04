@@ -2,22 +2,23 @@ import subprocess
 import sys
 import time
 import os
-
+import json
+import paho.mqtt.publish as publish
 
 def main():
-    print("="*50)
-    print("BOOTING JARVIS SMART HOME OS")
-    print("="*50 + "\n")
-    
     # Suppress Pygame welcome message and deprecation warnings globally
     os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
     os.environ['PYTHONWARNINGS'] = "ignore::UserWarning"
+    
+    print("="*50)
+    print("BOOTING JARVIS SMART HOME OS")
+    print("="*50 + "\n")
 
     python_bin = sys.executable
     processes = []
 
     try:
-        # 0: Boot clTTS.py
+        # 0: Boot clTTS.py (Text-To-Speech Engine)
         print(">>> Starting clTTS.py (Text-To-Speech)...")
         p_tts = subprocess.Popen([python_bin, "clTTS.py"])
         processes.append(p_tts)
@@ -45,6 +46,7 @@ def main():
         print(">>> Starting clVoice.py (Voice Sensor)...")
         p_voice = subprocess.Popen([python_bin, "clVoice.py"])
         processes.append(p_voice)
+        time.sleep(1)
         
         # 5: Boot clTerminal.py
         print(">>> Starting clTerminal.py (Terminal Actuator)...")
@@ -55,6 +57,7 @@ def main():
         print("ALL SYSTEMS ONLINE. Press Ctrl+C to shutdown.")
         print("="*50 + "\n")
 
+        # Enter standby loop to keep the master process alive
         while True:
             time.sleep(1)
 

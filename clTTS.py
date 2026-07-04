@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [TTS] %(message)s"
 # --- CONFIGURATION ---
 DEFAULT_VOICE = "en-GB-RyanNeural" 
 DEFAULT_PITCH = "-5Hz"
-DEFAULT_RATE = "+5%"
+DEFAULT_RATE = "+20%"
 TEMP_FILE = "tts_output.mp3"
 
 def init_audio():
@@ -34,6 +34,14 @@ async def generate_and_play(client, text, voice=DEFAULT_VOICE, rate=DEFAULT_RATE
         if client and duck_audio:
             await client.publish("pc/spotify/control", json.dumps({"action": "duck"}))
             await asyncio.sleep(0.2) 
+        
+        """ if os.path.exists("blip.mp3"):
+            mixer.music.load("blip.mp3")
+            mixer.music.set_volume(0.3)
+            mixer.music.play()
+            while mixer.music.get_busy():
+                await asyncio.sleep(0.05)
+            mixer.music.set_volume(1) """
         
         mixer.music.load(TEMP_FILE)
         mixer.music.play()
@@ -107,7 +115,8 @@ def main():
     # Branch 1: Manual Direct Command
     if args.text:
         logging.info("Executing manual terminal command directly...")
-        asyncio.run(generate_and_play(args.text, voice=args.voice))
+        
+        asyncio.run(generate_and_play(None, args.text, voice=args.voice))
         
     # Branch 2: Boot into Microservice Mode
     else:
