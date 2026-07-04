@@ -5,6 +5,7 @@ import json
 import re
 import logging
 import aiomqtt
+import random
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [DAEMON] %(message)s", datefmt="%H:%M:%S")
 
@@ -63,24 +64,42 @@ def load_configs():
             regex_str = r'\b' + re.sub(r'o\b', r'[oa]s?', name) + r'\b'
             COMPILED_COLORS.append((re.compile(regex_str), colors_data[name], name))
 
-# --- DYNAMIC TTS CONFIRMATION BUILDER ---
 async def dispatch_tts_response(client, command, target_topic):
-    """Parses incoming command slots to generate natural voice confirmations."""
     action = command.get("action")
     phrase = ""
 
     # 1. Handle Light commands (clControl)
     if target_topic == "home/room/desk_light/set":
-        if action == "on": phrase = "Turning lights on."
-        elif action == "off": phrase = "Turning lights off!"
-        elif action == "toggle": phrase = "Switching the light state."
+        if action == "on": 
+            phrase = random.choice([
+                "At your service, sir. Illuminating the room.",
+                "Powering up the visual interfaces.",
+                "As always, sir. Bringing the lights online."
+            ])
+        elif action == "off": 
+            phrase = random.choice([
+                "Preparing to power down. Have a good night, sir.",
+                "Extinguishing the light arrays. Let me know if you require anything else.",
+                "Going dark, sir. House protocols are on standby."
+            ])
+        elif action == "toggle": 
+            phrase = random.choice([
+                "Reconfiguring the ambient illumination, sir.",
+                "Switching the light state as requested."
+            ])
         
         if "color" in command:
-            phrase = f"Setting lights to custom color selection."
+            phrase = random.choice([
+                "Rendering the requested color profile, sir. A little ostentatious, don't you think?",
+                "Adjusting the room's color spectrum to your preference."
+            ])
         elif "lum" in command:
-            phrase = f"Adjusting illumination brightness to {command['lum']}%."
+            phrase = random.choice([
+                f"Calibrating brightness levels to precisely {command['lum']} percent.",
+                f"Duly noted, sir. Adjusting light intensity to {command['lum']} percent."
+            ])
         elif "temp" in command:
-            phrase = f"Adjusting light temperature spectrum."
+            phrase = "Reconfiguring the light temperature spectrum, sir."
 
     # 2. Handle Music commands (clSpotify)
     elif target_topic == "pc/spotify/control":
@@ -89,24 +108,50 @@ async def dispatch_tts_response(client, command, target_topic):
             artist = command.get("artist_name")
             playlist = command.get("playlist_name")
             
-            if track and artist: phrase = f"Playing {track} by {artist}."
-            elif track: phrase = f"Playing the track {track}."
-            elif artist: phrase = f"Queuing music by {artist}."
-            elif playlist: phrase = f"Launching playlist {playlist}."
-            else: phrase = "Starting music playback."
-        elif action == "pause" or action == "stop": phrase = "Pausing playback."
-        elif action == "next": phrase = "Skipping track."
-        elif action == "prev": phrase = "Playing previous track."
-        elif action == "volume": phrase = f"Setting volume capacity to {command.get('volume')}%."
+            if track and artist: 
+                phrase = random.choice([
+                    f"Importing preferences. Playing {track} by {artist}.",
+                    f"As you wish, sir. Accessing {track} from {artist}'s catalog.",
+                    f"Sourcing the track {track}. Enjoy the music sir."
+                ])
+            elif track: 
+                phrase = f"Sourcing the track {track}. Enjoy."
+            elif artist: 
+                phrase = f"Compiling an audio queue for {artist}."
+            elif playlist: 
+                phrase = random.choice([
+                    f"Retrieving your playlist: {playlist}. A very astute selection, sir.",
+                    f"Accessing playlist parameters for {playlist}."
+                ])
+            else: 
+                phrase = "Online and ready. Resuming audio."
+            
+        elif action in ["pause", "stop"]: 
+            phrase = random.choice([
+                "Halting the media streams.",
+                "Audio paused. I shall keep it on standby.",
+                "Media disabled."
+            ])
+        elif action == "next": 
+            phrase = "Skipping to the subsequent track."
+        elif action == "prev": 
+            phrase = "Reverting to the previous track."
+        elif action == "volume": 
+            phrase = random.choice([
+                f"Adjusting audio to {command.get('volume')} percent.",
+                f"Reconfiguring volume to {command.get('volume')} percent."
+            ])
 
     # 3. Handle System discovery routing
     elif target_topic == "system/discovery":
-        if action == "discover": phrase = "Initiating hardware discovery protocol."
-        elif action == "save_discovery": phrase = "Saving selected device profile parameters."
+        if action == "discover": 
+            phrase = "Running diagnostics and scanning local networks for hardware. Standby."
+        elif action == "save_discovery": 
+            phrase = "Query complete, sir. Committing device hardware addresses to the central database."
 
     if phrase:
         await client.publish("jarvis/sys/speak", json.dumps({"text": phrase}))
-
+        
 def process_voice_command(text):
     global LAST_KNOWN_TOPIC, AWAITING_DISCOVERY_CHOICE, AWAITING_SPOTIFY_CHOICE
     text = text.lower()
@@ -178,8 +223,6 @@ def process_voice_command(text):
         # --- REWRITTEN ENTITY EXTRACTION ---
         if payload.get("action") == "play" or re.search(r'\b(?:song|track|music|música|musica)\b', chunk):
             
-            # Context Override: Force action to 'play' if a music keyword is detected, 
-            # bypassing accidental 'off' or 'toggle' matches.
             if payload.get("action") in ["on", "off", "toggle"]:
                 payload["action"] = "play"
 
@@ -205,7 +248,7 @@ def process_voice_command(text):
                 payload["track_name"] = track_match.group(1).strip()
                 logging.info(f"Explicit track detected: {payload['track_name']}")
                 
-            # Implicit Track Fallback: If they say "Play [Track] by [Artist]" without the word "song"
+            # Implicit Track Fallback: If said "Play [Track] by [Artist]" without the word "song"
             if "track_name" not in payload and "artist_name" in payload:
                 implicit_match = re.search(rf'\b(?:play|tocar)\s+(.+?)\s+(?:by|my|de|do|da)\b', chunk, re.IGNORECASE)
                 if implicit_match:
@@ -300,10 +343,9 @@ async def run_daemon():
                         if "CONFIDENCE_LOW|" in msg:
                             global AWAITING_SPOTIFY_CHOICE
                             AWAITING_SPOTIFY_CHOICE = True
-                            clean_msg = msg.replace("CONFIDENCE_LOW|", "Low Confidence. Please say the number of your choice:\n")
-                            logging.warning(f"Spotify requires user input:\n{clean_msg}")
-                            # Send fallback option choice to TTS verbally
-                            await client.publish("jarvis/sys/speak", json.dumps({"text": "Multiple options found. Please choose a number."}))
+                            await client.publish("jarvis/sys/speak", json.dumps({
+                                "text": "My apologies, sir. The audio match was ambiguous. Could you select an option from the terminal?"
+                            }))
                         else:
                             status_icon = "V" if fb.get('status') == "success" else "X"
                             logging.info(f"Feedback [{fb.get('device', 'unknown')}]: {status_icon} {msg}")

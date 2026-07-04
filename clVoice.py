@@ -76,6 +76,8 @@ MAX_CEILING_BUFFER = 3.00
 FORCE_MIC = False
 TTS_BUSY = False
 
+ALREADY_SPOKE = False
+
 def load_settings():
     config_path = os.path.join(os.path.dirname(__file__), "settings.json")
     try:
@@ -138,7 +140,7 @@ def transcribe_audio(stt_model, command_audio, lang_chosen):
         "audio": command_audio,
         "beam_size": 2,
         "vad_filter": True,
-        "initial_prompt": "Hey Jarvis, turn on the lights. Play Spotify. Play some music. Play the song. Set the color to blue. Status report.",
+        "initial_prompt": "Hey Jarvis, turn on the lights. Play Spotify. Play some music. Play the song. Play the playlist. Set the color to blue. Status report.",
         "vad_parameters": dict(min_silence_duration_ms=500)
     }
     if lang_chosen != "auto":
@@ -237,6 +239,12 @@ def main():
     mic_stream = None
     
     try:
+        ready_payload = {
+            "text": "Hello sir, all systems online!",
+            "skip_ducking": True
+        }
+        publish.single("jarvis/sys/speak", json.dumps(ready_payload), hostname="localhost")
+        
         mic_stream = audio.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
         logging.info(f"--- SYSTEM READY: Listening for '{target_word}' ---")
 
@@ -273,14 +281,22 @@ def main():
                         send_spotify_action("duck")
                         
                         try:
-                            global TTS_BUSY
+                            global TTS_BUSY, ALREADY_SPOKE
                             TTS_BUSY = True 
                             
-                            # 2. Tell TTS to speak, but explicitly tell it NOT to touch the volume
-                            greeting_payload = {
-                                "text": "Hello Sir, what can I do for you?",
-                                "skip_ducking": True
-                            }
+                            if not ALREADY_SPOKE:
+                                greeting_payload = {
+                                    "text": "Hi Sir, what can I do for you?",
+                                    "skip_ducking": True
+                                }
+                                ALREADY_SPOKE = True
+                            else: 
+                                # 2. Tell TTS to speak, but explicitly tell it NOT to touch the volume
+                                greeting_payload = {
+                                    "text": "Yes Sir?",
+                                    "skip_ducking": True
+                                }
+                                
                             publish.single("jarvis/sys/speak", json.dumps(greeting_payload), hostname="localhost")
                             
                             wait_start = time.time()

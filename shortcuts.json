@@ -6,7 +6,9 @@
     },
     "vs": {
       "linux": "code",
-      "windows": "code.cmd"
+      "linux_kill": "code",
+      "windows": "code.cmd",
+      "windows_kill": "Code.exe"
     },
     "terminal": {
       "linux": "gnome-terminal",
@@ -15,7 +17,8 @@
     "discord": {
       "linux": "/usr/bin/flatpak run --branch=stable --arch=x86_64 com.discordapp.Discord",
       "linux_kill": "Discord",
-      "windows": "Update.exe --processStart Discord.exe"
+      "windows": "Update.exe --processStart Discord.exe",
+      "windows_kill": "Discord.exe"
     },
     "spotify": {
       "linux": "spotify",
