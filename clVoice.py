@@ -181,18 +181,28 @@ def transcribe_audio(stt_model, command_audio, lang_chosen):
     
     return "".join([segment.text for segment in segments]).strip()
 
-def record_command(mic_stream, activation_threshold, silence_threshold):
+def record_command(mic_stream, activation_threshold, silence_threshold, is_remote_trigger=False):
     """Records the user's command dynamically based on noise thresholds."""
-    logging.info(f"LISTENING... (Trigger: >{activation_threshold:.0f} | Cutoff: <{silence_threshold:.0f})")
+    
+    current_wait_limit = 5.0 if is_remote_trigger else INITIAL_SILENCE_SECONDS
+    
+    logging.info(f"LISTENING... (Trigger: >{activation_threshold:.0f} | Cutoff: <{silence_threshold:.0f} | Timeout: {current_wait_limit}s)")
     frames = []
     
     max_chunks = int(RATE / CHUNK * MAX_RECORD_SECONDS)
     silence_limit_chunks = int(RATE / CHUNK * SILENCE_LIMIT_SECONDS)
-    wait_limit_chunks = int(RATE / CHUNK * INITIAL_SILENCE_SECONDS)
+    wait_limit_chunks = int(RATE / CHUNK * current_wait_limit)
     
     silence_counter, wait_counter = 0, 0
     started_speaking = False
     
+    try:
+        available_frames = mic_stream.get_read_available()
+        if available_frames > 0:
+            mic_stream.read(available_frames, exception_on_overflow=False)
+    except Exception:
+        pass
+
     for _ in range(max_chunks):
         data = mic_stream.read(CHUNK, exception_on_overflow=False)
         audio_chunk = np.frombuffer(data, dtype=np.int16)
@@ -217,7 +227,7 @@ def record_command(mic_stream, activation_threshold, silence_threshold):
             break
             
         if not started_speaking and wait_counter >= wait_limit_chunks:
-            logging.info("No voice detected. Closing microphone!")
+            logging.warning("No voice detected. Closing microphone!")
             break
             
     audio_int16 = np.concatenate(frames)
@@ -282,6 +292,9 @@ def main():
                 
                 if scores[-1] > 0.5 or FORCE_MIC:
                     print("\n") 
+                    
+                    is_remote = FORCE_MIC 
+                    
                     if FORCE_MIC:
                         FORCE_MIC = False
                     else:
@@ -294,8 +307,8 @@ def main():
                     base_noise, act_thresh, sil_thresh = calculate_thresholds(ambient_noise_buffer)
                     logging.info(f"Room Baseline: {base_noise:.0f} | Activate: {act_thresh:.0f} | Silence: {sil_thresh:.0f}")
                         
-                    # 4: Record & Unduck
-                    command_audio = record_command(mic_stream, act_thresh, sil_thresh)
+                    # 4: Record & Unduck (Pass the remote state to enable the longer wait time)
+                    command_audio = record_command(mic_stream, act_thresh, sil_thresh, is_remote_trigger=is_remote)
                     send_spotify_action("unduck")
                     
                     # 5. Transcribe
