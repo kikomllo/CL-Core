@@ -11,6 +11,12 @@ def main():
     processes = []
 
     try:
+        # 0: Boot clTTS.py
+        print(">>> Starting clTTS.py (Text-To-Speech)...")
+        p_tts = subprocess.Popen([python_bin, "clTTS.py"])
+        processes.append(p_tts)
+        time.sleep(1)
+
         # 1: Boot clControl.py
         print(">>> Starting clControl.py (Light Actuator)...")
         p_control = subprocess.Popen([python_bin, "clControl.py"])

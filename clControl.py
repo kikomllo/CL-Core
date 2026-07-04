@@ -152,28 +152,43 @@ COMMON_SUBNETS = [
     "10.0.1"      # Apple Airport
 ]
 
+# --- HELPER: ASYNC TCP PORT SWEEP ---
+async def check_tapo_ports(ip, semaphore):
+    ports_to_check = [443, 80]
+    
+    async with semaphore:
+        for port in ports_to_check:
+            try:
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(ip, port), timeout=0.5
+                )
+                writer.close()
+                await writer.wait_closed()
+                return ip
+            except (asyncio.TimeoutError, ConnectionRefusedError, OSError):
+                continue 
+    return None
+
 # --- HELPER: BATCH SWEEP ENGINE ---
 async def sweep_ips(client, ips_to_check):
-    logging.info(f"Pinging {len(ips_to_check)} IPs to find active hosts...")
+    logging.info(f"Scanning {len(ips_to_check)} IPs for open Tapo web ports...")
     
-    ping_sem = asyncio.Semaphore(300) 
-    ping_tasks = [async_ping(ip, ping_sem) for ip in ips_to_check]
-    alive_ips_results = await asyncio.gather(*ping_tasks)
+    port_sem = asyncio.Semaphore(300) 
+    port_tasks = [check_tapo_ports(ip, port_sem) for ip in ips_to_check]
+    alive_ips_results = await asyncio.gather(*port_tasks)
     
-    alive_ips = [ip for ip in alive_ips_results if ip is not None]
+    alive_ips = [ip for ip in set(alive_ips_results) if ip is not None]
+    
     if not alive_ips:
         return []
         
-    logging.info(f"Found {len(alive_ips)} active devices. Probing for Tapo bulbs...")
+    logging.info(f"Found {len(alive_ips)} active devices. Probing for Tapo models...")
     
-    # FIX: Lowered TCP concurrency. 
-    # Blasting 100 simultaneous crypto-handshakes can cause packets to drop.
     tcp_sem = asyncio.Semaphore(15) 
     tcp_tasks = [check_ip(client, ip, tcp_sem) for ip in alive_ips]
     results = await asyncio.gather(*tcp_tasks)
     
     return [res for res in results if res is not None]
-
 
 # --- HELPER: ASYNC TCP PROBE (BATCHED) ---
 async def check_ip(client, ip, semaphore):
