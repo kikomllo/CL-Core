@@ -1,11 +1,17 @@
 import subprocess
 import sys
 import time
+import os
+
 
 def main():
     print("="*50)
     print("BOOTING JARVIS SMART HOME OS")
     print("="*50 + "\n")
+    
+    # Suppress Pygame welcome message and deprecation warnings globally
+    os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
+    os.environ['PYTHONWARNINGS'] = "ignore::UserWarning"
 
     python_bin = sys.executable
     processes = []
