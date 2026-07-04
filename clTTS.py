@@ -22,24 +22,25 @@ def init_audio():
     mixer.init()
     logging.info("Audio mixer initialized.")
 
-async def generate_and_play(text, voice=DEFAULT_VOICE, rate=DEFAULT_RATE, pitch=DEFAULT_PITCH):
-    """Generates speech via Edge-TTS, saves to temp file, and plays it."""
+async def generate_and_play(client, text, voice=DEFAULT_VOICE, rate=DEFAULT_RATE, pitch=DEFAULT_PITCH, duck_audio=True):
+    """Generates speech via Edge-TTS, saves to temp file, ducks audio conditionally, and plays it."""
     logging.info(f"Generating speech: '{text}' (Voice: {voice})")
     
     try:
-        # 1. Generate the audio asynchronously
         communicate = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch)
         await communicate.save(TEMP_FILE)
         
-        # 2. Load and play the audio
+        # Conditionally duck audio
+        if client and duck_audio:
+            await client.publish("pc/spotify/control", json.dumps({"action": "duck"}))
+            await asyncio.sleep(0.2) 
+        
         mixer.music.load(TEMP_FILE)
         mixer.music.play()
         
-        # 3. Wait for playback to finish naturally without blocking asyncio
         while mixer.music.get_busy():
             await asyncio.sleep(0.1)
             
-        # 4. Clean up the file so we don't clutter the disk
         mixer.music.unload()
         if os.path.exists(TEMP_FILE):
             os.remove(TEMP_FILE)
@@ -48,6 +49,15 @@ async def generate_and_play(text, voice=DEFAULT_VOICE, rate=DEFAULT_RATE, pitch=
         
     except Exception as e:
         logging.error(f"Error during TTS generation/playback: {e}")
+        
+    finally:
+        # Conditionally unduck audio
+        if client and duck_audio:
+            await client.publish("pc/spotify/control", json.dumps({"action": "unduck"}))
+            
+        # Always send the handshake completion signal
+        if client:
+            await client.publish("jarvis/sys/tts_done", "1")
 
 # --- MQTT MICROSERVICE LOOP ---
 async def tts_service_listener():
@@ -61,21 +71,22 @@ async def tts_service_listener():
                 try:
                     payload = json.loads(message.payload.decode('utf-8'))
                     text_to_speak = payload.get("text")
+                    skip_duck = payload.get("skip_ducking", False)
                     
                     if text_to_speak:
-                        asyncio.create_task(generate_and_play(text_to_speak))
+                        asyncio.create_task(generate_and_play(client, text_to_speak, duck_audio=not skip_duck))
                     else:
                         logging.warning("Received TTS payload, but 'text' field was missing.")
                         
                 except json.JSONDecodeError:
                     raw_text = message.payload.decode('utf-8').strip()
                     if raw_text:
-                        asyncio.create_task(generate_and_play(raw_text))
+                        asyncio.create_task(generate_and_play(client, raw_text))
                     else:
                         logging.error("Received malformed or empty data.")
                         
     except aiomqtt.MqttError as e:
-        logging.error(f"MQTT Connection Error: {e} (Is Mosquitto running?)")
+        logging.error(f"MQTT Connection Error: {e}")
     except asyncio.CancelledError:
         logging.info("TTS Service shutting down.")
 

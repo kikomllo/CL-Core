@@ -6,16 +6,13 @@ import re
 import logging
 import aiomqtt
 
-# --- LOGGING SETUP ---
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [DAEMON] %(message)s", datefmt="%H:%M:%S")
 
-# --- DEBUG TOGGLES ---
 DEBUG_NLP = True
 
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-# --- CACHE & MEMORY ---
 COMPILED_TOPICS = {} 
 COMPILED_ACTIONS = {}
 COMPILED_COLORS = []
@@ -27,7 +24,6 @@ AWAITING_SPOTIFY_CHOICE = False
 NLP_RULES = {}
 COMPILED_ABORT_REGEX = None
 
-# --- LOAD CONFIGS ---
 def load_configs():
     global COMPILED_TOPICS, COMPILED_ACTIONS, COMPILED_COLORS, ROUTING_MAP
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -67,20 +63,60 @@ def load_configs():
             regex_str = r'\b' + re.sub(r'o\b', r'[oa]s?', name) + r'\b'
             COMPILED_COLORS.append((re.compile(regex_str), colors_data[name], name))
 
+# --- DYNAMIC TTS CONFIRMATION BUILDER ---
+async def dispatch_tts_response(client, command, target_topic):
+    """Parses incoming command slots to generate natural voice confirmations."""
+    action = command.get("action")
+    phrase = ""
 
-# --- STT TEXT PROCESSING ---
+    # 1. Handle Light commands (clControl)
+    if target_topic == "home/room/desk_light/set":
+        if action == "on": phrase = "Turning lights on."
+        elif action == "off": phrase = "Turning lights off!"
+        elif action == "toggle": phrase = "Switching the light state."
+        
+        if "color" in command:
+            phrase = f"Setting lights to custom color selection."
+        elif "lum" in command:
+            phrase = f"Adjusting illumination brightness to {command['lum']}%."
+        elif "temp" in command:
+            phrase = f"Adjusting light temperature spectrum."
+
+    # 2. Handle Music commands (clSpotify)
+    elif target_topic == "pc/spotify/control":
+        if action == "play":
+            track = command.get("track_name")
+            artist = command.get("artist_name")
+            playlist = command.get("playlist_name")
+            
+            if track and artist: phrase = f"Playing {track} by {artist}."
+            elif track: phrase = f"Playing the track {track}."
+            elif artist: phrase = f"Queuing music by {artist}."
+            elif playlist: phrase = f"Launching playlist {playlist}."
+            else: phrase = "Starting music playback."
+        elif action == "pause" or action == "stop": phrase = "Pausing playback."
+        elif action == "next": phrase = "Skipping track."
+        elif action == "prev": phrase = "Playing previous track."
+        elif action == "volume": phrase = f"Setting volume capacity to {command.get('volume')}%."
+
+    # 3. Handle System discovery routing
+    elif target_topic == "system/discovery":
+        if action == "discover": phrase = "Initiating hardware discovery protocol."
+        elif action == "save_discovery": phrase = "Saving selected device profile parameters."
+
+    if phrase:
+        await client.publish("jarvis/sys/speak", json.dumps({"text": phrase}))
+
 def process_voice_command(text):
     global LAST_KNOWN_TOPIC, AWAITING_DISCOVERY_CHOICE, AWAITING_SPOTIFY_CHOICE
     text = text.lower()
     
-    # --- GLOBAL ABORT INTERCEPTOR ---
     if COMPILED_ABORT_REGEX and COMPILED_ABORT_REGEX.search(text):
         logging.info("User explicitly cancelled the command. Dropping transcript.")
         AWAITING_DISCOVERY_CHOICE = False
         AWAITING_SPOTIFY_CHOICE = False
         return []
 
-    # --- AUTOCORRECT & NUMBER PARSING ---
     autocorrect_dict = NLP_RULES.get("autocorrect", {})
     for bad, good in autocorrect_dict.items():
         text = text.replace(bad, good)
@@ -94,7 +130,6 @@ def process_voice_command(text):
     for word, digit in word_to_num.items():
         text = re.sub(rf'\b{word}\b', digit, text)
 
-    # SPOTIFY CHOICE INTERCEPTION
     if AWAITING_SPOTIFY_CHOICE:
         AWAITING_SPOTIFY_CHOICE = False
         match = re.search(r'\b(\d+)\b', text)
@@ -122,7 +157,6 @@ def process_voice_command(text):
         payload = {}
         target_topic = None
 
-        # 1: Action Extraction (Longest match wins)
         best_action = None
         action_word_used = None 
         longest_match = 0
@@ -141,63 +175,68 @@ def process_voice_command(text):
                 target_topic = "system/discovery"
                 AWAITING_DISCOVERY_CHOICE = True 
 
-        # 2: Entity Extraction (Slot Filling)
-        if payload.get("action") == "play":
+        # --- REWRITTEN ENTITY EXTRACTION ---
+        if payload.get("action") == "play" or re.search(r'\b(?:song|track|music|música|musica)\b', chunk):
+            
+            # Context Override: Force action to 'play' if a music keyword is detected, 
+            # bypassing accidental 'off' or 'toggle' matches.
+            if payload.get("action") in ["on", "off", "toggle"]:
+                payload["action"] = "play"
 
             topic_keywords = [word for words in [v.pattern for v in COMPILED_TOPICS.values()] for word in re.findall(r'\w+', words)]
             topic_pattern = r'\b(?:' + '|'.join(topic_keywords) + r')\b'
+            
+            # Added phonetic fallbacks like 'my' to handle Whisper inaccuracies
+            stop_boundaries = rf'(?:\s+(?:on|no|em|by|my|artist|artista|de|do|da|playlist|lista|song|música|musica|track|som|{topic_pattern})|$)'
 
-            stop_boundaries = rf'(?:\s+(?:on|no|em|by|artist|artista|de|do|da|playlist|lista|song|música|musica|track|som|{topic_pattern})|$)'
-
-            # --- Slot 1: Playlist ---
             playlist_match = re.search(rf'\b(?:playlists?|listas?)\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
             if playlist_match:
                 payload["playlist_name"] = playlist_match.group(1).strip()
                 logging.info(f"Explicit playlist detected: {payload['playlist_name']}")
 
-            # --- Slot 2: Artist ---
-            artist_match = re.search(rf'\b(?:by|artists?|artistas?|de|do|da)\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
+            # Included 'my' here as well
+            artist_match = re.search(rf'\b(?:by|my|artists?|artistas?|de|do|da)\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
             if artist_match:
                 payload["artist_name"] = artist_match.group(1).strip()
                 logging.info(f"Explicit artist detected: {payload['artist_name']}")
 
-            # --- Slot 3: Track ---
             track_match = re.search(rf'\b(?:songs?|músicas?|musicas?|tracks?|sons?)\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
             if track_match:
                 payload["track_name"] = track_match.group(1).strip()
                 logging.info(f"Explicit track detected: {payload['track_name']}")
+                
+            # Implicit Track Fallback: If they say "Play [Track] by [Artist]" without the word "song"
+            if "track_name" not in payload and "artist_name" in payload:
+                implicit_match = re.search(rf'\b(?:play|tocar)\s+(.+?)\s+(?:by|my|de|do|da)\b', chunk, re.IGNORECASE)
+                if implicit_match:
+                    payload["track_name"] = implicit_match.group(1).strip()
+                    logging.info(f"Implicit track detected: {payload['track_name']}")
 
-        # --- Slot 4 for System Targets (Open/Close) ---
         elif payload.get("action") in ["open", "close"]:
             if action_word_used:
-                # Ignores chained filler words (e.g., "to the folder") and captures the ENTIRE remaining phrase
                 sys_match = re.search(rf'\b{action_word_used}\b\s+(?:(?:to|para|the|o|a|pasta|folder|dir|directory|app|aplicativo)\s+)*(.+)', chunk, re.IGNORECASE)
                 if sys_match:
                     payload["target"] = sys_match.group(1).strip()
                     logging.info(f"System target detected: {payload['target']}")
 
-        # 3: Topic Routing (User explicitly mentioned a topic)
         if not target_topic:
             for topic, regex_obj in COMPILED_TOPICS.items():
                 if regex_obj.search(chunk):
                     target_topic = topic
                     break
 
-        # 4: Lookup Routing Map by Action
         if not target_topic and best_action:
             for topic, actions in ROUTING_MAP.items():
                 if best_action in actions:
                     target_topic = topic
                     break
 
-        # 5: Fallback to Context Memory
         if not target_topic and LAST_KNOWN_TOPIC:
             target_topic = LAST_KNOWN_TOPIC
 
         if target_topic:
             LAST_KNOWN_TOPIC = target_topic
 
-        # 6: Attributes & Colors
         temp_match = re.search(r'(\d+)\s*(porcento|percent|%).*(temperatura|temp|temps|temperature|calor|frio|hot|cold)', chunk)
         if temp_match: payload["temp"] = int(temp_match.group(1))
         else:
@@ -216,7 +255,6 @@ def process_voice_command(text):
 
         if payload:
             intents.append((payload, target_topic))
-            
             if DEBUG_NLP:
                 logging.info(f"[DEBUG NLP] Extracted Payload: {json.dumps(payload, indent=2)}")
 
@@ -231,13 +269,12 @@ async def run_daemon():
         async with aiomqtt.Client("localhost") as client:
             await client.subscribe("jarvis/sensor/voice")
             await client.subscribe("jarvis/feedback")
-            logging.info("Online. Listening on topics 'jarvis/sensor/voice' and 'jarvis/feedback'...")
+            logging.info("Online. Listening on topics...")
             
             async for message in client.messages:
                 topic = message.topic.value
                 payload_data = message.payload.decode('utf-8')
                 
-                # --- SENSOR INGESTION ROUTING ---
                 if topic == "jarvis/sensor/voice":
                     logging.info(f"Transcript Received: '{payload_data}'")
                     intents = process_voice_command(payload_data)
@@ -247,13 +284,14 @@ async def run_daemon():
                             if target_topic:
                                 logging.info(f"Intent Decoded: {command} -> Routing to [{target_topic}]")
                                 await client.publish(target_topic, json.dumps(command))
+                                # Concurrently issue the TTS confirmation statement
+                                asyncio.create_task(dispatch_tts_response(client, command, target_topic))
                             else:
                                 logging.warning(f"Intent decoded ({command}), but no target topic known. Ignoring.")
                             await asyncio.sleep(0.1)
                     else:
                         logging.warning("Could not extract a valid command.")
                 
-                # --- FEEDBACK OBSERVABILITY LOGGING ---
                 elif topic == "jarvis/feedback":
                     try:
                         fb = json.loads(payload_data)
@@ -264,6 +302,8 @@ async def run_daemon():
                             AWAITING_SPOTIFY_CHOICE = True
                             clean_msg = msg.replace("CONFIDENCE_LOW|", "Low Confidence. Please say the number of your choice:\n")
                             logging.warning(f"Spotify requires user input:\n{clean_msg}")
+                            # Send fallback option choice to TTS verbally
+                            await client.publish("jarvis/sys/speak", json.dumps({"text": "Multiple options found. Please choose a number."}))
                         else:
                             status_icon = "V" if fb.get('status') == "success" else "X"
                             logging.info(f"Feedback [{fb.get('device', 'unknown')}]: {status_icon} {msg}")
