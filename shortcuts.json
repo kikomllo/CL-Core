@@ -12,7 +12,8 @@
     },
     "terminal": {
       "linux": "gnome-terminal",
-      "windows": "wt.exe"
+      "windows": "wt.exe",
+      "windows_kill": "WindowsTerminal.exe"
     },
     "discord": {
       "linux": "/usr/bin/flatpak run --branch=stable --arch=x86_64 com.discordapp.Discord",
