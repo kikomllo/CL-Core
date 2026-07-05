@@ -46,7 +46,7 @@ def execute_command(action, target=None, level=None):
     try:
         # 1. APPLICATION & FOLDER LAUNCHER
         if action == "open" and target:
-            target_clean = target.lower()
+            target_clean = target.lower().strip()
             
             sys_kw = SHORTCUTS.get("system_keywords", {})
             terminal_aliases = sys_kw.get("terminal_aliases", ["terminal", "console", "shell", "cmd"])
@@ -56,11 +56,11 @@ def execute_command(action, target=None, level=None):
             if target_clean in terminal_aliases:
                 pid_file = os.path.join(os.path.expanduser("~"), ".jarvis_nav_pid")
                 if CURRENT_OS == "linux":
-                    subprocess.Popen(["gnome-terminal", "--working-directory", LAST_OPENED_DIR, "--", "bash", "-c", f"echo $$ > {pid_file}; exec bash"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.Popen(["gnome-terminal", "--working-directory", LAST_OPENED_DIR, "--", "bash", "-c", f"echo $$ >> {pid_file}; exec bash"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 elif CURRENT_OS == "windows":
                     proc = subprocess.Popen(["cmd", "/k", f"title JarvisNavigation && cd /d {LAST_OPENED_DIR}"], creationflags=subprocess.CREATE_NEW_CONSOLE)
-                    with open(pid_file, 'w') as f:
-                        f.write(str(proc.pid))
+                    with open(pid_file, 'a') as f: 
+                        f.write(f"{proc.pid}\n")
                 TERMINAL_IS_OPEN = True
                 return True, "Launched Terminal."
 
@@ -113,40 +113,40 @@ def execute_command(action, target=None, level=None):
                 LAST_OPENED_DIR = resolved_path
                 pid_file = os.path.join(os.path.expanduser("~"), ".jarvis_nav_pid")
                 
-                # 1. Kill the specific window by PID
-                if TERMINAL_IS_OPEN:
-                    if os.path.exists(pid_file):
+                # 1. Kill ALL tracked windows synchronously before spawning the new one
+                if TERMINAL_IS_OPEN and os.path.exists(pid_file):
+                    with open(pid_file, 'r') as f:
+                        pids = f.read().splitlines()
+                    
+                    for p in pids:
+                        if not p.strip(): continue
                         try:
-                            with open(pid_file, 'r') as f:
-                                target_pid = int(f.read().strip())
-                            
+                            target_pid = int(p.strip())
                             if CURRENT_OS == "linux":
                                 os.kill(target_pid, 9) 
                             elif CURRENT_OS == "windows":
-                                # /T kills the specific cmd tree, leaving the WT app and your main script alive
-                                subprocess.Popen(["taskkill", "/F", "/PID", str(target_pid), "/T"], 
-                                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        except Exception:
-                            pass
+                                # FIX: Synchronous shell execution prevents OS race conditions
+                                subprocess.run(f"taskkill /F /PID {target_pid} /T", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        except Exception: pass
                     
+                    open(pid_file, 'w').close()
                     time.sleep(0.5) 
 
-                # 2. Spawn the new terminal 
+                # 2. Spawn the new terminal and record its PID
                 if CURRENT_OS == "linux":
-                    spawn_cmd = f"echo $$ > {pid_file}; ls; exec bash"
+                    spawn_cmd = f"echo $$ >> {pid_file}; ls; exec bash"
                     subprocess.Popen(
                         ["gnome-terminal", "--title=JarvisNavWindow", "--working-directory", resolved_path, 
                          "--", "bash", "-c", spawn_cmd], 
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
                     )
                 elif CURRENT_OS == "windows":
-                    # Capture the exact PID of the new command shell
                     proc = subprocess.Popen(
                         ["cmd", "/k", f"title JarvisNavigation && cd /d {resolved_path} && dir"], 
                         creationflags=subprocess.CREATE_NEW_CONSOLE
                     )
-                    with open(pid_file, 'w') as f:
-                        f.write(str(proc.pid))
+                    with open(pid_file, 'a') as f:
+                        f.write(f"{proc.pid}\n")
                 
                 TERMINAL_IS_OPEN = True
                 return True, f"Spawned terminal at: {resolved_path}"
@@ -155,18 +155,47 @@ def execute_command(action, target=None, level=None):
 
         # 2. APPLICATION CLOSER
         elif action == "close" and target:
-            target_clean = target.lower()
+            target_clean = target.lower().strip()
             
             sys_kw = SHORTCUTS.get("system_keywords", {})
             terminal_aliases = sys_kw.get("terminal_aliases", ["terminal", "console", "shell", "cmd"])
             
+            # --- Check A: Close ALL tracked child terminals via synchronous PID strike ---
+            if target_clean in terminal_aliases:
+                killed_any = False
+                pid_file = os.path.join(os.path.expanduser("~"), ".jarvis_nav_pid")
+                if os.path.exists(pid_file):
+                    with open(pid_file, 'r') as f:
+                        pids = f.read().splitlines()
+                        
+                    for p in pids:
+                        if not p.strip(): continue
+                        try:
+                            target_pid = int(p.strip())
+                            if CURRENT_OS == "linux":
+                                os.kill(target_pid, 15)
+                                killed_any = True
+                            elif CURRENT_OS == "windows":
+                                # FIX: Synchronous shell execution prevents OS race conditions
+                                subprocess.run(f"taskkill /F /PID {target_pid} /T", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                killed_any = True
+                        except Exception: pass
+                    
+                    open(pid_file, 'w').close()
+                
+                TERMINAL_IS_OPEN = False
+                
+                # If we successfully killed child terminals, stop here. 
+                # If the file was empty, fall through to Check B to try killing the main terminal app.
+                if killed_any:
+                    return True, "Closed tracked terminal instances."
+            
+            # --- Check B: Is it a standard App in shortcuts.json? ---
             if target_clean in SHORTCUTS.get("apps", {}):
                 app_data = SHORTCUTS["apps"][target_clean]
                 
-                # 1. Attempt to grab the explicit kill target from shortcuts.json
                 kill_target = app_data.get(f"{CURRENT_OS}_kill")
                 
-                # 2. Smart Fallback: If no explicit kill target is defined, parse the launch command
                 if not kill_target:
                     launch_cmd = app_data.get(CURRENT_OS, "")
                     if CURRENT_OS == "windows":
@@ -178,12 +207,11 @@ def execute_command(action, target=None, level=None):
                 if not kill_target:
                     return False, f"Could not determine a kill target for '{target_clean}'."
 
-                # 3. Execute the termination
                 if CURRENT_OS == "linux":
                     subprocess.Popen(["pkill", "-f", kill_target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 elif CURRENT_OS == "windows":
-                    # Added /T to ensure it kills the app and any child processes it spawned
-                    subprocess.Popen(["taskkill", "/F", "/IM", kill_target, "/T"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    # Warning: If kill_target is "WindowsTerminal.exe" and Jarvis is running inside it, Jarvis will be killed!
+                    subprocess.run(f"taskkill /F /IM {kill_target} /T", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     
                 return True, f"Sent termination signal to process: {kill_target}"
                 
@@ -217,7 +245,7 @@ def execute_command(action, target=None, level=None):
 
     except Exception as e:
         return False, f"OS Execution Error: {str(e)}"
-
+    
 # --- MQTT SERVICE LISTENER ---
 async def mqtt_service_listener():
     logging.info(f"Terminal Service initialized for {CURRENT_OS.upper()}. Listening on topic 'pc/system/control'...")
