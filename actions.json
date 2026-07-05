@@ -37,6 +37,9 @@
         "anterior", "atrás", "voltar",
         "prev", "previous", "last"
     ],
+    "volume": [
+        "volume"
+    ],
     "open": [
         "open", "launch", "start", "go", 
         "navigate", "back", "abrir", 

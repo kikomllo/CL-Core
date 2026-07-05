@@ -22,6 +22,8 @@ LAST_KNOWN_TOPIC = None
 AWAITING_DISCOVERY_CHOICE = False
 AWAITING_SPOTIFY_CHOICE = False
 
+EASTER_EGGS = {}
+
 NLP_RULES = {}
 COMPILED_ABORT_REGEX = None
 
@@ -63,6 +65,9 @@ def load_configs():
         for name in sorted(colors_data.keys(), key=len, reverse=True):
             regex_str = r'\b' + re.sub(r'o\b', r'[oa]s?', name) + r'\b'
             COMPILED_COLORS.append((re.compile(regex_str), colors_data[name], name))
+            
+    global PERSONALITY_EGGS
+    PERSONALITY_EGGS = safe_load("easter_eggs.json") or {}
 
 async def dispatch_tts_response(client, command, target_topic):
     action = command.get("action")
@@ -72,12 +77,14 @@ async def dispatch_tts_response(client, command, target_topic):
     if target_topic == "home/room/desk_light/set":
         if action == "on": 
             phrase = random.choice([
-                "At your service, sir. Illuminating the room.",
-                "Powering up the visual interfaces.",
-                "As always, sir. Bringing the lights online."
+                "At your service, sir. Lights on.",
+                "Powering them up.",
+                "As always, sir. Turning them on.",
+                "Let there be light!",
             ])
         elif action == "off": 
             phrase = random.choice([
+                "Bravo going dark!",
                 "Preparing to power down. Have a good night, sir.",
                 "Extinguishing the light arrays. Let me know if you require anything else.",
                 "Going dark, sir. House protocols are on standby."
@@ -85,21 +92,29 @@ async def dispatch_tts_response(client, command, target_topic):
         elif action == "toggle": 
             phrase = random.choice([
                 "Reconfiguring the ambient illumination, sir.",
-                "Switching the light state as requested."
+                "Switching the light state as requested.",
+                "Of course sir, changing light state.",
+                "Changing light state.",
             ])
         
         if "color" in command:
             phrase = random.choice([
                 "Rendering the requested color profile, sir. A little ostentatious, don't you think?",
-                "Adjusting the room's color spectrum to your preference."
+                "Adjusting the room's color spectrum to your preference.",
+                f"Changing color to {command['color']}",
+                f"As you wish sir. Color to {command['color']}"
             ])
         elif "lum" in command:
             phrase = random.choice([
-                f"Calibrating brightness levels to precisely {command['lum']} percent.",
+                f"Calibrating brightness levels to {command['lum']} percent.",
                 f"Duly noted, sir. Adjusting light intensity to {command['lum']} percent."
+                f"Adjusting light intensity to {command['lum']} percent."
             ])
         elif "temp" in command:
-            phrase = "Reconfiguring the light temperature spectrum, sir."
+            phrase = random.choice([
+                f"Reconfiguring the light temperature spectrum.",
+                f"Calibrating temperature spectrum. Current Value: {command['temp']}.",
+            ])
 
     # 2. Handle Music commands (clSpotify)
     elif target_topic == "pc/spotify/control":
@@ -110,21 +125,28 @@ async def dispatch_tts_response(client, command, target_topic):
             
             if track and artist: 
                 phrase = random.choice([
-                    f"Importing preferences. Playing {track} by {artist}.",
+                    f"Playing {track} by {artist}.",
+                    f"Currently playing {track} from {artist}.",
                     f"As you wish, sir. Accessing {track} from {artist}'s catalog.",
                     f"Sourcing the track {track}. Enjoy the music sir."
                 ])
             elif track: 
-                phrase = f"Sourcing the track {track}. Enjoy."
+                phrase = random.choice([
+                    f"Sourcing the track {track}. Enjoy.",
+                    f"Playing track: {track}.",
+                    f"Currently playing {track}"
+                ])
             elif artist: 
-                phrase = f"Compiling an audio queue for {artist}."
+                phrase = ([
+                    f"Compiling an audio queue for {artist}.",
+                    f"Playing artist: {artist}.",
+                    f"Enjoy listening to {artist}."
+                ])
             elif playlist: 
                 phrase = random.choice([
                     f"Retrieving your playlist: {playlist}. A very astute selection, sir.",
-                    f"Accessing playlist parameters for {playlist}."
+                    f"Playing {playlist}."
                 ])
-            else: 
-                phrase = "Online and ready. Resuming audio."
             
         elif action in ["pause", "stop"]: 
             phrase = random.choice([
@@ -156,11 +178,16 @@ def process_voice_command(text):
     global LAST_KNOWN_TOPIC, AWAITING_DISCOVERY_CHOICE, AWAITING_SPOTIFY_CHOICE
     text = text.lower()
     
+    # --- EASTER EGG ENGINE ---
+    for trigger, response in PERSONALITY_EGGS.items():
+        if trigger in text:
+            return [({"action": "personality", "response": response}, "jarvis/sys/speak")]
+    
     if COMPILED_ABORT_REGEX and COMPILED_ABORT_REGEX.search(text):
-        logging.info("User explicitly cancelled the command. Dropping transcript.")
+        logging.info("User explicitly cancelled the command. Resetting states.")
         AWAITING_DISCOVERY_CHOICE = False
         AWAITING_SPOTIFY_CHOICE = False
-        return []
+        return [({"action": "abort"}, "jarvis/sys/control")]
 
     autocorrect_dict = NLP_RULES.get("autocorrect", {})
     for bad, good in autocorrect_dict.items():
@@ -324,13 +351,18 @@ async def run_daemon():
                     
                     if intents:
                         for command, target_topic in intents:
-                            if target_topic:
+                            # --- INTERCEPT PERSONALITY ---
+                            if command.get("action") == "personality":
+                                await client.publish("jarvis/sys/speak", json.dumps({"text": command["response"]}))
+                            
+                            # --- STANDARD ROUTING ---
+                            elif target_topic:
                                 logging.info(f"Intent Decoded: {command} -> Routing to [{target_topic}]")
                                 await client.publish(target_topic, json.dumps(command))
-                                # Concurrently issue the TTS confirmation statement
                                 asyncio.create_task(dispatch_tts_response(client, command, target_topic))
+                            
                             else:
-                                logging.warning(f"Intent decoded ({command}), but no target topic known. Ignoring.")
+                                logging.warning(f"Intent decoded ({command}), but no target topic known.")
                             await asyncio.sleep(0.1)
                     else:
                         logging.warning("Could not extract a valid command.")
@@ -343,9 +375,22 @@ async def run_daemon():
                         if "CONFIDENCE_LOW|" in msg:
                             global AWAITING_SPOTIFY_CHOICE
                             AWAITING_SPOTIFY_CHOICE = True
+                            
+                            # 1. Cleanly format and print the choices to the terminal
+                            options_text = msg.split("CONFIDENCE_LOW|")[1] if "CONFIDENCE_LOW|" in msg else msg
+                            print("\n" + "="*50)
+                            print("SPOTIFY MULTIPLE MATCHES FOUND. AWAITING YOUR SELECTION:")
+                            print(options_text.strip())
+                            print("="*50 + "\n")
+                            
+                            # 2. Command TTS to speak and flag it to request a reply
                             await client.publish("jarvis/sys/speak", json.dumps({
-                                "text": "My apologies, sir. The audio match was ambiguous. Could you select an option from the terminal?"
+                                "text": "My apologies, sir. The audio match was ambiguous. Could you select an option from the terminal?",
+                                "request_reply": True  # <-- FIX: Forces mic to hold until this specific phrase completes
                             }))
+                            
+                            # 3. Trigger the microphone to open remotely
+                            await client.publish("jarvis/sys/mic_open", "1")
                         else:
                             status_icon = "V" if fb.get('status') == "success" else "X"
                             logging.info(f"Feedback [{fb.get('device', 'unknown')}]: {status_icon} {msg}")
