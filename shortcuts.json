@@ -29,7 +29,8 @@
     "downloads": "~/Downloads",
     "documents": "~/Documents",
     "desktop": "~/Desktop",
-    "github": "~/Desktop/Stuff/Programming/GitHub"
+    "github": "~/Desktop/Stuff/Programming/GitHub",
+    "project folder": "~/OneDrive/Programming/GitHub/CL-Core"
   },
   "system_keywords": {
     "terminal_aliases": ["terminal", "console", "shell", "cmd"],

@@ -211,20 +211,24 @@ def on_mqtt_message(client, userdata, msg):
     
     if topic == "jarvis/sys/mic_open":
         FORCE_MIC = True
-        logging.info("Remote trigger captured! Ignoring Wake Word and opening mic...")
+        TTS_BUSY = True # We know the daemon sent a TTS right before this!
+        logging.info("Remote trigger captured! Awaiting TTS completion to open mic...")
         
     elif topic == "jarvis/sys/tts_done":
         TTS_BUSY = False
+        logging.info("TTS completion signal received. Releasing microphone lock.")
 
 def start_mqtt_listener():
     client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION1)
     client.on_message = on_mqtt_message
     client.connect("localhost", 1883, 60)
     client.subscribe("jarvis/sys/mic_open")
-    client.subscribe("jarvis/sys/tts_done") # Subscribe to the new handshake topic
+    client.subscribe("jarvis/sys/tts_done") 
     client.loop_start()
 
 def main():
+    global FORCE_MIC, TTS_BUSY 
+    
     logging.info("Initiating safety checks and loading configs...")
     target_word = "hey_jarvis"
     settings = load_settings()
@@ -239,18 +243,20 @@ def main():
     mic_stream = None
     
     try:
-        ready_payload = {
-            "text": "Hello sir, all systems online!",
-            "skip_ducking": True
+        payload = {
+            "text": "System online!",
+            "skip_ducking": False,
+            "request_reply": False
         }
-        publish.single("jarvis/sys/speak", json.dumps(ready_payload), hostname="localhost")
+        
+        publish.single("jarvis/sys/speak", json.dumps(payload), hostname="localhost")
+        
         
         mic_stream = audio.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
         logging.info(f"--- SYSTEM READY: Listening for '{target_word}' ---")
 
         start_mqtt_listener()
         
-        global FORCE_MIC
         ambient_noise_buffer = collections.deque(maxlen=50)
 
         while True:
@@ -271,61 +277,58 @@ def main():
                     print("\n") 
                     is_remote = FORCE_MIC 
                     
-                    if FORCE_MIC:
-                        FORCE_MIC = False
-                    else:
+                    if not is_remote:
                         print("="*50)
                         logging.info("WAKE WORD DETECTED!")
                         
-                        # 1. Duck the audio immediately
-                        send_spotify_action("duck")
-                        
+                    # Duck the audio immediately
+                    send_spotify_action("duck")
+                    
+                    # Only broadcast the greeting if the user said "Hey Jarvis"
+                    if not is_remote:
                         try:
-                            global TTS_BUSY, ALREADY_SPOKE
+                            global ALREADY_SPOKE
                             TTS_BUSY = True 
-                            
                             if not ALREADY_SPOKE:
                                 greeting_payload = {
-                                    "text": "Hi Sir, what can I do for you?",
-                                    "skip_ducking": True
+                                    "text": "Hello Sir, what can I do?",
+                                    "skip_ducking": True,
+                                    "request_reply": True
                                 }
                                 ALREADY_SPOKE = True
-                            else: 
-                                # 2. Tell TTS to speak, but explicitly tell it NOT to touch the volume
+                            else:
                                 greeting_payload = {
-                                    "text": "Yes Sir?",
-                                    "skip_ducking": True
+                                    "text": "Yes sir?",
+                                    "skip_ducking": True,
+                                    "request_reply": True  # <-- FIX: Native greetings also expect a reply
                                 }
-                                
                             publish.single("jarvis/sys/speak", json.dumps(greeting_payload), hostname="localhost")
-                            
-                            wait_start = time.time()
-                            while TTS_BUSY and (time.time() - wait_start) < 8.0:
-                                time.sleep(0.1)
-                                
                         except Exception as e:
                             logging.warning(f"Could not vocalize wake greeting: {e}")
                             TTS_BUSY = False
+                            
+                    wait_start = time.time()
+                    
+                    while TTS_BUSY and (time.time() - wait_start) < 30.0:
+                        time.sleep(0.1)
+                        
+                    if is_remote:
+                        FORCE_MIC = False
                     
                     base_noise, act_thresh, sil_thresh = calculate_thresholds(ambient_noise_buffer)
                     logging.info(f"Room Baseline: {base_noise:.0f} | Activate: {act_thresh:.0f} | Silence: {sil_thresh:.0f}")
                         
-                    # 3. Record the command while audio is still ducked
+                    # Record the command
                     command_audio = record_command(mic_stream, act_thresh, sil_thresh, is_remote_trigger=is_remote)
                     
-                    # 4. Unduck the audio once listening is totally finished
+                    # Unduck the audio
                     send_spotify_action("unduck")
                     
                     settings = load_settings()
                     text = transcribe_audio(stt_model, command_audio, settings.get("language", "auto"))
                     logging.info(f"Heard: \"{text}\"")
                     
-                    clean_text = re.sub(r'[.,!?]', '', text.lower()).strip()
-                    cancel_keywords = ["cancel", "abort", "nevermind", "never mind", "cancelar", "esquece"]
-                    
-                    if clean_text in cancel_keywords:
-                        logging.warning("User aborted the command. Dropping transcript and returning to standby.")
-                    elif text:
+                    if text:
                         logging.info("Forwarding transcript to Central Daemon...")
                         try:
                             publish.single("jarvis/sensor/voice", text, hostname="localhost")
@@ -343,8 +346,6 @@ def main():
                             mic_stream.read(available_frames, exception_on_overflow=False)
                     except Exception:
                         pass
-                    
-                    break
                     
     except KeyboardInterrupt:
         logging.info("MANUAL SHUTDOWN TRIGGERED...")
