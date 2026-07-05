@@ -25,7 +25,7 @@ except Exception as e:
 
 # --- CREDENTIALS ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ENV_PATH = os.path.join(BASE_DIR, ".env")
+ENV_PATH = os.path.abspath(os.path.join(BASE_DIR, "..", ".env"))
 
 load_dotenv(ENV_PATH)
 
@@ -213,12 +213,12 @@ async def check_ip(client, ip, semaphore):
                 return {"ip": ip, "model": true_model}
                 
             except Exception as e:
-                # DEBUG: If this is your bulb's IP, force it to print the exact error!
                 if ip == "192.168.1.111":
                     logging.warning(f"Probe '{model_guess}' failed on .111 -> {type(e).__name__}: {str(e)}")
                 continue 
                 
         return None
+    
 # --- DISCOVERY: ASYNC SUBNET SWEEP ---
 async def discovery_mode(client, voice_mode=False, forced_subnet=None):
     global LAST_DISCOVERED_DEVICES
@@ -270,7 +270,9 @@ async def discovery_mode(client, voice_mode=False, forced_subnet=None):
             selected = devices[int(choice)]
             update_env = input(f"Save {selected['ip']} ({selected['model']}) to .env? (y/n): ")
             if update_env.lower() == 'y':
-                env_path = os.path.join(os.path.dirname(__file__), ".env")
+                base_dir = os.path.dirname(os.path.abspath(__file__))
+                env_path = os.path.abspath(os.path.join(base_dir, "..", ".env"))
+                
                 set_key(env_path, "TAPO_IP", selected["ip"])
                 set_key(env_path, "TAPO_MODEL", selected["model"])
                 
@@ -375,7 +377,10 @@ async def mqtt_service_listener(client_api):
                         idx = payload.get("index")
                         if idx is not None and 0 <= idx < len(LAST_DISCOVERED_DEVICES):
                             selected = LAST_DISCOVERED_DEVICES[idx]
-                            env_path = os.path.join(os.path.dirname(__file__), ".env")
+                            
+                            base_dir = os.path.dirname(os.path.abspath(__file__))
+                            env_path = os.path.abspath(os.path.join(base_dir, "..", ".env"))
+                            
                             set_key(env_path, "TAPO_IP", selected["ip"])
                             set_key(env_path, "TAPO_MODEL", selected["model"])
                             

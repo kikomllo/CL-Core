@@ -19,7 +19,7 @@ if sys.platform == 'win32':
 
 # --- CREDENTIALS ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ENV_PATH = os.path.join(BASE_DIR, ".env")
+ENV_PATH = os.path.abspath(os.path.join(BASE_DIR, "..", ".env"))
 load_dotenv(ENV_PATH)
 
 CLIENT_ID = os.getenv("SPOTIPY_CLIENT_ID")

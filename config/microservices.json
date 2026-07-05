@@ -1,0 +1,8 @@
+{
+  "src/clVoice.py": ["voice", "microphone", "sensor", "ears", "stt"],
+  "src/clTTS.py": ["tts", "voice box", "mouth", "speaker"],
+  "src/clSpotify.py": ["spotify", "music", "audio module"],
+  "src/clControl.py": ["control", "lights", "light actuator"],
+  "src/clDaemon.py": ["daemon", "brain", "core"],
+  "src/clTerminal.py": ["terminal"]
+}
