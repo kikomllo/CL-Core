@@ -1,0 +1,110 @@
+{
+  "home/room/desk_light/set": {
+    "on": [
+      "At your service sir. Lights on.",
+      "Powering them up.",
+      "As always sir. Turning them on.",
+      "Let there be light!"
+    ],
+    "off": [
+      "Bravo going dark!",
+      "Preparing to power down. Have a good night sir.",
+      "Extinguishing the light arrays.",
+      "Going dark sir."
+    ],
+    "toggle": [
+      "Reconfiguring the ambient illumination sir.",
+      "Switching the light state as requested.",
+      "Changing light state."
+    ],
+    "color": [
+      "Rendering the requested color profile sir.",
+      "Changing color to {color}.",
+      "As you wish sir. Color to {color}."
+    ],
+    "lum": [
+      "Calibrating brightness levels to {lum} percent.",
+      "Adjusting light intensity to {lum} percent."
+    ],
+    "temp": [
+      "Reconfiguring the light temperature spectrum.",
+      "Calibrating temperature spectrum. Current Value: {temp}."
+    ]
+  },
+  "pc/spotify/control": {
+    "play_track_artist": [
+      "Playing {track_name} by {artist_name}.",
+      "Accessing {track_name} from {artist_name}'s catalog."
+    ],
+    "play_track": [
+      "Sourcing the track {track_name}. Enjoy.",
+      "Currently playing {track_name}."
+    ],
+    "play_artist": [
+      "Compiling an audio queue for {artist_name}.",
+      "Playing artist: {artist_name}."
+    ],
+    "play_playlist": [
+      "Retrieving your playlist: {playlist_name}.",
+      "Playing {playlist_name}."
+    ],
+    "pause": ["Halting the media streams.", "Audio paused.", "Media disabled."],
+    "stop": ["Halting the media streams.", "Audio paused.", "Media disabled."],
+    "next": ["Skipping to the subsequent track.", "Moving to the next song.", "Skipping!"],
+    "prev": ["Reverting to the previous track.", "Playing the previous song.", "Going back!"],
+    "volume": ["Adjusting audio to {volume} percent.", "Setting volume to {volume} percent."]
+  },
+  "system/discovery": {
+    "discover": [
+      "Running diagnostics and scanning local networks for hardware. Standby.",
+      "Initiating network sweep."
+    ],
+    "save_discovery": [
+      "Query complete, sir. Committing device hardware addresses.",
+      "Device saved to the central registry."
+    ]
+  },
+  "pc/system/control": {
+    "restart_all_modules": [
+      "Cycling power to the entire microservice ecosystem sir. Going offline momentarily.",
+      "Initiating global system reboot."
+    ],
+    "restart_module": [
+      "Cycling power to the {target} microservice sir.",
+      "Restarting the {target} module."
+    ],
+    "open": [
+      "Accessing {target} now sir.",
+      "Opening {target} for you.",
+      "Launching {target}."
+    ],
+    "close": [
+      "Terminating {target} sir.",
+      "Closing {target}.",
+      "Shutting down the {target} application."
+    ],
+    "shutdown": [
+      "Initiating critical system shutdown. Goodbye sir.",
+      "Powering down the main operating system.",
+      "Executing complete system halt."
+    ],
+    "restart": [
+      "Rebooting the master operating system.",
+      "Cycling power to the host machine. I will be back online shortly."
+    ],
+    "volume": [
+      "Adjusting master system volume to {level} percent.",
+      "Reconfiguring host audio to {level} percent."
+    ]
+  },
+  "jarvis/sys/manager": {
+    "restart_all_modules": [
+      "Cycling power to the entire microservice ecosystem sir. Going offline momentarily.",
+      "Initiating global system reboot."
+    ],
+    "restart_module": [
+      "Cycling power to the {target} microservice sir.",
+      "Restarting the {target} module."
+    ]
+  }
+}
