@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 import paho.mqtt.publish as publish 
 
 try:
-    import clControl 
+    import src.clControl as clControl 
 except ImportError:
     pass
 

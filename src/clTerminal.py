@@ -27,10 +27,12 @@ def load_shortcuts():
     """Reads the shortcuts.json file and caches it in memory."""
     global SHORTCUTS
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    filepath = os.path.join(base_dir, "shortcuts.json")
+    shortcuts_path = os.path.abspath(os.path.join(base_dir, "..", "config", "shortcuts.json"))
+    
+    
     
     try:
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(shortcuts_path, 'r', encoding='utf-8') as f:
             SHORTCUTS = json.load(f)
         logging.info(f"Loaded {len(SHORTCUTS.get('apps', {}))} apps and {len(SHORTCUTS.get('folders', {}))} folders from shortcuts.json.")
     except FileNotFoundError:

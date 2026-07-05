@@ -79,7 +79,9 @@ TTS_BUSY = False
 ALREADY_SPOKE = False
 
 def load_settings():
-    config_path = os.path.join(os.path.dirname(__file__), "settings.json")
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    config_path = os.path.abspath(os.path.join(base_dir, "..", "config", "settings.json"))
+    
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
             return json.load(f)

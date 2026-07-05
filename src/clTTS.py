@@ -31,7 +31,14 @@ async def generate_and_play(client, text, voice=DEFAULT_VOICE, rate=DEFAULT_RATE
     
     async with TTS_LOCK:
         logging.info(f"Generating speech: '{text}' (Voice: {voice})")
-        temp_file = f"tts_output_{uuid.uuid4().hex}.mp3"
+        
+        # 1. Dynamically locate the assets folder
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        assets_dir = os.path.abspath(os.path.join(base_dir, "..", "assets"))
+        
+        # 2. Assign the temporary file and blip sound
+        temp_file = os.path.join(assets_dir, f"tts_output_{uuid.uuid4().hex}.mp3")
+        blip_path = os.path.join(assets_dir, "blip.mp3")
         
         try:
             communicate = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch)
@@ -41,9 +48,9 @@ async def generate_and_play(client, text, voice=DEFAULT_VOICE, rate=DEFAULT_RATE
                 await client.publish("pc/spotify/control", json.dumps({"action": "duck"}))
                 await asyncio.sleep(0.2) 
             
-            if os.path.exists("blip.mp3"):
-                mixer.music.set_volume(0.3)
-                mixer.music.load("blip.mp3")
+            # 3. Play the absolute path blip
+            if os.path.exists(blip_path):
+                mixer.music.load(blip_path)
                 mixer.music.play()
                 while mixer.music.get_busy():
                     await asyncio.sleep(0.05)

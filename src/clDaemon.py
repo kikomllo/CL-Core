@@ -26,14 +26,21 @@ EASTER_EGGS = {}
 
 NLP_RULES = {}
 COMPILED_ABORT_REGEX = None
+PERSONALITY_EGGS = {}
+
+MODULE_LOOKUP_MAP = {}
+COMPILED_RESTART_REGEX = None
 
 def load_configs():
     global COMPILED_TOPICS, COMPILED_ACTIONS, COMPILED_COLORS, ROUTING_MAP
+    
     base_dir = os.path.dirname(os.path.abspath(__file__))
+    config_dir = os.path.abspath(os.path.join(base_dir, "..", "config"))
     
     def safe_load(filename):
         try:
-            with open(os.path.join(base_dir, filename), 'r', encoding='utf-8') as f:
+            # 3. Use the new config_dir to load the files
+            with open(os.path.join(config_dir, filename), 'r', encoding='utf-8') as f:
                 return json.load(f)
         except FileNotFoundError:
             logging.warning(f"File '{filename}' not found.")
@@ -68,6 +75,24 @@ def load_configs():
             
     global PERSONALITY_EGGS
     PERSONALITY_EGGS = safe_load("easter_eggs.json") or {}
+
+    # --- DYNAMIC MICROSERVICE RESTART COMPILER ---
+    global MODULE_LOOKUP_MAP, COMPILED_RESTART_REGEX
+    MODULE_LOOKUP_MAP = {}
+    aliases = []
+    
+    microservices_data = safe_load("microservices.json") or {}
+    for filename, trigger_words in microservices_data.items():
+        for word in trigger_words:
+            clean_word = word.lower().strip()
+            MODULE_LOOKUP_MAP[clean_word] = filename
+            aliases.append(re.escape(clean_word))
+            
+    if aliases:
+        regex_str = r'\b(?:restart|reboot|reload)\s+module\s+(' + '|'.join(aliases) + r')\b'
+        COMPILED_RESTART_REGEX = re.compile(regex_str, re.IGNORECASE)
+    else:
+        COMPILED_RESTART_REGEX = None
 
 async def dispatch_tts_response(client, command, target_topic):
     action = command.get("action")
@@ -107,12 +132,12 @@ async def dispatch_tts_response(client, command, target_topic):
         elif "lum" in command:
             phrase = random.choice([
                 f"Calibrating brightness levels to {command['lum']} percent.",
-                f"Duly noted, sir. Adjusting light intensity to {command['lum']} percent."
+                f"Duly noted, sir. Adjusting light intensity to {command['lum']} percent.",
                 f"Adjusting light intensity to {command['lum']} percent."
             ])
         elif "temp" in command:
             phrase = random.choice([
-                f"Reconfiguring the light temperature spectrum.",
+                "Reconfiguring the light temperature spectrum.",
                 f"Calibrating temperature spectrum. Current Value: {command['temp']}.",
             ])
 
@@ -137,7 +162,7 @@ async def dispatch_tts_response(client, command, target_topic):
                     f"Currently playing {track}"
                 ])
             elif artist: 
-                phrase = ([
+                phrase = random.choice([
                     f"Compiling an audio queue for {artist}.",
                     f"Playing artist: {artist}.",
                     f"Enjoy listening to {artist}."
@@ -170,6 +195,16 @@ async def dispatch_tts_response(client, command, target_topic):
             phrase = "Running diagnostics and scanning local networks for hardware. Standby."
         elif action == "save_discovery": 
             phrase = "Query complete, sir. Committing device hardware addresses to the central database."
+            
+    # 4. Handle OS System & Manager commands
+    elif target_topic in ["pc/system/control", "jarvis/sys/manager"]:
+        if action == "restart_all_modules":
+            phrase = "Cycling power to the entire microservice ecosystem sir. Going offline momentarily."
+        elif action == "restart_module":
+            phrase = random.choice([
+                f"Cycling power to the {command.get('target')} microservice sir.",
+                f"Restarting the {command.get('target')} module. It will be back online momentarily."
+            ])
 
     if phrase:
         await client.publish("jarvis/sys/speak", json.dumps({"text": phrase}))
@@ -182,6 +217,24 @@ def process_voice_command(text):
     for trigger, response in PERSONALITY_EGGS.items():
         if trigger in text:
             return [({"action": "personality", "response": response}, "jarvis/sys/speak")]
+            
+    # --- MICROSERVICE RESTART MANAGER ---
+    # 1. Check for the global restart
+    global_restart_match = re.search(r'\b(?:(?:restart|reboot|reload)\s+all\s+modules?|(?:full|complete)\s+system\s+(?:reboot|restart|reload))\b', text, re.IGNORECASE)
+    if global_restart_match:
+        logging.info("Global microservice ecosystem restart requested.")
+        return [({"action": "restart_all_modules"}, "jarvis/sys/manager")]
+
+    # 2. Fall back to individual module matching
+    if COMPILED_RESTART_REGEX:
+        module_match = COMPILED_RESTART_REGEX.search(text)
+        if module_match:
+            trigger_word = module_match.group(1).lower()
+            target_script = MODULE_LOOKUP_MAP.get(trigger_word)
+            
+            if target_script:
+                logging.info(f"Microservice restart requested for: {target_script} (Trigger: '{trigger_word}')")
+                return [({"action": "restart_module", "target": target_script}, "jarvis/sys/manager")]
     
     if COMPILED_ABORT_REGEX and COMPILED_ABORT_REGEX.search(text):
         logging.info("User explicitly cancelled the command. Resetting states.")
@@ -351,8 +404,16 @@ async def run_daemon():
                     
                     if intents:
                         for command, target_topic in intents:
+                            # --- INTERCEPT ABORT ---
+                            if target_topic == "jarvis/sys/control" and command.get("action") == "abort":
+                                await client.publish("jarvis/sys/tts_stop", "1")
+                                await client.publish("jarvis/sys/speak", json.dumps({
+                                    "text": "Command aborted, sir.", 
+                                    "request_reply": False
+                                }))
+                                
                             # --- INTERCEPT PERSONALITY ---
-                            if command.get("action") == "personality":
+                            elif command.get("action") == "personality":
                                 await client.publish("jarvis/sys/speak", json.dumps({"text": command["response"]}))
                             
                             # --- STANDARD ROUTING ---
