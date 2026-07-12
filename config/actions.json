@@ -1,5 +1,4 @@
 {
-
     "on": [
         "ligar", "liga", "ligue", 
         "acender", "acende", "acenda",
@@ -55,6 +54,11 @@
     "open_site": [
         "open site", "abrir site", 
         "open website", "website", "site"
+    ],
+    "attention_on": [
+        "pay attention", "listen closely", "stay awake"
+    ],
+    "attention_off": [
+        "go to sleep", "stop listening", "relax"
     ]
-
 }

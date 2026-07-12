@@ -15,7 +15,7 @@ import urllib.parse
 from typing import Tuple, Optional, Dict, Any, List
 
 # --- LOGGING SETUP ---
-logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [TERMINAL] %(message)s", datefmt="%H:%M:%S")
+logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [TERMINAL] %(message)s", datefmt="%H:%M:%S")
 
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())

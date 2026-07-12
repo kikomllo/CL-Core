@@ -14,7 +14,7 @@ from pywizlight import wizlight, PilotBuilder, discovery as wiz_discovery
 import aiomqtt
 
 # --- LOGGING SETUP ---
-logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [CONTROL] %(message)s", datefmt="%H:%M:%S")
+logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [CONTROL] %(message)s", datefmt="%H:%M:%S")
 
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())

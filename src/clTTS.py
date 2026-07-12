@@ -12,7 +12,7 @@ import sys
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [TTS] %(message)s", datefmt="%H:%M:%S")
+logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [TTS] %(message)s", datefmt="%H:%M:%S")
 
 class TTSManager:
     def __init__(self):
@@ -61,7 +61,8 @@ class TTSManager:
                 
                 if client and duck_audio:
                     await client.publish("pc/spotify/control", json.dumps({"action": "unduck"}))
-                if client and request_reply:
+                
+                if client:
                     await client.publish("jarvis/sys/tts_done", "1")
 
 async def run_tts_service():
