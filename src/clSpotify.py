@@ -14,7 +14,7 @@ from spotipy.oauth2 import SpotifyOAuth
 import aiomqtt
 
 # --- LOGGING SETUP ---
-logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [SPOTIFY] %(message)s", datefmt="%H:%M:%S")
+logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [SPOTIFY] %(message)s", datefmt="%H:%M:%S")
 
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())

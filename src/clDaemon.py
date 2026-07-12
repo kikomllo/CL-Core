@@ -10,7 +10,7 @@ import aiomqtt
 from typing import Dict, List, Tuple, Any, Optional, Pattern
 
 # --- LOGGING SETUP ---
-logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [DAEMON] %(message)s", datefmt="%H:%M:%S")
+logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [DAEMON] %(message)s", datefmt="%H:%M:%S")
 
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -33,7 +33,7 @@ class CentralDaemon:
         self.nlp_rules: Dict[str, Any] = {}
         self.personality_eggs: Dict[str, str] = {}
         self.module_lookup: Dict[str, str] = {}
-        self.tts_responses: Dict[str, Dict[str, List[str]]] = {} # <-- NEW: TTS Memory
+        self.tts_responses: Dict[str, Dict[str, List[str]]] = {} 
         
         # Compiled Regexes
         self.abort_regex: Optional[Pattern] = None
@@ -61,7 +61,6 @@ class CentralDaemon:
 
     def _load_configs(self) -> None:
         """Hydrates the Daemon's brain with vocabulary, rules, and system maps."""
-        # 1. Base Mappings
         self.routing_map = self._safe_load("routing.json") or {}
         
         topics_data = self._safe_load("topics.json") or {}
@@ -72,22 +71,18 @@ class CentralDaemon:
         for act, words in actions_data.items():
             self.actions[act] = re.compile(r'\b(' + '|'.join(words) + r')\b')
             
-        # 2. NLP Rules & Aborts
         self.nlp_rules = self._safe_load("nlp_rules.json") or {}
         abort_words = self.nlp_rules.get("abort_keywords", [])
         if abort_words:
             self.abort_regex = re.compile(r'\b(?:' + '|'.join(abort_words) + r')\b', re.IGNORECASE)
 
-        # 3. Colors
         colors_data = self._safe_load("colors.json") or {}
         for name in sorted(colors_data.keys(), key=len, reverse=True):
             regex_str = r'\b' + re.sub(r'o\b', r'[oa]s?', name) + r'\b'
             self.colors.append((re.compile(regex_str), colors_data[name], name))
             
-        # 4. Personality & Easter Eggs
         self.personality_eggs = self._safe_load("easter_eggs.json") or {}
 
-        # 5. Microservice Restart Compiler
         microservices_data = self._safe_load("microservices.json") or {}
         aliases = []
         for filename, trigger_words in microservices_data.items():
@@ -100,16 +95,13 @@ class CentralDaemon:
             regex_str = r'\b(?:restart|reboot|reload)\s+module\s+(' + '|'.join(aliases) + r')\b'
             self.restart_regex = re.compile(regex_str, re.IGNORECASE)
             
-        # 6. TTS Dynamic Responses
         self.tts_responses = self._safe_load("tts_responses.json") or {}
 
     # --- TEXT-TO-SPEECH DISPATCHER ---
     async def dispatch_tts_response(self, client: aiomqtt.Client, command: Dict[str, Any], target_topic: str) -> None:
-        """Generates dynamic, personality-driven dialogue using JSON configurations and **kwargs formatting."""
         action = command.get("action")
         response_key = action
 
-        # 1. Determine specific response key based on contextual attributes
         if target_topic == "home/room/desk_light/set":
             if "color" in command: response_key = "color"
             elif "lum" in command: response_key = "lum"
@@ -121,12 +113,10 @@ class CentralDaemon:
             elif "artist_name" in command: response_key = "play_artist"
             elif "playlist_name" in command: response_key = "play_playlist"
 
-        # 2. Fetch the array from the JSON memory map
         topic_responses = self.tts_responses.get(target_topic, {})
         phrases = topic_responses.get(response_key, [])
 
         if phrases:
-            # 3. Choose a random phrase and dynamically inject variables
             raw_phrase = random.choice(phrases)
             try:
                 phrase = raw_phrase.format(**command)
@@ -138,15 +128,12 @@ class CentralDaemon:
             
     # --- NLP EXTRACTION ENGINE ---
     def process_voice_command(self, text: str) -> List[Tuple[Dict[str, Any], Optional[str]]]:
-        """Transforms raw transcribed text into structured JSON payloads."""
         text = text.lower()
         
-        # 1. Easter Eggs
         for trigger, response in self.personality_eggs.items():
             if trigger in text:
                 return [({"action": "personality", "response": response}, "jarvis/sys/speak")]
                 
-        # 2. System Restart Hooks
         global_restart_match = re.search(r'\b(?:(?:restart|reboot|reload)\s+all\s+modules?|(?:full|complete)\s+system\s+(?:reboot|restart|reload))\b', text, re.IGNORECASE)
         if global_restart_match:
             logging.info("Global microservice ecosystem restart requested.")
@@ -161,19 +148,16 @@ class CentralDaemon:
                     logging.info(f"Microservice restart requested for: {target_script}")
                     return [({"action": "restart_module", "target": target_script}, "jarvis/sys/manager")]
         
-        # 3. Abort Sequence
         if self.abort_regex and self.abort_regex.search(text):
             logging.info("User explicitly cancelled the command. Resetting states.")
             self.awaiting_discovery_choice = False
             self.awaiting_spotify_choice = False
             return [({"action": "abort"}, "jarvis/sys/control")]
 
-        # 4. Clean & Autocorrect        
         for bad, good in self.nlp_rules.get("autocorrect", {}).items():
             text = text.replace(bad, good)
             
         text = re.sub(r'[,!?]', '', text)
-        
         text = re.sub(r'\.(?!\w)', '', text)
         
         if self.debug_nlp:
@@ -182,7 +166,6 @@ class CentralDaemon:
         for word, digit in self.nlp_rules.get("word_to_number", {}).items():
             text = re.sub(rf'\b{word}\b', digit, text)
 
-        # 5. Contextual Fallbacks (Awaiting Input)
         if self.awaiting_spotify_choice:
             self.awaiting_spotify_choice = False
             match = re.search(r'\b(\d+)\b', text)
@@ -198,7 +181,6 @@ class CentralDaemon:
             if match:
                 return [({"action": "save_discovery", "index": int(match.group())}, "system/discovery")]
 
-        # 6. Intent Extraction (Chunking by conjunctions)
         chunks = re.split(r'\b(?:e|and|depois|then|also)\b', text)
         intents = []
 
@@ -212,7 +194,6 @@ class CentralDaemon:
             action_word_used = None 
             longest_match = 0
             
-            # Action Match
             for act, regex_obj in self.actions.items():
                 match = regex_obj.search(chunk)
                 if match:
@@ -228,7 +209,6 @@ class CentralDaemon:
                     target_topic = "system/discovery"
                     self.awaiting_discovery_choice = True 
 
-            # Spotify Entities
             if payload.get("action") == "play" or re.search(r'\b(?:song|track|music|música|musica)\b', chunk):
                 if payload.get("action") in ["on", "off", "toggle"]:
                     payload["action"] = "play"
@@ -250,20 +230,16 @@ class CentralDaemon:
                     implicit_match = re.search(rf'\b(?:play|tocar)\s+(.+?)\s+(?:by|my|de|do|da)\b', chunk, re.IGNORECASE)
                     if implicit_match: payload["track_name"] = implicit_match.group(1).strip()
 
-            # System & Web Entities
             elif payload.get("action") in ["open", "close", "search", "open_site"] and action_word_used:
                 if payload.get("action") == "search":
-                    # Strips filler words like "online for", "na internet por", etc.
                     sys_match = re.search(rf'\b{action_word_used}\b\s+(?:(?:online|for|sobre|por|na internet|the web for)\s+)*(.+)', chunk, re.IGNORECASE)
                 elif payload.get("action") == "open_site":
                     sys_match = re.search(rf'\b{action_word_used}\b\s+(?:(?:the site|o site|online|website)\s+)*(.+)', chunk, re.IGNORECASE)
                 else:
-                    # Standard app/folder opening
                     sys_match = re.search(rf'\b{action_word_used}\b\s+(?:(?:to|para|the|o|a|pasta|folder|dir|directory|app|aplicativo)\s+)*(.+)', chunk, re.IGNORECASE)
                 
                 if sys_match: payload["target"] = sys_match.group(1).strip()
 
-            # Topic Resolution
             if not target_topic:
                 for topic, regex_obj in self.topics.items():
                     if regex_obj.search(chunk):
@@ -282,7 +258,6 @@ class CentralDaemon:
             if target_topic:
                 self.last_known_topic = target_topic
 
-            # Attributes (Numbers/Colors)
             temp_match = re.search(r'(\d+)\s*(porcento|percent|%).*(temperatura|temp|temps|temperature|calor|frio|hot|cold)', chunk)
             if temp_match: 
                 payload["temp"] = int(temp_match.group(1))
@@ -339,11 +314,19 @@ class CentralDaemon:
                                     logging.info(f"Intent Decoded: {command} -> Routing to [{target_topic}]")
                                     await client.publish(target_topic, json.dumps(command))
                                     asyncio.create_task(self.dispatch_tts_response(client, command, target_topic))
+                                    
+                                    # --- CONTINUOUS CONVERSATION TRIGGER ---
+                                    # Keeps the mic hot after execution. Ignored for mic_control 
+                                    # so saying "go to sleep" actually allows the mic to close.
+                                    if target_topic != "jarvis/sys/mic_control":
+                                        await client.publish("jarvis/sys/mic_control", json.dumps({"action": "open_window"}))
+                                        
                                 else:
                                     logging.warning(f"Intent decoded ({command}), but no target topic known.")
                                 await asyncio.sleep(0.1)
                         else:
-                            logging.warning("Could not extract a valid command.")
+                            # --- SILENT REJECTION ---
+                            logging.info(f"[SILENT REJECTION] Ignored background conversation: '{payload_data}'")
                     
                     elif topic == "jarvis/feedback":
                         try:
@@ -363,7 +346,7 @@ class CentralDaemon:
                                     "text": "My apologies, sir. The audio match was ambiguous. Could you select an option from the terminal?",
                                     "request_reply": True 
                                 }))
-                                await client.publish("jarvis/sys/mic_open", "1")
+                                await client.publish("jarvis/sys/mic_control", json.dumps({"action": "request_reply"}))
                             else:
                                 status_icon = "V" if fb.get('status') == "success" else "X"
                                 logging.info(f"Feedback [{fb.get('device', 'unknown')}]: {status_icon} {msg}")

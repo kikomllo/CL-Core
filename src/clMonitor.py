@@ -5,7 +5,7 @@ import time
 from bleak import BleakScanner
 from typing import Dict, Any
 
-logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [MONITOR] %(message)s", datefmt="%H:%M:%S")
+logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [MONITOR] %(message)s", datefmt="%H:%M:%S")
 
 class PresenceMonitor:
     def __init__(self):
