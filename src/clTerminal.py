@@ -10,6 +10,8 @@ import argparse
 import aiomqtt
 import time
 import re
+import webbrowser
+import urllib.parse
 from typing import Tuple, Optional, Dict, Any, List
 
 # --- LOGGING SETUP ---
@@ -49,10 +51,15 @@ class TerminalManager:
         """Synchronously kills all tracked terminal PIDs and clears the file."""
         killed_any = False
         if self.terminal_is_open and os.path.exists(self.pid_file):
-            with open(self.pid_file, 'r') as f:
-                pids = f.read().splitlines()
+            try:
+                with open(self.pid_file, 'r') as f:
+                    pids = f.read().splitlines()
+            except Exception as e:
+                logging.error(f"Failed to read PID tracker file: {e}")
+                return False
             
             for p in pids:
+                if not p.strip(): continue
                 if not p.strip(): continue
                 try:
                     target_pid = int(p.strip())
@@ -86,7 +93,8 @@ class TerminalManager:
         # A. Open Base Terminal
         if target_clean in terminal_aliases:
             if CURRENT_OS == "linux":
-                subprocess.Popen(["gnome-terminal", "--working-directory", self.last_opened_dir, "--", "bash", "-c", f"echo $$ >> {self.pid_file}; exec bash"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                term_emu = sys_kw.get("default_terminal", "gnome-terminal")
+                subprocess.Popen([term_emu, "--working-directory", self.last_opened_dir, "--", "bash", "-c", f"echo $$ >> {self.pid_file}; exec bash"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.terminal_is_open = True
             elif CURRENT_OS == "windows":
                 proc = subprocess.Popen(["cmd", "/k", f"title JarvisNavigation && cd /d {self.last_opened_dir}"], creationflags=subprocess.CREATE_NEW_CONSOLE)
@@ -132,8 +140,9 @@ class TerminalManager:
             self._clear_pids()
             
             if CURRENT_OS == "linux":
+                term_emu = sys_kw.get("default_terminal", "gnome-terminal")
                 spawn_cmd = f"echo $$ >> {self.pid_file}; ls; exec bash"
-                subprocess.Popen(["gnome-terminal", "--title=JarvisNavWindow", "--working-directory", resolved_path, "--", "bash", "-c", spawn_cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.Popen([term_emu, "--title=JarvisNavWindow", "--working-directory", resolved_path, "--", "bash", "-c", spawn_cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.terminal_is_open = True
             elif CURRENT_OS == "windows":
                 proc = subprocess.Popen(["cmd", "/k", f"title JarvisNavigation && cd /d {resolved_path} && dir"], creationflags=subprocess.CREATE_NEW_CONSOLE)
@@ -185,6 +194,29 @@ class TerminalManager:
             return True, "Initiating system reboot."
         return False, "Invalid power command."
 
+    def _handle_web(self, action: str, target: str) -> Tuple[bool, str]:
+        """Handles web navigation and direct browser searches natively."""
+        try:
+            if action == "search":
+                # Convert "python tutorials" into "python+tutorials"
+                encoded_query = urllib.parse.quote_plus(target)
+                target_url = f"https://www.google.com/search?q={encoded_query}"
+                webbrowser.open(target_url, new=2)
+                return True, f"Executed web search for: '{target}'"
+                
+            elif action == "open_site":
+                clean_target = target.replace(" ", "")
+                
+                if not clean_target.startswith("http"):
+                    clean_target = f"https://{clean_target}"
+                    
+                webbrowser.open(clean_target, new=2)
+                return True, f"Opened URL: {clean_target}"
+                
+            return False, "Invalid web action specified."
+        except Exception as e:
+            return False, f"Browser execution failed: {str(e)}"
+
     def execute_command(self, action: str, target: Optional[str] = None, level: Optional[int] = None) -> Tuple[bool, str]:
         """Main routing switchboard for the actuator."""
         try:
@@ -192,6 +224,8 @@ class TerminalManager:
                 return self._handle_open(target)
             elif action == "close" and target:
                 return self._handle_close(target)
+            elif action in ["search", "open_site"] and target:
+                return self._handle_web(action, target)
             elif action in ["shutdown", "restart"]:
                 return self._handle_power(action)
             elif action == "volume" and level is not None:
@@ -238,6 +272,8 @@ async def mqtt_service_listener(manager: TerminalManager) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Microservice Control for OS Terminal")
     parser.add_argument("--open", type=str, help="Open an app or path by dictionary nickname")
+    parser.add_argument("--search", type=str, help="Search Google for a query")
+    parser.add_argument("--site", type=str, help="Open a direct URL")
     parser.add_argument("--shutdown", action="store_true", help="Shutdown the computer")
     args = parser.parse_args()
 
@@ -245,6 +281,12 @@ def main():
 
     if args.open:
         success, msg = manager.execute_command("open", target=args.open)
+        logging.info(msg)
+    elif args.search:
+        success, msg = manager.execute_command("search", target=args.search)
+        logging.info(msg)
+    elif args.site:
+        success, msg = manager.execute_command("open_site", target=args.site)
         logging.info(msg)
     elif args.shutdown:
         success, msg = manager.execute_command("shutdown")

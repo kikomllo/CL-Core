@@ -17,8 +17,7 @@
     ],
     "discover": [
         "procurar", "descobrir", "scan", 
-        "encontrar", "discover", "discovery", 
-        "search"
+        "encontrar", "discover", "discovery"
     ],
     "play": [
         "toca", "tocar", "reproduz", "play", 
@@ -48,6 +47,14 @@
     "close": [
         "close", "kill", "terminate",
         "fechar", "fecha", "mata"
+    ],
+    "search": [
+        "search", "search online", "pesquisar", 
+        "procurar", "google"
+    ],
+    "open_site": [
+        "open site", "abrir site", 
+        "open website", "website", "site"
     ]
 
 }

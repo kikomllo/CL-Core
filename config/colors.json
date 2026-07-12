@@ -1,106 +1,138 @@
 {
-    "branco": "CoolWhite",
-    "white": "CoolWhite",
+    "branco": {"type": "temp", "val": 80},
+    "white": {"type": "temp", "val": 80},
+    "coolwhite": {"type": "temp", "val": 80},
     
-    "vermelho": "Crimson",
-    "red": "Crimson",
+    "branco quente": {"type": "temp", "val": 20},
+    "warm white": {"type": "temp", "val": 20},
+    "warmwhite": {"type": "temp", "val": 20},
     
-    "azul": "Ultramarine",
-    "blue": "Ultramarine",
+    "branco gelo": {"type": "temp", "val": 100},
+    "ghost white": {"type": "temp", "val": 100},
+    "ghostwhite": {"type": "temp", "val": 100},
     
-    "verde": "ForestGreen",
-    "green": "ForestGreen",
+    "creme": {"type": "temp", "val": 30},
+    "cream": {"type": "temp", "val": 30},
+    "antiquewhite": {"type": "temp", "val": 30},
     
-    "amarelo": "Gold",
-    "yellow": "Gold",
+    "marfim": {"type": "temp", "val": 40},
+    "ivory": {"type": "temp", "val": 40},
     
-    "laranja": "OrangeRed",
-    "orange": "OrangeRed",
-    
-    "roxo": "MediumPurple",
-    "purple": "MediumPurple",
-    
-    "rosa": "Pink",
-    "pink": "Pink",
-    
-    "castanho": "Chocolate",
-    "brown": "Chocolate",
-    
-    "ciano": "Turquoise",
-    "cyan": "Turquoise",
+    "luz do dia": {"type": "temp", "val": 50},
+    "daylight": {"type": "temp", "val": 50},
 
-    "branco quente": "WarmWhite",
-    "warm white": "WarmWhite",
+    "vermelho": {"type": "rgb", "r": 255, "g": 0, "b": 0},
+    "red": {"type": "rgb", "r": 255, "g": 0, "b": 0},
+    "crimson": {"type": "rgb", "r": 220, "g": 20, "b": 60},
     
-    "branco gelo": "GhostWhite",
-    "ghost white": "GhostWhite",
+    "vermelho escuro": {"type": "rgb", "r": 139, "g": 0, "b": 0},
+    "dark red": {"type": "rgb", "r": 139, "g": 0, "b": 0},
+    "darkred": {"type": "rgb", "r": 139, "g": 0, "b": 0},
     
-    "creme": "AntiqueWhite",
-    "cream": "AntiqueWhite",
+    "vermelho suave": {"type": "rgb", "r": 255, "g": 102, "b": 102},
+    "soft red": {"type": "rgb", "r": 255, "g": 102, "b": 102},
+    "softred": {"type": "rgb", "r": 255, "g": 102, "b": 102},
     
-    "marfim": "Ivory",
-    "ivory": "Ivory",
+    "vermelhão": {"type": "rgb", "r": 227, "g": 66, "b": 52},
+    "vermilion": {"type": "rgb", "r": 227, "g": 66, "b": 52},
     
-    "luz do dia": "Daylight",
-    "daylight": "Daylight",
+    "laranja": {"type": "rgb", "r": 255, "g": 165, "b": 0},
+    "orange": {"type": "rgb", "r": 255, "g": 165, "b": 0},
+    "orangered": {"type": "rgb", "r": 255, "g": 69, "b": 0},
 
-    "vermelho escuro": "DarkRed",
-    "dark red": "DarkRed",
+    "amarelo": {"type": "rgb", "r": 255, "g": 255, "b": 0},
+    "yellow": {"type": "rgb", "r": 255, "g": 255, "b": 0},
+    "gold": {"type": "rgb", "r": 255, "g": 215, "b": 0},
     
-    "vermelho suave": "SoftRed",
-    "soft red": "SoftRed",
-    
-    "vermelhão": "Vermilion",
-    "vermilion": "Vermilion",
+    "dourado": {"type": "rgb", "r": 255, "g": 215, "b": 0},
+    "golden": {"type": "rgb", "r": 255, "g": 215, "b": 0},
 
-    "azul claro": "LightSkyBlue",
-    "light blue": "LightSkyBlue",
-    
-    "azul escuro": "NavyBlue",
-    "dark blue": "NavyBlue",
-    
-    "azul marinho": "NavyBlue",
-    "navy blue": "NavyBlue",
-    
-    "azul bebé": "AliceBlue",
-    "baby blue": "AliceBlue",
-    
-    "azul céu": "DeepSkyBlue",
-    "sky blue": "DeepSkyBlue",
+    "amarelo claro": {"type": "rgb", "r": 255, "g": 250, "b": 205},
+    "light yellow": {"type": "rgb", "r": 255, "g": 250, "b": 205},
+    "lemonchiffon": {"type": "rgb", "r": 255, "g": 250, "b": 205},
 
-    "verde claro": "LightGreen",
-    "light green": "LightGreen",
-    
-    "verde limão": "Lime",
-    "lime": "Lime",
-    
-    "verde água": "Aquamarine",
-    "aquamarine": "Aquamarine",
+    "verde": {"type": "rgb", "r": 0, "g": 255, "b": 0},
+    "green": {"type": "rgb", "r": 0, "g": 255, "b": 0},
+    "forestgreen": {"type": "rgb", "r": 34, "g": 139, "b": 34},
 
-    "amarelo claro": "LemonChiffon",
-    "light yellow": "LemonChiffon",
+    "verde claro": {"type": "rgb", "r": 144, "g": 238, "b": 144},
+    "light green": {"type": "rgb", "r": 144, "g": 238, "b": 144},
+    "lightgreen": {"type": "rgb", "r": 144, "g": 238, "b": 144},
     
-    "dourado": "Gold",
-    "golden": "Gold",
+    "verde limão": {"type": "rgb", "r": 0, "g": 255, "b": 0},
+    "lime": {"type": "rgb", "r": 0, "g": 255, "b": 0},
+    
+    "verde água": {"type": "rgb", "r": 127, "g": 255, "b": 212},
+    "aquamarine": {"type": "rgb", "r": 127, "g": 255, "b": 212},
+    
+    "ciano": {"type": "rgb", "r": 0, "g": 255, "b": 255},
+    "cyan": {"type": "rgb", "r": 0, "g": 255, "b": 255},
+    "turquoise": {"type": "rgb", "r": 64, "g": 224, "b": 208},
+    "turquesa": {"type": "rgb", "r": 64, "g": 224, "b": 208},
 
-    "rosa choque": "HotPink",
-    "hot pink": "HotPink",
-    
-    "lilás": "SoftMauve",
-    "lilac": "SoftMauve",
-    
-    "turquesa": "Turquoise",
-    "turquoise": "Turquoise",
+    "azul": {"type": "rgb", "r": 0, "g": 0, "b": 255},
+    "blue": {"type": "rgb", "r": 0, "g": 0, "b": 255},
+    "ultramarine": {"type": "rgb", "r": 18, "g": 10, "b": 143},
 
-    "âmbar": "AmberGlow",
-    "amber": "AmberGlow",
+    "azul claro": {"type": "rgb", "r": 135, "g": 206, "b": 250},
+    "light blue": {"type": "rgb", "r": 135, "g": 206, "b": 250},
+    "lightskyblue": {"type": "rgb", "r": 135, "g": 206, "b": 250},
     
-    "pêssego": "ZenPeach",
-    "peach": "ZenPeach",
+    "azul escuro": {"type": "rgb", "r": 0, "g": 0, "b": 139},
+    "dark blue": {"type": "rgb", "r": 0, "g": 0, "b": 139},
+    "navyblue": {"type": "rgb", "r": 0, "g": 0, "b": 128},
     
-    "areia": "DesertSand",
-    "sand": "DesertSand",
+    "azul marinho": {"type": "rgb", "r": 0, "g": 0, "b": 128},
+    "navy blue": {"type": "rgb", "r": 0, "g": 0, "b": 128},
     
-    "luar": "Moonlight",
-    "moonlight": "Moonlight"
+    "azul bebé": {"type": "temp", "val": 90},
+    "baby blue": {"type": "temp", "val": 90},
+    "aliceblue": {"type": "temp", "val": 90},
+    
+    "azul céu": {"type": "rgb", "r": 0, "g": 191, "b": 255},
+    "sky blue": {"type": "rgb", "r": 0, "g": 191, "b": 255},
+    "deepskyblue": {"type": "rgb", "r": 0, "g": 191, "b": 255},
+
+    "roxo": {"type": "rgb", "r": 128, "g": 0, "b": 128},
+    "purple": {"type": "rgb", "r": 128, "g": 0, "b": 128},
+    "mediumpurple": {"type": "rgb", "r": 147, "g": 112, "b": 219},
+    
+    "lilás": {"type": "rgb", "r": 200, "g": 162, "b": 200},
+    "lilac": {"type": "rgb", "r": 200, "g": 162, "b": 200},
+    "softmauve": {"type": "rgb", "r": 212, "g": 175, "b": 217},
+
+    "rosa": {"type": "rgb", "r": 255, "g": 192, "b": 203},
+    "pink": {"type": "rgb", "r": 255, "g": 192, "b": 203},
+
+    "rosa choque": {"type": "rgb", "r": 255, "g": 105, "b": 180},
+    "hot pink": {"type": "rgb", "r": 255, "g": 105, "b": 180},
+    "hotpink": {"type": "rgb", "r": 255, "g": 105, "b": 180},
+
+    "castanho": {"type": "rgb", "r": 165, "g": 42, "b": 42},
+    "brown": {"type": "rgb", "r": 165, "g": 42, "b": 42},
+    "chocolate": {"type": "rgb", "r": 210, "g": 105, "b": 30},
+    
+    "âmbar": {"type": "rgb", "r": 255, "g": 191, "b": 0},
+    "amber": {"type": "rgb", "r": 255, "g": 191, "b": 0},
+    "amberglow": {"type": "rgb", "r": 255, "g": 191, "b": 0},
+    
+    "pêssego": {"type": "rgb", "r": 255, "g": 218, "b": 185},
+    "peach": {"type": "rgb", "r": 255, "g": 218, "b": 185},
+    "zenpeach": {"type": "rgb", "r": 255, "g": 218, "b": 185},
+    
+    "areia": {"type": "rgb", "r": 244, "g": 164, "b": 96},
+    "sand": {"type": "rgb", "r": 244, "g": 164, "b": 96},
+    "desertsand": {"type": "rgb", "r": 244, "g": 164, "b": 96},
+    
+    "luar": {"type": "rgb", "r": 240, "g": 248, "b": 255},
+    "moonlight": {"type": "rgb", "r": 240, "g": 248, "b": 255},
+    
+    "cyberpunkpink": {"type": "rgb", "r": 255, "g": 0, "b": 128},
+    "deepsea": {"type": "rgb", "r": 0, "g": 51, "b": 102},
+    "forestmist": {"type": "rgb", "r": 102, "g": 153, "b": 102},
+    "midnightrose": {"type": "rgb", "r": 77, "g": 0, "b": 26},
+    "vaporwaveblue": {"type": "rgb", "r": 0, "g": 255, "b": 255},
+    "shadypurple": {"type": "rgb", "r": 75, "g": 0, "b": 130},
+    "cleansky": {"type": "rgb", "r": 135, "g": 206, "b": 235},
+    "focusgold": {"type": "rgb", "r": 255, "g": 215, "b": 0}
 }

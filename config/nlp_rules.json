@@ -1,4 +1,12 @@
 {
+  "autocorrect": {
+    " dot ": ".",
+    " ponto ": ".",
+    " dotcom": ".com",
+    " pontocom": ".com",
+    "dot com": ".com",
+    "ponto com": ".com"
+  },
   "abort_keywords": [
     "cancel", "nevermind", "forget it", "abort"
   ],
