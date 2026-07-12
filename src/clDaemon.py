@@ -168,10 +168,13 @@ class CentralDaemon:
             self.awaiting_spotify_choice = False
             return [({"action": "abort"}, "jarvis/sys/control")]
 
-        # 4. Clean & Autocorrect
+        # 4. Clean & Autocorrect        
         for bad, good in self.nlp_rules.get("autocorrect", {}).items():
             text = text.replace(bad, good)
-        text = re.sub(r'[.,!?]', '', text)
+            
+        text = re.sub(r'[,!?]', '', text)
+        
+        text = re.sub(r'\.(?!\w)', '', text)
         
         if self.debug_nlp:
             logging.info(f"[DEBUG NLP] Cleaned Text: '{text}'")
@@ -247,9 +250,17 @@ class CentralDaemon:
                     implicit_match = re.search(rf'\b(?:play|tocar)\s+(.+?)\s+(?:by|my|de|do|da)\b', chunk, re.IGNORECASE)
                     if implicit_match: payload["track_name"] = implicit_match.group(1).strip()
 
-            # System Entities
-            elif payload.get("action") in ["open", "close"] and action_word_used:
-                sys_match = re.search(rf'\b{action_word_used}\b\s+(?:(?:to|para|the|o|a|pasta|folder|dir|directory|app|aplicativo)\s+)*(.+)', chunk, re.IGNORECASE)
+            # System & Web Entities
+            elif payload.get("action") in ["open", "close", "search", "open_site"] and action_word_used:
+                if payload.get("action") == "search":
+                    # Strips filler words like "online for", "na internet por", etc.
+                    sys_match = re.search(rf'\b{action_word_used}\b\s+(?:(?:online|for|sobre|por|na internet|the web for)\s+)*(.+)', chunk, re.IGNORECASE)
+                elif payload.get("action") == "open_site":
+                    sys_match = re.search(rf'\b{action_word_used}\b\s+(?:(?:the site|o site|online|website)\s+)*(.+)', chunk, re.IGNORECASE)
+                else:
+                    # Standard app/folder opening
+                    sys_match = re.search(rf'\b{action_word_used}\b\s+(?:(?:to|para|the|o|a|pasta|folder|dir|directory|app|aplicativo)\s+)*(.+)', chunk, re.IGNORECASE)
+                
                 if sys_match: payload["target"] = sys_match.group(1).strip()
 
             # Topic Resolution

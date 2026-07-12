@@ -1,16 +1,18 @@
-# --- IMPORTS ---
 import os
 import re
 import sys
-import time
 import json
-import logging
-import collections
 import numpy as np
 import pyaudio
+import logging
+import collections
+import time
+import site
+import paho.mqtt.publish as publish
 import paho.mqtt.client as mqtt_client
 from typing import Dict, Any, Tuple, Optional, Deque
 from contextlib import contextmanager
+from ctypes import CFUNCTYPE, c_char_p, c_int, cdll
 
 # --- OPTIMIZATION FLAGS ---
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -18,26 +20,48 @@ os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["TFLITE_NUM_THREADS"] = "1"
 
-# --- SILENCE ALSA & LIBRARY WARNINGS ---
+# --- LINUX C-LEVEL ALSA & JACK SILENCER ---
+def py_error_handler(filename, line, function, err, fmt):
+    pass
+
+try:
+    ERROR_HANDLER_FUNC = CFUNCTYPE(None, c_char_p, c_int, c_char_p, c_int, c_char_p)
+    c_error_handler = ERROR_HANDLER_FUNC(py_error_handler)
+    asound = cdll.LoadLibrary('libasound.so.2')
+    asound.snd_lib_error_set_handler(c_error_handler)
+except Exception:
+    pass
+
+# --- LOGGING SETUP ---
 import warnings
 warnings.filterwarnings("ignore")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("faster_whisper").setLevel(logging.WARNING)
-logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [VOICE] %(message)s", datefmt="%H:%M:%S")
+
+# Direct Python logging to stdout so we can cleanly redirect stderr if needed
+logging.basicConfig(
+    level=logging.INFO, 
+    format="[%(asctime)s] [VOICE] %(message)s", 
+    datefmt="%H:%M:%S",
+    stream=sys.stdout
+)
 
 @contextmanager
-def silence_alsa():
-    """Context manager to suppress low-level ALSA audio warnings from C/C++ libraries."""
+def silence_c_errors():
+    """
+    Performs a deep C-level file descriptor redirection of stderr to completely
+    swallow JACK, ALSA, and PulseAudio warnings that bypass standard Python logging.
+    """
     devnull = os.open(os.devnull, os.O_WRONLY)
     old_stderr = os.dup(2)
     sys.stderr.flush()
-    os.dup2(devnull, 2)
-    os.close(devnull)
     try:
+        os.dup2(devnull, 2)
         yield
     finally:
         os.dup2(old_stderr, 2)
         os.close(old_stderr)
+        os.close(devnull)
 
 # --- WINDOWS CUDA PATH INJECTION ---
 if sys.platform == 'win32':
@@ -50,7 +74,6 @@ if sys.platform == 'win32':
                 try: os.add_dll_directory(bin_folder)
                 except OSError: pass
                 
-    import site
     for site_pkg in site.getsitepackages() + [site.getusersitepackages()]:
         for lib in ["cublas", "cudnn"]:
             lib_bin = os.path.join(site_pkg, "nvidia", lib, "bin")
@@ -93,7 +116,10 @@ class VoiceSensor:
         
         # Hardware Setup
         self.settings: Dict[str, Any] = self._load_settings()
-        self.audio: pyaudio.PyAudio = pyaudio.PyAudio()
+        
+        with silence_c_errors():
+            self.audio: pyaudio.PyAudio = pyaudio.PyAudio()
+            
         self.mic_stream: Optional[pyaudio.Stream] = None
         
         # Models
@@ -124,7 +150,12 @@ class VoiceSensor:
         if not jarvis_path:
             logging.critical(f"Error: Pre-trained '{self.target_word}' model not found!")
             sys.exit(1)
-        return Model(wakeword_models=[jarvis_path])
+            
+        # API handler for Python 3.13+ environments
+        try:
+            return Model(wakeword_models=[jarvis_path])
+        except TypeError:
+            return Model(wakeword_model_paths=[jarvis_path])
 
     def _init_whisper(self) -> WhisperModel:
         hw_choice = self.settings.get("hardware", "cpu").lower()
@@ -186,7 +217,6 @@ class VoiceSensor:
     def _calculate_thresholds(self) -> Tuple[float, float, float]:
         """Dynamically calculates room noise thresholds to prevent false cutoffs."""
         if len(self.ambient_noise_buffer) > 25:
-            # Drop the most recent audio chunks which might contain the wake word itself
             true_background = list(self.ambient_noise_buffer)[:-25]
             baseline = np.mean(true_background)
         else:
@@ -229,7 +259,6 @@ class VoiceSensor:
         silence_counter, wait_counter = 0, 0
         started_speaking = False
         
-        # Flush buffer
         try:
             available = self.mic_stream.get_read_available()
             if available > 0: self.mic_stream.read(available, exception_on_overflow=False)
@@ -265,7 +294,7 @@ class VoiceSensor:
     # --- CORE EXECUTION LOOP ---
     def listen(self) -> None:
         """The main blocking loop that processes continuous audio."""
-        with silence_alsa():
+        with silence_c_errors():
             self.mic_stream = self.audio.open(
                 format=self.FORMAT, channels=self.CHANNELS, rate=self.RATE, 
                 input=True, frames_per_buffer=self.CHUNK
@@ -282,11 +311,10 @@ class VoiceSensor:
             # Live Volume Meter
             bar_length = int(max(0, min(current_rms / 100, 40))) 
             meter = "█" * bar_length + "-" * (40 - bar_length)
-            print(f"[LIVE] Vol: {current_rms:5.0f} |{meter}|".ljust(80), end='\r')
+            print(f"[LIVE] Vol: {current_rms:5.0f} ||{meter}||".ljust(80), end='\r')
             
             self.oww_model.predict(audio_data)
             
-            # Check models for wake word trigger
             for mdl in self.oww_model.prediction_buffer.keys():
                 scores = list(self.oww_model.prediction_buffer[mdl])
                 
@@ -313,14 +341,12 @@ class VoiceSensor:
                             logging.warning(f"Could not vocalize wake greeting: {e}")
                             self.tts_busy = False
                             
-                    # Thread Lock: Wait for TTS
                     wait_start = time.time()
                     while self.tts_busy and (time.time() - wait_start) < 30.0:
                         time.sleep(0.1)
                         
                     if is_remote: self.force_mic = False
                     
-                    # Capture Command
                     b_noise, a_thresh, s_thresh = self._calculate_thresholds()
                     logging.info(f"Room Baseline: {b_noise:.0f} | Activate: {a_thresh:.0f} | Silence: {s_thresh:.0f}")
                         
@@ -336,7 +362,6 @@ class VoiceSensor:
                         
                     print("="*50 + "\n")
                     
-                    # Reset buffers to prevent infinite loop triggers
                     self.oww_model.reset()
                     self.ambient_noise_buffer.clear()
                     

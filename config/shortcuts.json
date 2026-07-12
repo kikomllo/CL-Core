@@ -34,6 +34,7 @@
     "project folder": "~/OneDrive/Programming/GitHub/CL-Core"
   },
   "system_keywords": {
+    "default_terminal": "gnome-terminal",
     "terminal_aliases": ["terminal", "console", "shell", "cmd"],
     "go_back": ["back", "up", "..", "previous", "return", "voltar", "trás"]
   }
