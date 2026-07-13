@@ -84,7 +84,7 @@ class VoiceSensor:
 
     MAX_RECORD_SECONDS: int = 10
     INITIAL_SILENCE_SECONDS: float = 1.5
-    BACKGROUND_GRACE_SECONDS: float = 2.5
+    BACKGROUND_GRACE_SECONDS: float = 1.5
     SILENCE_LIMIT_SECONDS: float = 1.0
 
     MIN_BASELINE: int = 2000              
@@ -221,6 +221,11 @@ class VoiceSensor:
             
         elif action == "request_reply":
             self.awaiting_reply = True
+            self.window_grace_end = time.time() + self.BACKGROUND_GRACE_SECONDS
+            self.ambient_noise_buffer.clear()
+            self.oww_model.reset()
+            
+            logging.info(f"Direct question sequence locked. Adapting room acoustics for {self.BACKGROUND_GRACE_SECONDS}s...")
             
         elif action == "attention_on":
             self.attention_mode = True
@@ -261,7 +266,7 @@ class VoiceSensor:
             "audio": command_audio,
             "beam_size": 2,
             "vad_filter": True,
-            "initial_prompt": "Hey Jarvis, turn on the lights. Play Spotify. Search online. Open site. youtube.com google.com",
+            "initial_prompt": "",
             "vad_parameters": dict(min_silence_duration_ms=500)
         }
         if lang != "auto":
@@ -272,7 +277,9 @@ class VoiceSensor:
 
     def _record_command(self, act_thresh: float, sil_thresh: float, bypass_wakeword: bool) -> np.ndarray:
         wait_limit = 5.0 if bypass_wakeword else self.INITIAL_SILENCE_SECONDS
-        logging.info(f"LISTENING... (Trigger: >{act_thresh:.0f} | Cutoff: <{sil_thresh:.0f} | Timeout: {wait_limit}s)")
+        
+        if not self.attention_mode:
+            logging.info(f"LISTENING... (Trigger: >{act_thresh:.0f} | Cutoff: <{sil_thresh:.0f} | Timeout: {wait_limit}s)")
         
         frames = []
         max_chunks = int(self.RATE / self.CHUNK * self.MAX_RECORD_SECONDS)
@@ -298,6 +305,10 @@ class VoiceSensor:
             
             rms = np.sqrt(np.mean(np.square(audio_chunk.astype(np.float32))))
             
+            bar_length = int(max(0, min(rms / 100, 40))) 
+            meter = "█" * bar_length + "-" * (40 - bar_length)
+            print(f"\r\033[K[RECORDING] Vol: {rms:5.0f} ||{meter}||", end='', flush=True)
+            
             if not started_speaking:
                 if rms > act_thresh:
                     started_speaking, silence_counter = True, 0
@@ -308,11 +319,13 @@ class VoiceSensor:
                 else: silence_counter = 0
                     
             if started_speaking and silence_counter >= silence_limit_chunks:
-                logging.info("Silence Detected! Command captured with success.")
+                if not self.attention_mode:
+                    logging.info("Silence Detected! Command captured with success.")
                 break
                 
             if not started_speaking and wait_counter >= wait_limit_chunks:
-                logging.warning("No voice detected. Closing microphone!")
+                if not self.attention_mode:
+                    logging.warning("No voice detected. Closing microphone!")
                 break
                 
         audio_int16 = np.concatenate(frames)
@@ -369,7 +382,6 @@ class VoiceSensor:
             for mdl in self.oww_model.prediction_buffer.keys():
                 scores = list(self.oww_model.prediction_buffer[mdl])
                 
-                # Evaluate global bypass flags against time barriers
                 is_active_window = time.time() < self.active_window_end
                 bypass_wakeword = self.attention_mode or self.awaiting_reply or is_active_window
                 
@@ -381,13 +393,13 @@ class VoiceSensor:
                 voice_triggered = bypass_wakeword and (current_rms > a_thresh) and not in_grace_period
                 
                 if wakeword_triggered or voice_triggered:
-                    print("\n")
+                    if not self.attention_mode:
+                        print("\n")
                     
                     if wakeword_triggered:
                         print("="*50)
                         logging.info("WAKE WORD DETECTED!")
-                        
-                    self._publish("pc/spotify/control", {"action": "duck"})
+                        self._publish("pc/spotify/control", {"action": "duck"})
                     
                     if not bypass_wakeword:
                         try:
@@ -412,21 +424,26 @@ class VoiceSensor:
                         self.active_window_end = 0.0
                     
                     b_noise, a_thresh, s_thresh = self._calculate_thresholds()
-                    logging.info(f"Room Baseline: {b_noise:.0f} | Activate: {a_thresh:.0f} | Silence: {s_thresh:.0f}")
+                    
+                    if not self.attention_mode:
+                        logging.info(f"Room Baseline: {b_noise:.0f} | Activate: {a_thresh:.0f} | Silence: {s_thresh:.0f}")
                         
                     command_audio = self._record_command(a_thresh, s_thresh, bypass_wakeword)
+                    
                     if command_audio.size > 0:
-                        self._publish("pc/spotify/control", {"action": "unduck"})
+                        if wakeword_triggered:
+                            self._publish("pc/spotify/control", {"action": "unduck"})
+                        
                         text = self._transcribe(command_audio)
-                        logging.info(f"Heard: \"{text}\"")
                         
                         if text:
-                            logging.info("Forwarding transcript to Central Daemon...")
                             self._publish("jarvis/sensor/voice", text)
                     else:
-                        self._publish("pc/spotify/control", {"action": "unduck"})
+                        if wakeword_triggered:
+                            self._publish("pc/spotify/control", {"action": "unduck"})
                         
-                    print("="*50 + "\n")
+                    if not self.attention_mode:
+                        print("="*50 + "\n")
                     
                     self.oww_model.reset()
                     self.ambient_noise_buffer.clear()

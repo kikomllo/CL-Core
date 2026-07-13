@@ -298,10 +298,11 @@ class CentralDaemon:
                     payload_data = message.payload.decode('utf-8')
                     
                     if topic == "jarvis/sensor/voice":
-                        logging.info(f"Transcript Received: '{payload_data}'")
                         intents = self.process_voice_command(payload_data)
                         
                         if intents:
+                            logging.info(f"Command Recognized: '{payload_data}'")
+                            
                             for command, target_topic in intents:
                                 if target_topic == "jarvis/sys/control" and command.get("action") == "abort":
                                     await client.publish("jarvis/sys/tts_stop", "1")
@@ -315,18 +316,15 @@ class CentralDaemon:
                                     await client.publish(target_topic, json.dumps(command))
                                     asyncio.create_task(self.dispatch_tts_response(client, command, target_topic))
                                     
-                                    # --- CONTINUOUS CONVERSATION TRIGGER ---
-                                    # Keeps the mic hot after execution. Ignored for mic_control 
-                                    # so saying "go to sleep" actually allows the mic to close.
                                     if target_topic != "jarvis/sys/mic_control":
-                                        await client.publish("jarvis/sys/mic_control", json.dumps({"action": "open_window"}))
+                                        if self.awaiting_discovery_choice or self.awaiting_spotify_choice:
+                                            await client.publish("jarvis/sys/mic_control", json.dumps({"action": "request_reply"}))
+                                        else:
+                                            await client.publish("jarvis/sys/mic_control", json.dumps({"action": "open_window"}))
                                         
                                 else:
                                     logging.warning(f"Intent decoded ({command}), but no target topic known.")
                                 await asyncio.sleep(0.1)
-                        else:
-                            # --- SILENT REJECTION ---
-                            logging.info(f"[SILENT REJECTION] Ignored background conversation: '{payload_data}'")
                     
                     elif topic == "jarvis/feedback":
                         try:
@@ -362,5 +360,5 @@ class CentralDaemon:
 # --- MAIN ---
 if __name__ == "__main__":
     logging.info("Booting Central Brain...")
-    daemon = CentralDaemon(debug_nlp=True)
+    daemon = CentralDaemon(debug_nlp=False)
     asyncio.run(daemon.run())
