@@ -7,6 +7,7 @@ import logging
 import asyncio
 import json
 import jellyfish
+import threading
 from typing import Tuple, Optional, Dict, Any, List
 from dotenv import load_dotenv
 import spotipy
@@ -45,6 +46,7 @@ class SpotifyManager:
 
         # Isolated State Memory
         self.search_cache: Dict[int, str] = {}
+        self.cache_lock = threading.Lock()
         self.pre_duck_volume: Optional[int] = None
         
         # Configuration
@@ -207,13 +209,13 @@ class SpotifyManager:
         
         # Low confidence fallback cache
         msg = "CONFIDENCE_LOW|"
-        for idx, item in enumerate(best_items_list): 
-            choice_num = idx + 1
-            self.search_cache[choice_num] = item['uri']
-            msg += f"\n[{choice_num}] {item['name']} by {item['artists'][0]['name']}"
+        with self.cache_lock:
+            for idx, item in enumerate(best_items_list): 
+                choice_num = idx + 1
+                self.search_cache[choice_num] = item['uri']
+                msg += f"\n[{choice_num}] {item['name']} by {item['artists'][0]['name']}"
             
         return True, msg
-
     def _play_artist_fuzzy(self, artist_name: str) -> Tuple[bool, str]:
         logging.info(f"Fuzzy searching Spotify for artist: '{artist_name}'")
         results = self.sp.search(q=artist_name, type='artist', limit=1)
@@ -258,10 +260,13 @@ class SpotifyManager:
                 return self._handle_ducking(action)
             
             if action == "play_choice" and choice_index is not None:
-                uri = self.search_cache.get(choice_index)
+                with self.cache_lock:
+                    uri = self.search_cache.get(choice_index)
+                    if uri:
+                        self.search_cache.clear()
+                        
                 if uri:
                     self.sp.start_playback(uris=[uri])
-                    self.search_cache.clear()
                     return True, f"Playing option {choice_index}."
                 return False, f"Option {choice_index} is invalid or expired."
                 
@@ -293,8 +298,12 @@ class SpotifyManager:
             return False, f"Action '{action}' is not recognized."
                 
         except spotipy.exceptions.SpotifyException as e:
-            if e.http_status == 403: return False, "Action refused. Premium account required."
-            elif e.http_status == 404: return False, "No active device found. Open Spotify first."
+            if e.http_status == 403: 
+                if action == "play" and not any([track_name, artist_name, playlist_name, search_query, choice_index]):
+                    return False, "Music is already playing."
+                return False, "Action refused. Premium account required or playback restriction."
+            elif e.http_status == 404: 
+                return False, "No active device found. Open Spotify first."
             return False, f"Spotify API Error: {e}"
         except Exception as e:
             return False, f"Internal Error: {str(e)}"
@@ -303,39 +312,42 @@ class SpotifyManager:
 # --- MQTT SERVICE LISTENER ---
 async def mqtt_service_listener(manager: SpotifyManager) -> None:
     logging.info("Service Mode initialized. Listening on topic 'pc/spotify/control'...")
-    try:
-        async with aiomqtt.Client("localhost") as mqtt_client:
-            await mqtt_client.subscribe("pc/spotify/control")
-            
-            async for message in mqtt_client.messages:
-                try:
-                    payload = json.loads(message.payload.decode('utf-8'))
-                    logging.info(f"Command Received: {payload}")
-                    
-                    # Offload strictly synchronous Spotipy requests to a background thread
-                    success, msg = await asyncio.to_thread(
-                        manager.execute_command, 
-                        action=payload.get("action"), 
-                        volume=payload.get("volume"), 
-                        track_name=payload.get("track_name"), 
-                        artist_name=payload.get("artist_name"), 
-                        playlist_name=payload.get("playlist_name"), 
-                        search_query=payload.get("search_query"), 
-                        choice_index=payload.get("choice_index")
-                    )
-                    
-                    await mqtt_client.publish("jarvis/feedback", json.dumps({
-                        "device": "spotify",
-                        "status": "success" if success else "error",
-                        "message": msg
-                    }))
-                    
-                except json.JSONDecodeError:
-                    logging.error("Received malformed JSON data.")
-    except aiomqtt.MqttError as e:
-        logging.error(f"MQTT Connection Error: {e} (Is Mosquitto running?)")
-    except asyncio.CancelledError:
-        logging.info("Spotify service shutting down.")
+    while True:
+        try:
+            async with aiomqtt.Client("localhost") as mqtt_client:
+                await mqtt_client.subscribe("pc/spotify/control")
+                
+                async for message in mqtt_client.messages:
+                    try:
+                        payload = json.loads(message.payload.decode('utf-8'))
+                        logging.info(f"Command Received: {payload}")
+                        
+                        # Offload strictly synchronous Spotipy requests to a background thread
+                        success, msg = await asyncio.to_thread(
+                            manager.execute_command, 
+                            action=payload.get("action"), 
+                            volume=payload.get("volume"), 
+                            track_name=payload.get("track_name"), 
+                            artist_name=payload.get("artist_name"), 
+                            playlist_name=payload.get("playlist_name"), 
+                            search_query=payload.get("search_query"), 
+                            choice_index=payload.get("choice_index")
+                        )
+                        
+                        await mqtt_client.publish("jarvis/feedback", json.dumps({
+                            "device": "spotify",
+                            "status": "success" if success else "error",
+                            "message": msg
+                        }))
+                        
+                    except json.JSONDecodeError:
+                        logging.error("Received malformed JSON data.")
+        except aiomqtt.MqttError as e:
+            await asyncio.sleep(5)
+            logging.error(f"MQTT Connection Error: {e} (Is Mosquitto running?)")
+        except asyncio.CancelledError:
+            logging.info("Spotify service shutting down.")
+            break
 
 
 # --- MAIN ---

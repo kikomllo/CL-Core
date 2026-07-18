@@ -241,32 +241,35 @@ class TerminalManager:
 # --- MQTT SERVICE LISTENER ---
 async def mqtt_service_listener(manager: TerminalManager) -> None:
     logging.info(f"Terminal Service initialized for {CURRENT_OS.upper()}. Listening on 'pc/system/control'...")
-    try:
-        async with aiomqtt.Client("localhost") as mqtt_client:
-            await mqtt_client.subscribe("pc/system/control")
-            async for message in mqtt_client.messages:
-                try:
-                    payload = json.loads(message.payload.decode('utf-8'))
-                    logging.info(f"Command Received: {payload}")
-                    
-                    success, msg = await asyncio.to_thread(
-                        manager.execute_command, 
-                        payload.get("action"), 
-                        payload.get("target"), 
-                        payload.get("level")
-                    )
-                    
-                    await mqtt_client.publish("jarvis/feedback", json.dumps({
-                        "device": "terminal",
-                        "status": "success" if success else "error",
-                        "message": msg
-                    }))
-                except json.JSONDecodeError:
-                    logging.error("Received malformed JSON data.")
-    except aiomqtt.MqttError as e:
-        logging.error(f"MQTT Connection Error: {e}")
-    except asyncio.CancelledError:
-        logging.info("Terminal service shutting down.")
+    while True:
+        try:
+            async with aiomqtt.Client("localhost") as mqtt_client:
+                await mqtt_client.subscribe("pc/system/control")
+                async for message in mqtt_client.messages:
+                    try:
+                        payload = json.loads(message.payload.decode('utf-8'))
+                        logging.info(f"Command Received: {payload}")
+                        
+                        success, msg = await asyncio.to_thread(
+                            manager.execute_command, 
+                            payload.get("action"), 
+                            payload.get("target"), 
+                            payload.get("level")
+                        )
+                        
+                        await mqtt_client.publish("jarvis/feedback", json.dumps({
+                            "device": "terminal",
+                            "status": "success" if success else "error",
+                            "message": msg
+                        }))
+                    except json.JSONDecodeError:
+                        logging.error("Received malformed JSON data.")
+        except aiomqtt.MqttError as e:
+            logging.error(f"MQTT Connection Error: {e}")
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            logging.info("Terminal service shutting down.")
+            break
 
 # --- MAIN ---
 def main():

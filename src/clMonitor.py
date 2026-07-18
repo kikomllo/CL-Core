@@ -4,6 +4,7 @@ import json
 import time
 from bleak import BleakScanner
 from typing import Dict, Any
+import paho.mqtt.client as mqtt_client
 
 logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [MONITOR] %(message)s", datefmt="%H:%M:%S")
 
@@ -14,12 +15,19 @@ class PresenceMonitor:
         self.room_threshold = -60
         self.exit_threshold = -70
 
-    def _trigger_light(self, action: str):
-        # We assume the MQTT client is created contextually for simplicity, 
-        # or you can make a persistent class-level client.
+        # --- PERSISTENT MQTT CONNECTION ---
+        self.mqtt = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION1)
         try:
-            import paho.mqtt.publish as publish
-            publish.single("home/room/desk_light/set", json.dumps({"action": action}), hostname="localhost")
+            self.mqtt.connect("localhost", 1883, 60)
+            self.mqtt.loop_start()  # Starts the background network thread
+            logging.info("Connected to persistent MQTT bus.")
+        except Exception as e:
+            logging.critical(f"Failed to connect to MQTT Broker: {e}")
+
+    def _trigger_light(self, action: str):
+        try:
+            payload = json.dumps({"action": action})
+            self.mqtt.publish("home/room/desk_light/set", payload)
         except Exception as e:
             logging.error(f"MQTT Publish Failed: {e}")
 
@@ -52,7 +60,13 @@ class PresenceMonitor:
                                       if (now - d["last_seen"]) < 60}
 
     def run(self):
-        asyncio.run(self._monitor_loop())
+        try:
+            asyncio.run(self._monitor_loop())
+        except KeyboardInterrupt:
+            logging.info("Shutting down Presence Monitor.")
+        finally:
+            self.mqtt.loop_stop()
+            self.mqtt.disconnect()
 
 if __name__ == "__main__":
     monitor = PresenceMonitor()

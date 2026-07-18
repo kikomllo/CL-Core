@@ -2,8 +2,21 @@ import subprocess
 import sys
 import time
 import json
+import os
 import logging
 import paho.mqtt.client as mqtt_client
+
+# --- OS SETTINGS & DEBUG FLAG ---
+def load_settings():
+    config_path = os.path.join("config", "settings.json")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+SETTINGS = load_settings()
+DEBUG_MQTT = SETTINGS.get("debug_mqtt", False)
 
 # --- SUPERVISOR CONFIGURATION ---
 MODULES = [
@@ -35,53 +48,66 @@ def stop_module(filename):
                 proc.kill()
         del PROCESSES[filename]
 
-# --- MQTT LISTENER ---
+# --- MQTT LISTENER & SNOOPER ---
 def on_message(client, userdata, msg):
-    """Listens for commands from the Central Brain."""
+    """Listens for commands and optionally sniffs all OS traffic."""
+    topic = msg.topic
     try:
-        payload = json.loads(msg.payload.decode('utf-8'))
-        action = payload.get("action")
-        target = payload.get("target")
+        payload_str = msg.payload.decode('utf-8')
+    except UnicodeDecodeError:
+        payload_str = "<binary_payload>"
 
-        # --- GLOBAL ECOSYSTEM RESTART SEQUENCE ---
-        if action == "restart_all_modules":
-            print("\n" + "="*60)
-            print("[SUPERVISOR] INITIATING FULL ECOSYSTEM REBOOT DIRECTIVE")
-            print("="*60)
-            
-            for filename in list(PROCESSES.keys()):
-                print(f"[SUPERVISOR] Terminating: {filename}")
-                stop_module(filename)
-                
-            time.sleep(1.5)
-            
-            print("\n[SUPERVISOR] Resurrecting infrastructure stack...")
-            for desc, filename in MODULES:
-                start_module(desc, filename)
-                time.sleep(0.4)
-                
-            print("\n" + "="*60)
-            print("[SUPERVISOR] GLOBAL ECOSYSTEM REBOOT COMPLETE")
-            print("="*60 + "\n")
+    # --- GLOBAL MQTT DEBUG SNOOPER ---
+    if DEBUG_MQTT:
+        # Prints in Cyan (\033[36m) to easily distinguish from standard service logs
+        print(f"\r\033[K\033[36m[DEBUG-MQTT] [CH: {topic}] {payload_str}\033[0m")
 
-        # --- INDIVIDUAL SURGICAL RESTART ---
-        elif action == "restart_module" and target:
-            print(f"\n[SUPERVISOR] Executing surgical restart for: {target}")
-            stop_module(target)
-            time.sleep(1.0) 
-            
-            desc = "Restarted Microservice"
-            for d, f in MODULES:
-                if f == target:
-                    desc = d
-                    break
+    # --- SUPERVISOR COMMANDS ---
+    if topic == "jarvis/sys/manager":
+        try:
+            payload = json.loads(payload_str)
+            action = payload.get("action")
+            target = payload.get("target")
+
+            # --- GLOBAL ECOSYSTEM RESTART SEQUENCE ---
+            if action == "restart_all_modules":
+                print("\n" + "="*60)
+                print("[SUPERVISOR] INITIATING FULL ECOSYSTEM REBOOT DIRECTIVE")
+                print("="*60)
+                
+                for filename in list(PROCESSES.keys()):
+                    print(f"[SUPERVISOR] Terminating: {filename}")
+                    stop_module(filename)
                     
-            start_module(desc, target)
-            
-    except json.JSONDecodeError:
-        print("[SUPERVISOR] Received malformed JSON command.")
-    except Exception as e:
-        print(f"[SUPERVISOR] Execution Error: {e}")
+                time.sleep(1.5)
+                
+                print("\n[SUPERVISOR] Resurrecting infrastructure stack...")
+                for desc, filename in MODULES:
+                    start_module(desc, filename)
+                    time.sleep(0.4)
+                    
+                print("\n" + "="*60)
+                print("[SUPERVISOR] GLOBAL ECOSYSTEM REBOOT COMPLETE")
+                print("="*60 + "\n")
+
+            # --- INDIVIDUAL SURGICAL RESTART ---
+            elif action == "restart_module" and target:
+                print(f"\n[SUPERVISOR] Executing surgical restart for: {target}")
+                stop_module(target)
+                time.sleep(1.0) 
+                
+                desc = "Restarted Microservice"
+                for d, f in MODULES:
+                    if f == target:
+                        desc = d
+                        break
+                        
+                start_module(desc, target)
+                
+        except json.JSONDecodeError:
+            print("[SUPERVISOR] Received malformed JSON command.")
+        except Exception as e:
+            print(f"[SUPERVISOR] Execution Error: {e}")
 
 # --- MASTER BOOT SEQUENCE ---
 def main():
@@ -96,6 +122,11 @@ def main():
     try:
         client.connect("localhost", 1883, 60)
         client.subscribe("jarvis/sys/manager")
+        
+        if DEBUG_MQTT:
+            client.subscribe("#")  # Subscribe to literally everything
+            print("\033[36m[SUPERVISOR] Global MQTT Packet Sniffer is ONLINE.\033[0m")
+            
         client.loop_start()
     except Exception as e:
         print(f"[SUPERVISOR] FATAL: Could not connect to MQTT Broker. Is Mosquitto running? {e}")
@@ -104,16 +135,21 @@ def main():
     # 2. Spawn the Microservices
     for desc, filename in MODULES:
         start_module(desc, filename)
-        time.sleep(0.5)  # Stagger boot to prevent CPU spikes
+        time.sleep(0.5)
 
     print("\n" + "="*50)
     print("ALL SYSTEMS ONLINE. Press Ctrl+C to shutdown.")
     print("="*50 + "\n")
 
-    # 3. Hold the main thread open permanently
     try:
         while True:
-            time.sleep(1)
+            time.sleep(3)
+            for filename, proc in list(PROCESSES.items()):
+                if proc.poll() is not None:  # A return code means the process died
+                    print(f"\n[SUPERVISOR] FATAL: {filename} died unexpectedly! Resurrecting...")
+                    
+                    desc = next((d for d, f in MODULES if f == filename), "Unknown Module")
+                    start_module(desc, filename)
     except KeyboardInterrupt:
         print("\n[SUPERVISOR] Manual shutdown triggered. Terminating all microservices...")
         for desc, filename in MODULES:
