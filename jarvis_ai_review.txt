@@ -6,8 +6,21 @@ import subprocess
 import sys
 import time
 import json
+import os
 import logging
 import paho.mqtt.client as mqtt_client
+
+# --- OS SETTINGS & DEBUG FLAG ---
+def load_settings():
+    config_path = os.path.join("config", "settings.json")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+SETTINGS = load_settings()
+DEBUG_MQTT = SETTINGS.get("debug_mqtt", False)
 
 # --- SUPERVISOR CONFIGURATION ---
 MODULES = [
@@ -39,53 +52,66 @@ def stop_module(filename):
                 proc.kill()
         del PROCESSES[filename]
 
-# --- MQTT LISTENER ---
+# --- MQTT LISTENER & SNOOPER ---
 def on_message(client, userdata, msg):
-    """Listens for commands from the Central Brain."""
+    """Listens for commands and optionally sniffs all OS traffic."""
+    topic = msg.topic
     try:
-        payload = json.loads(msg.payload.decode('utf-8'))
-        action = payload.get("action")
-        target = payload.get("target")
+        payload_str = msg.payload.decode('utf-8')
+    except UnicodeDecodeError:
+        payload_str = "<binary_payload>"
 
-        # --- GLOBAL ECOSYSTEM RESTART SEQUENCE ---
-        if action == "restart_all_modules":
-            print("\n" + "="*60)
-            print("[SUPERVISOR] INITIATING FULL ECOSYSTEM REBOOT DIRECTIVE")
-            print("="*60)
-            
-            for filename in list(PROCESSES.keys()):
-                print(f"[SUPERVISOR] Terminating: {filename}")
-                stop_module(filename)
-                
-            time.sleep(1.5)
-            
-            print("\n[SUPERVISOR] Resurrecting infrastructure stack...")
-            for desc, filename in MODULES:
-                start_module(desc, filename)
-                time.sleep(0.4)
-                
-            print("\n" + "="*60)
-            print("[SUPERVISOR] GLOBAL ECOSYSTEM REBOOT COMPLETE")
-            print("="*60 + "\n")
+    # --- GLOBAL MQTT DEBUG SNOOPER ---
+    if DEBUG_MQTT:
+        # Prints in Cyan (\033[36m) to easily distinguish from standard service logs
+        print(f"\r\033[K\033[36m[DEBUG-MQTT] [CH: {topic}] {payload_str}\033[0m")
 
-        # --- INDIVIDUAL SURGICAL RESTART ---
-        elif action == "restart_module" and target:
-            print(f"\n[SUPERVISOR] Executing surgical restart for: {target}")
-            stop_module(target)
-            time.sleep(1.0) 
-            
-            desc = "Restarted Microservice"
-            for d, f in MODULES:
-                if f == target:
-                    desc = d
-                    break
+    # --- SUPERVISOR COMMANDS ---
+    if topic == "jarvis/sys/manager":
+        try:
+            payload = json.loads(payload_str)
+            action = payload.get("action")
+            target = payload.get("target")
+
+            # --- GLOBAL ECOSYSTEM RESTART SEQUENCE ---
+            if action == "restart_all_modules":
+                print("\n" + "="*60)
+                print("[SUPERVISOR] INITIATING FULL ECOSYSTEM REBOOT DIRECTIVE")
+                print("="*60)
+                
+                for filename in list(PROCESSES.keys()):
+                    print(f"[SUPERVISOR] Terminating: {filename}")
+                    stop_module(filename)
                     
-            start_module(desc, target)
-            
-    except json.JSONDecodeError:
-        print("[SUPERVISOR] Received malformed JSON command.")
-    except Exception as e:
-        print(f"[SUPERVISOR] Execution Error: {e}")
+                time.sleep(1.5)
+                
+                print("\n[SUPERVISOR] Resurrecting infrastructure stack...")
+                for desc, filename in MODULES:
+                    start_module(desc, filename)
+                    time.sleep(0.4)
+                    
+                print("\n" + "="*60)
+                print("[SUPERVISOR] GLOBAL ECOSYSTEM REBOOT COMPLETE")
+                print("="*60 + "\n")
+
+            # --- INDIVIDUAL SURGICAL RESTART ---
+            elif action == "restart_module" and target:
+                print(f"\n[SUPERVISOR] Executing surgical restart for: {target}")
+                stop_module(target)
+                time.sleep(1.0) 
+                
+                desc = "Restarted Microservice"
+                for d, f in MODULES:
+                    if f == target:
+                        desc = d
+                        break
+                        
+                start_module(desc, target)
+                
+        except json.JSONDecodeError:
+            print("[SUPERVISOR] Received malformed JSON command.")
+        except Exception as e:
+            print(f"[SUPERVISOR] Execution Error: {e}")
 
 # --- MASTER BOOT SEQUENCE ---
 def main():
@@ -100,6 +126,11 @@ def main():
     try:
         client.connect("localhost", 1883, 60)
         client.subscribe("jarvis/sys/manager")
+        
+        if DEBUG_MQTT:
+            client.subscribe("#")  # Subscribe to literally everything
+            print("\033[36m[SUPERVISOR] Global MQTT Packet Sniffer is ONLINE.\033[0m")
+            
         client.loop_start()
     except Exception as e:
         print(f"[SUPERVISOR] FATAL: Could not connect to MQTT Broker. Is Mosquitto running? {e}")
@@ -108,7 +139,7 @@ def main():
     # 2. Spawn the Microservices
     for desc, filename in MODULES:
         start_module(desc, filename)
-        time.sleep(0.5)  # Stagger boot to prevent CPU spikes
+        time.sleep(0.5)
 
     print("\n" + "="*50)
     print("ALL SYSTEMS ONLINE. Press Ctrl+C to shutdown.")
@@ -128,410 +159,6 @@ def main():
         for desc, filename in MODULES:
             stop_module(filename)
         print("[SUPERVISOR] System powered down. Goodbye.")
-
-if __name__ == "__main__":
-    main()
-```
-
-## File: `src/clControl.py`
-```python
-# --- IMPORTS ---
-import asyncio
-import argparse
-import socket
-import os
-import logging
-import json
-import sys
-import colorsys
-from typing import Optional, Dict, Any, List, Tuple
-from dotenv import load_dotenv, set_key
-from tapo import ApiClient
-from pywizlight import wizlight, PilotBuilder, discovery as wiz_discovery
-import aiomqtt
-
-# --- LOGGING SETUP ---
-logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [CONTROL] %(message)s", datefmt="%H:%M:%S")
-
-if sys.platform == 'win32':
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
-
-class LightManager:
-    """Enterprise state controller for single-device execution, dual discovery, and self-healing recovery."""
-    
-    def __init__(self):
-        self.base_dir: str = os.path.dirname(os.path.abspath(__file__))
-        self.env_path: str = os.path.abspath(os.path.join(self.base_dir, "..", ".env"))
-        load_dotenv(self.env_path)
-
-        self.color_matrix = self._load_color_matrix()
-
-        self.light_type: str = os.getenv("LIGHT_TYPE", "tapo").lower()
-        self.bulb_ip: str = os.getenv("LIGHT_IP", "")
-        self.bulb_mac: str = os.getenv("LIGHT_MAC", "")
-        
-        self.email: str = os.getenv("TAPO_EMAIL", "")
-        self.password: str = os.getenv("TAPO_PASSWORD", "")
-        
-        if self.light_type == "tapo" and not (self.email and self.password):
-            logging.error("Tapo Credentials missing in .env file.")
-            sys.exit(1)
-            
-        self.tapo_client: ApiClient = ApiClient(self.email, self.password)
-        self.last_discovered_devices: List[Dict[str, str]] = []
-        
-    def _load_color_matrix(self) -> Dict[str, Any]:
-        """Loads the absolute truth JSON mapping for colors and temperatures."""
-        matrix_path = os.path.abspath(os.path.join(self.base_dir, "..", "config", "colors.json"))
-        try:
-            with open(matrix_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception as e:
-            logging.error(f"Failed to load colors.json: {e}")
-            return {}
-
-    def update_env_credentials(self, ip: str, mac: str, light_type: str) -> None:
-        set_key(self.env_path, "LIGHT_IP", ip)
-        set_key(self.env_path, "LIGHT_MAC", mac)
-        set_key(self.env_path, "LIGHT_TYPE", light_type)
-        self.bulb_ip = ip
-        self.bulb_mac = mac
-        self.light_type = light_type
-
-    # --- TAPO MANUAL NETWORK SWEEPERS ---
-    def _get_subnet_base(self) -> str:
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                s.connect(("8.8.8.8", 80))
-                parts = s.getsockname()[0].split('.')
-                return f"{parts[0]}.{parts[1]}.{parts[2]}"
-        except Exception:
-            return "192.168.1"
-
-    async def _sweep_ips(self, ips_to_check: List[str]) -> List[Dict[str, str]]:
-        port_sem = asyncio.Semaphore(50)
-        alive_ips = [ip for ip in await asyncio.gather(*(self._check_port(ip, port_sem) for ip in ips_to_check)) if ip]
-        
-        if not alive_ips: return []
-        
-        tcp_sem = asyncio.Semaphore(15)
-        return [res for res in await asyncio.gather(*(self._probe_ip(ip, tcp_sem) for ip in alive_ips)) if res]
-
-    async def _check_port(self, ip: str, semaphore: asyncio.Semaphore) -> Optional[str]:
-        async with semaphore:
-            for port in [443, 80]:
-                try:
-                    _, writer = await asyncio.wait_for(asyncio.open_connection(ip, port), timeout=0.5)
-                    writer.close()
-                    await writer.wait_closed()
-                    return ip
-                except (asyncio.TimeoutError, ConnectionRefusedError, OSError):
-                    continue
-        return None
-
-    async def _probe_ip(self, ip: str, semaphore: asyncio.Semaphore) -> Optional[Dict[str, str]]:
-        async with semaphore:
-            for model_guess in ["l530", "l510", "p100", "p110", "l900", "l920", "l930", "generic_device"]:
-                if not hasattr(self.tapo_client, model_guess): continue
-                try:
-                    device = await getattr(self.tapo_client, model_guess)(ip)
-                    info = await asyncio.wait_for(device.get_device_info(), timeout=3.0)
-                    true_model = getattr(info, 'model', model_guess).upper()
-                    mac = getattr(info, 'mac', 'UNKNOWN').replace('-', ':').upper()
-                    return {"ip": ip, "model": true_model, "mac": mac}
-                except Exception:
-                    continue
-        return None
-
-    # --- SELF-HEALING ARCHITECTURE ---
-    async def attempt_network_repair(self) -> bool:
-        if not self.bulb_mac:
-            logging.warning("Auto-recovery bypassed: LIGHT_MAC is not assigned in your .env configuration.")
-            return False
-            
-        logging.warning(f"[SELF-HEALING] Lost connection to {self.light_type.upper()}. Scanning local network for MAC: {self.bulb_mac}...")
-        
-        try:
-            if self.light_type == "wiz":
-                results = await wiz_discovery.discover_lights(broadcast_space="255.255.255.255")
-                for dev in results:
-                    if dev.mac.lower() == self.bulb_mac.lower():
-                        logging.info(f"[SELF-HEALING] WiZ Bulb recovered at new IP: {dev.ip}")
-                        self.update_env_credentials(dev.ip, self.bulb_mac, "wiz")
-                        return True
-                        
-            elif self.light_type == "tapo":
-                base_ip = self._get_subnet_base()
-                results = await self._sweep_ips([f"{base_ip}.{i}" for i in range(1, 255)])
-                for dev in results:
-                    if dev['mac'].lower() == self.bulb_mac.lower():
-                        logging.info(f"[SELF-HEALING] Tapo Bulb recovered at new IP: {dev['ip']}")
-                        self.update_env_credentials(dev['ip'], self.bulb_mac, "tapo")
-                        return True
-        except Exception as e:
-            logging.error(f"[SELF-HEALING] Auto-recovery sequence encountered an execution error: {e}")
-            
-        return False
-
-    # --- CONCURRENT LIGHT EXECUTION ENGINE ---
-    async def control_bulb(self, toggle: bool = False, on: bool = False, off: bool = False, 
-                           color: str = None, lum: int = None, temp: int = None, retry_attempt: bool = False) -> None:
-        
-        if not self.bulb_ip:
-            raise ValueError("Target execution IP is completely missing from configurations.")
-
-        try:
-            if self.light_type == "wiz":
-                await self._execute_wiz(toggle, on, off, color, lum, temp)
-            else:
-                await self._execute_tapo(toggle, on, off, color, lum, temp)
-        except Exception as e:
-            logging.error(f"Hardware communication interface error: {e}")
-            if not retry_attempt and await self.attempt_network_repair():
-                await self.control_bulb(toggle, on, off, color, lum, temp, retry_attempt=True)
-            else:
-                raise RuntimeError("Device connection could not be established or repaired.")
-
-    async def _execute_wiz(self, toggle: bool, on: bool, off: bool, color: str, lum: int, temp: int) -> None:
-        bulb = wizlight(self.bulb_ip)
-        
-        if toggle:
-            await bulb.toggle()
-            return
-        elif off:
-            await bulb.turn_off()
-            return
-
-        if on or lum is not None or temp is not None or color:
-            brightness = lum if lum is not None else 255
-            
-            # Use RGB values directly from JSON
-            if color:
-                c_data = self.color_matrix.get(color.lower().strip())
-                if c_data:
-                    if c_data["type"] == "rgb":
-                        r, g, b = c_data["r"], c_data["g"], c_data["b"]
-                        await bulb.turn_on(PilotBuilder(brightness=brightness, rgb=(r, g, b)))
-                        logging.info(f"Setting WiZ Color to RGB: {(r, g, b)}")
-                        return
-                    elif c_data["type"] == "temp":
-                        temp = c_data["val"]
-
-            if temp is not None:
-                kelvin = int(2700 + (temp * (6500 - 2700) / 100))
-                await bulb.turn_on(PilotBuilder(brightness=brightness, colortemp=kelvin))
-                logging.info(f"Setting WiZ Temperature to {kelvin}K")
-                return
-
-            await bulb.turn_on(PilotBuilder(brightness=brightness))
-
-    async def _execute_tapo(self, toggle: bool, on: bool, off: bool, color: str, lum: int, temp: int) -> None:
-        model = os.getenv("TAPO_MODEL", "l530").lower()
-        get_device = getattr(self.tapo_client, model, self.tapo_client.l530)
-        device = await get_device(self.bulb_ip)
-        
-        if toggle:
-            info = await device.get_device_info()
-            if info.device_on: await device.off()
-            else: await device.on()
-            return
-        elif on: await device.on()
-        elif off:
-            await device.off()
-            return
-
-        tasks = []
-        if lum is not None:
-            tasks.append(device.set_brightness(lum))
-            
-        # Convert JSON RGB to Tapo HSV mathematically
-        if color:
-            c_data = self.color_matrix.get(color.lower().strip())
-            if c_data:
-                if c_data["type"] == "rgb":
-                    r, g, b = c_data["r"], c_data["g"], c_data["b"]
-                    h, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
-                    tapo_h = int(h * 360)
-                    tapo_s = int(s * 100)
-                    tasks.append(device.set_hue_saturation(tapo_h, tapo_s))
-                elif c_data["type"] == "temp":
-                    temp = c_data["val"] 
-            else:
-                logging.warning(f"Color '{color}' not found in colors.json truth matrix.")
-
-        if temp is not None:
-            tasks.append(device.set_color_temperature(int(2500 + temp * (6500 - 2500) / 100)))
-
-        if tasks:
-            await asyncio.gather(*tasks)
-
-    # --- DUAL ECOSYSTEM NETWORK DISCOVERY ENGINE ---
-    async def discovery_mode(self, voice_mode: bool = False) -> None:
-        logging.info("Broadcasting dual network discovery queries for Tapo and WiZ protocols...")
-        
-        async def scan_wiz():
-            try: return await wiz_discovery.discover_lights(broadcast_space="255.255.255.255")
-            except Exception: return []
-
-        async def scan_tapo():
-            base_ip = self._get_subnet_base()
-            return await self._sweep_ips([f"{base_ip}.{i}" for i in range(1, 255)])
-
-        wiz_res, tapo_res = await asyncio.gather(scan_wiz(), scan_tapo())
-        
-        parsed_devices = []
-        for dev in wiz_res:
-            parsed_devices.append({"type": "wiz", "model": "WIZ_BULB", "ip": dev.ip, "mac": dev.mac})
-        for dev in tapo_res:
-            parsed_devices.append({"type": "tapo", "model": dev['model'], "ip": dev['ip'], "mac": dev['mac']})
-
-        if not parsed_devices:
-            logging.warning("No responsive devices discovered on local network architectures.")
-            return
-
-        self.last_discovered_devices = parsed_devices
-        
-        table_str = "{:<5} {:<8} {:<18} {:<18}\n".format("#", "TYPE", "MODEL", "IP")
-        table_str += "-" * 55 + "\n"
-        for i, dev in enumerate(parsed_devices):
-            table_str += "{:<5} {:<8} {:<18} {:<18}\n".format(i, dev['type'].upper(), dev['model'], dev['ip'])
-
-        if voice_mode:
-            try:
-                async with aiomqtt.Client("localhost") as mqtt_client:
-                    # Publish to feedback so the Daemon catches the AWAITING_SELECTION signal
-                    await mqtt_client.publish("jarvis/feedback", json.dumps({
-                        "status": "success",
-                        "device": "discovery",
-                        "message": f"AWAITING_SELECTION|\n{table_str}"
-                    }))
-            except Exception as e:
-                logging.error(f"Failed to deploy discovery feedback: {e}")
-        else:
-            print(f"\nDiscovered {len(parsed_devices)} smart light network targets:")
-            print(table_str)
-            self._handle_cli_save(parsed_devices)
-
-    def _handle_cli_save(self, devices: List[Dict[str, str]]) -> None:
-        choice = input("\nSelect a device index to target (or press Enter to exit): ")
-        if choice.isdigit() and int(choice) < len(devices):
-            selected = devices[int(choice)]
-            if input(f"Confirm save for {selected['ip']} to local workspace configurations? (y/n): ").lower() == 'y':
-                self.update_env_credentials(selected["ip"], selected["mac"], selected["type"])
-                logging.info(f"Target locked. Operating system variables updated to track local {selected['type'].upper()} interface.")
-
-# --- MQTT SERVICE LISTENER ---
-async def mqtt_service_listener(manager: LightManager) -> None:
-    logging.info("Service Mode initialized. Listening on MQTT topics...")
-    while True:
-        try:
-            async with aiomqtt.Client("localhost") as mqtt_client:
-                await mqtt_client.subscribe("home/room/+/set") 
-                await mqtt_client.subscribe("system/discovery")
-                
-                async for message in mqtt_client.messages:
-                    try:
-                        payload = json.loads(message.payload.decode('utf-8'))
-                        logging.info(f"Incoming Request Loop Event: {payload}")
-                        action = payload.get("action")
-                        
-                        if action == "discover":
-                            asyncio.create_task(manager.discovery_mode(voice_mode=True))
-                            continue
-                            
-                        if action == "save_discovery":
-                            idx = payload.get("index")
-                            if idx is not None and 0 <= idx < len(manager.last_discovered_devices):
-                                sel = manager.last_discovered_devices[idx]
-                                manager.update_env_credentials(sel["ip"], sel["mac"], sel["type"])
-                                logging.info(f"SUCCESS: System tracking modified to drive {sel['type'].upper()} profile.")
-                            continue
-
-                        # --- ISOLATED HARDWARE TASK ---
-                        async def execute_hardware(payload_data, action_cmd):
-                            try:
-                                await manager.control_bulb(
-                                    on=(action_cmd == "on"), off=(action_cmd == "off"), toggle=(action_cmd == "toggle"),
-                                    color=payload_data.get("color"), lum=payload_data.get("lum"), temp=payload_data.get("temp")
-                                )
-                                await mqtt_client.publish("jarvis/feedback", json.dumps({
-                                    "device": "smart_lights", "status": "success", "message": f"Successfully shifted hardware targets to '{action_cmd}' state."
-                                }))
-                            except Exception as e:
-                                await mqtt_client.publish("jarvis/feedback", json.dumps({
-                                    "device": "smart_lights", "status": "error", "message": str(e)
-                                }))
-
-                        asyncio.create_task(execute_hardware(payload, action))
-                        
-                    except json.JSONDecodeError:
-                        logging.error("JSON formatting syntax mismatch caught on parsing sequence.")
-        except aiomqtt.MqttError as e:
-            logging.error(f"MQTT Connection Error: {e} (Is Mosquitto running?)")
-            await asyncio.sleep(5)
-        except asyncio.CancelledError:
-            logging.info("Light Control service shutting down.")
-            break
-
-# --- UTILITIES ---
-def print_color_list(color_matrix: Dict[str, Any]) -> None:
-    if not color_matrix:
-        print("\nError: No colors found in colors.json matrix.\n")
-        return
-
-    print("\n{:^68}".format("--- AVAILABLE COLOR PRESETS ---"))
-    print("-" * 68)
-    
-    temps = sorted(set([k.title() for k, v in color_matrix.items() if v.get("type") == "temp"]))
-    colors = sorted(set([k.title() for k, v in color_matrix.items() if v.get("type") == "rgb"]))
-    
-    print("\nWhites & Temperatures:\n")
-    for i in range(0, len(temps), 4):
-        row = temps[i:i+4]
-        print("{:<17} {:<17} {:<17} {:<17}".format(*(row + [""] * (4 - len(row)))))
-        
-    print("\nColors (RGB Matrix):\n")
-    for i in range(0, len(colors), 4):
-        row = colors[i:i+4]
-        print("{:<17} {:<17} {:<17} {:<17}".format(*(row + [""] * (4 - len(row)))))
-        
-    print("\n" + "-" * 68 + "\n")
-
-# --- MAIN ---
-def main():
-    parser = argparse.ArgumentParser(description="Microservice Control for Unified Smart Lights")
-    parser.add_argument("--color", "-c", type=str)
-    parser.add_argument("-l", "--lum", type=int)
-    parser.add_argument("-t", "--temp", type=int)
-    parser.add_argument("--toggle", action="store_true")
-    parser.add_argument("--on", action="store_true")
-    parser.add_argument("--off", action="store_true")
-    parser.add_argument("--list", action="store_true")
-    parser.add_argument("-d", "--discovery", action="store_true")
-    
-    args = parser.parse_args()
-
-    manager = LightManager()
-
-    if args.list:
-        print_color_list(manager.color_matrix)
-        return
-
-    if args.discovery:
-        asyncio.run(manager.discovery_mode())
-        return
-
-    if any([args.on, args.off, args.toggle, args.color, args.lum, args.temp]):
-        asyncio.run(manager.control_bulb(
-            toggle=args.toggle, on=args.on, off=args.off, 
-            color=args.color, lum=args.lum, temp=args.temp
-        ))
-    else:
-        try:
-            asyncio.run(mqtt_service_listener(manager))
-        except KeyboardInterrupt:
-            logging.info("Exiting Light Actuator runtime environment.")
 
 if __name__ == "__main__":
     main()
@@ -645,314 +272,6 @@ async def run_tts_service():
             await asyncio.sleep(5)
 if __name__ == "__main__":
     asyncio.run(run_tts_service())
-```
-
-## File: `src/clTerminal.py`
-```python
-# --- IMPORTS ---
-import os
-import sys
-import subprocess
-import platform
-import json
-import logging
-import asyncio
-import argparse
-import aiomqtt
-import time
-import re
-import webbrowser
-import urllib.parse
-from typing import Tuple, Optional, Dict, Any, List
-
-# --- LOGGING SETUP ---
-logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [TERMINAL] %(message)s", datefmt="%H:%M:%S")
-
-if sys.platform == 'win32':
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
-CURRENT_OS = platform.system().lower()
-
-class TerminalManager:
-    """Encapsulates system state, OS execution routing, and memory handling."""
-    
-    def __init__(self):
-        self.base_dir: str = os.path.dirname(os.path.abspath(__file__))
-        self.shortcuts: Dict[str, Any] = {"apps": {}, "folders": {}, "system_keywords": {}}
-        self.last_opened_dir: str = os.path.expanduser("~")
-        self.terminal_is_open: bool = False
-        self.pid_file: str = os.path.join(os.path.expanduser("~"), ".jarvis_nav_pid")
-        
-        self._load_shortcuts()
-
-    def _load_shortcuts(self) -> None:
-        """Loads shortcuts.json into isolated class memory."""
-        shortcuts_path = os.path.abspath(os.path.join(self.base_dir, "..", "config", "shortcuts.json"))
-        try:
-            with open(shortcuts_path, 'r', encoding='utf-8') as f:
-                self.shortcuts = json.load(f)
-            logging.info(f"Loaded {len(self.shortcuts.get('apps', {}))} apps and {len(self.shortcuts.get('folders', {}))} folders.")
-        except FileNotFoundError:
-            logging.warning("shortcuts.json not found. Operating with empty dictionaries.")
-        except json.JSONDecodeError as e:
-            logging.critical(f"Syntax error in shortcuts.json: {e}")
-
-    # --- PID LIFECYCLE MANAGEMENT ---
-    def _clear_pids(self) -> bool:
-        """Synchronously kills all tracked terminal PIDs and clears the file."""
-        killed_any = False
-        if self.terminal_is_open and os.path.exists(self.pid_file):
-            try:
-                with open(self.pid_file, 'r') as f:
-                    pids = f.read().splitlines()
-            except Exception as e:
-                logging.error(f"Failed to read PID tracker file: {e}")
-                return False
-            
-            for p in pids:
-                if not p.strip(): continue
-                if not p.strip(): continue
-                try:
-                    target_pid = int(p.strip())
-                    if CURRENT_OS == "linux":
-                        os.kill(target_pid, 9) 
-                    elif CURRENT_OS == "windows":
-                        subprocess.run(f"taskkill /F /PID {target_pid} /T", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    killed_any = True
-                except Exception:
-                    pass
-            
-            open(self.pid_file, 'w').close()
-            time.sleep(0.5)
-        
-        self.terminal_is_open = False
-        return killed_any
-
-    def _save_pid(self, pid: int) -> None:
-        """Appends a new Process ID to the tracker file."""
-        with open(self.pid_file, 'a') as f:
-            f.write(f"{pid}\n")
-        self.terminal_is_open = True
-
-    # --- EXECUTION ROUTERS ---
-    def _handle_open(self, target: str) -> Tuple[bool, str]:
-        target_clean = target.lower().strip()
-        sys_kw = self.shortcuts.get("system_keywords", {})
-        terminal_aliases = sys_kw.get("terminal_aliases", ["terminal", "console", "shell", "cmd"])
-        go_back_keywords = sys_kw.get("go_back", ["back", "up", "..", "previous", "return"])
-
-        # A. Open Base Terminal
-        if target_clean in terminal_aliases:
-            if CURRENT_OS == "linux":
-                term_emu = sys_kw.get("default_terminal", "gnome-terminal")
-                subprocess.Popen([term_emu, "--working-directory", self.last_opened_dir, "--", "bash", "-c", f"echo $$ >> {self.pid_file}; exec bash"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                self.terminal_is_open = True
-            elif CURRENT_OS == "windows":
-                proc = subprocess.Popen(["cmd", "/k", f"title JarvisNavigation && cd /d {self.last_opened_dir}"], creationflags=subprocess.CREATE_NEW_CONSOLE)
-                self._save_pid(proc.pid)
-            return True, "Launched Terminal."
-
-        # B. Open Standard App
-        if target_clean in self.shortcuts.get("apps", {}):
-            app_cmd = self.shortcuts["apps"][target_clean].get(CURRENT_OS)
-            if app_cmd:
-                subprocess.Popen(app_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                return True, f"Launched application: {target_clean}"
-            return False, f"No executable defined for app '{target_clean}' on {CURRENT_OS}."
-
-        # C. Path Resolution
-        resolved_path = None
-        if any(target_clean.startswith(kw) for kw in go_back_keywords):
-            if self.last_opened_dir and os.path.exists(self.last_opened_dir):
-                resolved_path = os.path.abspath(os.path.join(self.last_opened_dir, os.pardir))
-        elif target_clean in self.shortcuts.get("folders", {}):
-            guess = os.path.expanduser(self.shortcuts["folders"][target_clean])
-            if os.path.isdir(guess):
-                resolved_path = guess
-        else:
-            home_dir = os.path.expanduser("~")
-            current_base = self.last_opened_dir if self.last_opened_dir else home_dir
-            voiced_path = target_clean.replace(" ", "/")
-            
-            for path_guess in [
-                os.path.expanduser(target_clean),
-                os.path.join(home_dir, target.title().replace(" ", "/")),
-                os.path.join(home_dir, voiced_path),
-                f"/{voiced_path}",
-                os.path.join(current_base, voiced_path),
-                os.path.join(current_base, target.title().replace(" ", "/"))
-            ]:
-                if os.path.isdir(path_guess):
-                    resolved_path = path_guess
-                    break
-
-        if resolved_path:
-            self.last_opened_dir = resolved_path
-            self._clear_pids()
-            
-            if CURRENT_OS == "linux":
-                term_emu = sys_kw.get("default_terminal", "gnome-terminal")
-                spawn_cmd = f"echo $$ >> {self.pid_file}; ls; exec bash"
-                subprocess.Popen([term_emu, "--title=JarvisNavWindow", "--working-directory", resolved_path, "--", "bash", "-c", spawn_cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                self.terminal_is_open = True
-            elif CURRENT_OS == "windows":
-                proc = subprocess.Popen(["cmd", "/k", f"title JarvisNavigation && cd /d {resolved_path} && dir"], creationflags=subprocess.CREATE_NEW_CONSOLE)
-                self._save_pid(proc.pid)
-            return True, f"Spawned terminal at: {resolved_path}"
-
-        return False, f"Target '{target}' not found."
-
-    def _handle_close(self, target: str) -> Tuple[bool, str]:
-        target_clean = target.lower().strip()
-        terminal_aliases = self.shortcuts.get("system_keywords", {}).get("terminal_aliases", ["terminal", "console", "shell", "cmd"])
-        
-        # A. Close Child Terminals
-        if target_clean in terminal_aliases:
-            if self._clear_pids():
-                return True, "Closed tracked terminal instances."
-
-        # B. Close Standard App
-        if target_clean in self.shortcuts.get("apps", {}):
-            app_data = self.shortcuts["apps"][target_clean]
-            kill_target = app_data.get(f"{CURRENT_OS}_kill")
-            
-            if not kill_target:
-                launch_cmd = app_data.get(CURRENT_OS, "")
-                if CURRENT_OS == "windows":
-                    exe_matches = re.findall(r'[\w.-]+\.exe', launch_cmd, re.IGNORECASE)
-                    kill_target = exe_matches[-1] if exe_matches else launch_cmd.split()[0]
-                elif CURRENT_OS == "linux":
-                    kill_target = launch_cmd.split()[0].split('/')[-1]
-
-            if not kill_target:
-                return False, f"Could not determine kill target for '{target_clean}'."
-
-            if CURRENT_OS == "linux":
-                subprocess.Popen(["pkill", "-f", kill_target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            elif CURRENT_OS == "windows":
-                subprocess.run(f"taskkill /F /IM {kill_target} /T", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                
-            return True, f"Sent termination signal to process: {kill_target}"
-            
-        return False, f"Target '{target}' not found in apps."
-
-    def _handle_power(self, action: str) -> Tuple[bool, str]:
-        if action == "shutdown":
-            subprocess.Popen(["shutdown", "now"] if CURRENT_OS == "linux" else ["shutdown", "/s", "/t", "0"])
-            return True, "Initiating system shutdown."
-        elif action == "restart":
-            subprocess.Popen(["reboot"] if CURRENT_OS == "linux" else ["shutdown", "/r", "/t", "0"])
-            return True, "Initiating system reboot."
-        return False, "Invalid power command."
-
-    def _handle_web(self, action: str, target: str) -> Tuple[bool, str]:
-        """Handles web navigation and direct browser searches natively."""
-        try:
-            if action == "search":
-                # Convert "python tutorials" into "python+tutorials"
-                encoded_query = urllib.parse.quote_plus(target)
-                target_url = f"https://www.google.com/search?q={encoded_query}"
-                webbrowser.open(target_url, new=2)
-                return True, f"Executed web search for: '{target}'"
-                
-            elif action == "open_site":
-                clean_target = target.replace(" ", "")
-                
-                if not clean_target.startswith("http"):
-                    clean_target = f"https://{clean_target}"
-                    
-                webbrowser.open(clean_target, new=2)
-                return True, f"Opened URL: {clean_target}"
-                
-            return False, "Invalid web action specified."
-        except Exception as e:
-            return False, f"Browser execution failed: {str(e)}"
-
-    def execute_command(self, action: str, target: Optional[str] = None, level: Optional[int] = None) -> Tuple[bool, str]:
-        """Main routing switchboard for the actuator."""
-        try:
-            if action == "open" and target:
-                return self._handle_open(target)
-            elif action == "close" and target:
-                return self._handle_close(target)
-            elif action in ["search", "open_site"] and target:
-                return self._handle_web(action, target)
-            elif action in ["shutdown", "restart"]:
-                return self._handle_power(action)
-            elif action == "volume" and level is not None:
-                clean_level = max(0, min(100, level))
-                if CURRENT_OS == "linux":
-                    subprocess.Popen(["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{clean_level}%"])
-                    return True, f"Linux master volume set to {clean_level}%."
-                return False, "Windows volume control requires the 'pycaw' library."
-            return False, f"Action '{action}' is not recognized."
-        except Exception as e:
-            return False, f"OS Execution Error: {str(e)}"
-
-# --- MQTT SERVICE LISTENER ---
-async def mqtt_service_listener(manager: TerminalManager) -> None:
-    logging.info(f"Terminal Service initialized for {CURRENT_OS.upper()}. Listening on 'pc/system/control'...")
-    while True:
-        try:
-            async with aiomqtt.Client("localhost") as mqtt_client:
-                await mqtt_client.subscribe("pc/system/control")
-                async for message in mqtt_client.messages:
-                    try:
-                        payload = json.loads(message.payload.decode('utf-8'))
-                        logging.info(f"Command Received: {payload}")
-                        
-                        success, msg = await asyncio.to_thread(
-                            manager.execute_command, 
-                            payload.get("action"), 
-                            payload.get("target"), 
-                            payload.get("level")
-                        )
-                        
-                        await mqtt_client.publish("jarvis/feedback", json.dumps({
-                            "device": "terminal",
-                            "status": "success" if success else "error",
-                            "message": msg
-                        }))
-                    except json.JSONDecodeError:
-                        logging.error("Received malformed JSON data.")
-        except aiomqtt.MqttError as e:
-            logging.error(f"MQTT Connection Error: {e}")
-            await asyncio.sleep(5)
-        except asyncio.CancelledError:
-            logging.info("Terminal service shutting down.")
-            break
-
-# --- MAIN ---
-def main():
-    parser = argparse.ArgumentParser(description="Microservice Control for OS Terminal")
-    parser.add_argument("--open", type=str, help="Open an app or path by dictionary nickname")
-    parser.add_argument("--search", type=str, help="Search Google for a query")
-    parser.add_argument("--site", type=str, help="Open a direct URL")
-    parser.add_argument("--shutdown", action="store_true", help="Shutdown the computer")
-    args = parser.parse_args()
-
-    manager = TerminalManager()
-
-    if args.open:
-        success, msg = manager.execute_command("open", target=args.open)
-        logging.info(msg)
-    elif args.search:
-        success, msg = manager.execute_command("search", target=args.search)
-        logging.info(msg)
-    elif args.site:
-        success, msg = manager.execute_command("open_site", target=args.site)
-        logging.info(msg)
-    elif args.shutdown:
-        success, msg = manager.execute_command("shutdown")
-        logging.info(msg)
-    else:
-        try:
-            asyncio.run(mqtt_service_listener(manager))
-        except KeyboardInterrupt:
-            logging.info("Exiting Service Mode.")
-
-if __name__ == "__main__":
-    main()
 ```
 
 ## File: `src/clSpotify.py`
@@ -1351,61 +670,6 @@ def main():
             asyncio.run(mqtt_service_listener(manager))
         except KeyboardInterrupt:
             logging.info("Exiting Service Mode.")
-
-if __name__ == "__main__":
-    main()
-```
-
-## File: `src/clDebug.py`
-```python
-import sys
-import time
-import logging
-import paho.mqtt.client as mqtt_client
-
-# --- LOGGING SETUP ---
-logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [DEBUG] %(message)s", datefmt="%H:%M:%S")
-
-def main():
-    # Setup persistent MQTT connection
-    client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION1)
-    
-    try:
-        client.connect("localhost", 1883, 60)
-        client.loop_start()
-        logging.info("Connected to central MQTT bus.")
-    except Exception as e:
-        logging.error(f"Could not connect to broker: {e}")
-        sys.exit(1)
-
-    print("==================================================")
-    print(" JARVIS TEXT DEBUGGER ONLINE")
-    print(" Type a direct command (e.g., 'turn on the desk light')")
-    print(" NOTE: Do not type 'hey jarvis'. The wake word is bypassed.")
-    print(" Press Ctrl+C to exit.")
-    print("==================================================\n")
-    
-    while True:
-        try:
-            # Blocks and waits for terminal input
-            text_command = input("\033[94m[TEXT INPUT] > \033[0m")
-            
-            if text_command.strip():
-                # Publish with QoS 1 to guarantee the Daemon receives it
-                client.publish("jarvis/sensor/voice", text_command, qos=1)
-                logging.info(f"Injected payload: '{text_command}'")
-                
-                # Give the system a tiny fraction of a second to process before asking for next input
-                time.sleep(0.2)
-                
-        except KeyboardInterrupt:
-            print("\n")
-            logging.info("Shutting down text debugger.")
-            client.loop_stop()
-            client.disconnect()
-            sys.exit(0)
-        except Exception as e:
-            logging.error(f"Injection failed: {e}")
 
 if __name__ == "__main__":
     main()
@@ -1986,7 +1250,8 @@ import re
 import logging
 import random
 import aiomqtt
-from typing import Dict, List, Tuple, Any, Optional, Pattern
+from rapidfuzz import process, fuzz # <-- NEW: Fast CPU string matching
+from typing import Dict, List, Tuple, Any, Optional
 
 # --- LOGGING SETUP ---
 logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [DAEMON] %(message)s", datefmt="%H:%M:%S")
@@ -1995,89 +1260,165 @@ if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 class CentralDaemon:
-    """Enterprise class for Natural Language Processing, intent extraction, and ecosystem routing."""
+    """CPU-Optimized Fuzzy Intent Engine"""
     
-    def __init__(self, debug_nlp: bool = True):
-        self.debug_nlp: bool = debug_nlp
+    def __init__(self):
+        self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.config_dir = os.path.abspath(os.path.join(self.base_dir, "..", "config"))
         
-        # Pathing
-        self.base_dir: str = os.path.dirname(os.path.abspath(__file__))
-        self.config_dir: str = os.path.abspath(os.path.join(self.base_dir, "..", "config"))
+        self.tts_responses = self._safe_load("tts_responses.json") or {}
+        self.intents_data = self._safe_load("intents.json") or {}
         
-        # NLP Memory & Configuration
-        self.topics: Dict[str, Pattern] = {}
-        self.actions: Dict[str, Pattern] = {}
-        self.colors: List[Tuple[Pattern, str, str]] = []
-        self.routing_map: Dict[str, List[str]] = {}
-        self.nlp_rules: Dict[str, Any] = {}
-        self.personality_eggs: Dict[str, str] = {}
-        self.module_lookup: Dict[str, str] = {}
-        self.tts_responses: Dict[str, Dict[str, List[str]]] = {} 
+        # State Context
+        self.awaiting_discovery_choice = False
+        self.awaiting_spotify_choice = False
         
-        # Compiled Regexes
-        self.abort_regex: Optional[Pattern] = None
-        self.restart_regex: Optional[Pattern] = None
-        
-        # Contextual State Memory
-        self.last_known_topic: Optional[str] = None
-        self.awaiting_discovery_choice: bool = False
-        self.awaiting_spotify_choice: bool = False
-
-        # Boot Sequence
-        self._load_configs()
+        # Build the flat template list for RapidFuzz
+        self.flat_templates = []
+        self.template_to_intent = {}
+        self._build_fuzzy_corpus()
 
     def _safe_load(self, filename: str) -> Optional[Any]:
-        """Safely parses JSON configs from the config directory."""
         try:
             with open(os.path.join(self.config_dir, filename), 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except FileNotFoundError:
-            logging.warning(f"File '{filename}' not found.")
-        except json.JSONDecodeError as e:
-            logging.critical(f"Syntax error in '{filename}': {e}")
-            sys.exit(1)
-        return None
+        except Exception as e:
+            logging.error(f"Failed to load {filename}: {e}")
+            return None
 
-    def _load_configs(self) -> None:
-        """Hydrates the Daemon's brain with vocabulary, rules, and system maps."""
-        self.routing_map = self._safe_load("routing.json") or {}
-        
-        topics_data = self._safe_load("topics.json") or {}
-        for topic, words in topics_data.items():
-            self.topics[topic] = re.compile(r'\b(' + '|'.join(words) + r')\b')
-
-        actions_data = self._safe_load("actions.json") or {}
-        for act, words in actions_data.items():
-            self.actions[act] = re.compile(r'\b(' + '|'.join(words) + r')\b')
-            
-        self.nlp_rules = self._safe_load("nlp_rules.json") or {}
-        abort_words = self.nlp_rules.get("abort_keywords", [])
-        if abort_words:
-            self.abort_regex = re.compile(r'\b(?:' + '|'.join(abort_words) + r')\b', re.IGNORECASE)
-
-        colors_data = self._safe_load("colors.json") or {}
-        for name in sorted(colors_data.keys(), key=len, reverse=True):
-            regex_str = r'\b' + re.sub(r'o\b', r'[oa]s?', name) + r'\b'
-            self.colors.append((re.compile(regex_str), colors_data[name], name))
-            
-        self.personality_eggs = self._safe_load("easter_eggs.json") or {}
-
-        microservices_data = self._safe_load("microservices.json") or {}
-        aliases = []
-        for filename, trigger_words in microservices_data.items():
-            for word in trigger_words:
-                clean_word = word.lower().strip()
-                self.module_lookup[clean_word] = filename
-                aliases.append(re.escape(clean_word))
+    def _build_fuzzy_corpus(self) -> None:
+        """Flattens intents.json into a corpus RapidFuzz can search against."""
+        for intent_name, config in self.intents_data.items():
+            for template in config.get("templates", []):
+                # Clean the template to remove variables like {color} for matching
+                # E.g., "set the light to {color}" -> "set the light to"
+                clean_template = template
+                if "{" in template and "}" in template:
+                    clean_template = template.split("{")[0].strip()
                 
-        if aliases:
-            regex_str = r'\b(?:restart|reboot|reload)\s+module\s+(' + '|'.join(aliases) + r')\b'
-            self.restart_regex = re.compile(regex_str, re.IGNORECASE)
-            
-        self.tts_responses = self._safe_load("tts_responses.json") or {}
+                if clean_template:
+                    self.flat_templates.append(clean_template)
+                    self.template_to_intent[clean_template] = {
+                        "intent_name": intent_name,
+                        "target_topic": config.get("target_topic"),
+                        "action_override": config.get("action_override"),
+                        "original_template": template
+                    }
+        logging.info(f"Fuzzy Engine initialized with {len(self.flat_templates)} mapping targets.")
 
-    # --- TEXT-TO-SPEECH DISPATCHER ---
+    def extract_variables(self, chunk: str, intent_match: Dict) -> Dict[str, Any]:
+        """Fuzzy-friendly slot extraction with plural/stop-word handling."""
+        import re
+        payload = {"action": intent_match["action_override"]}
+        template = intent_match["original_template"]
+        
+        if "{" in template and "}" in template:
+            var_start = template.find("{") + 1
+            var_end = template.find("}")
+            var_name = template[var_start:var_end]
+            
+            # The exact static words from the template
+            clean_template = template.replace(f"{{{var_name}}}", "").strip()
+            
+            chunk_clean = re.sub(r'[^\w\s]', '', chunk)
+            chunk_words = chunk_clean.split()
+            
+            # Build a set of words to remove (template words + plurals/singulars)
+            template_words = set(clean_template.split())
+            expanded_template_words = set()
+            for w in template_words:
+                expanded_template_words.add(w)
+                if w.endswith('s'): 
+                    expanded_template_words.add(w[:-1]) # add singular
+                else: 
+                    expanded_template_words.add(w + 's') # add plural
+                
+            stop_words = {"please", "it", "and", "the", "a", "some", "my"}
+            
+            words_to_remove = expanded_template_words.union(stop_words)
+            
+            # Keep only the words that aren't template words, plurals, or fillers
+            var_words = [w for w in chunk_words if w not in words_to_remove]
+            
+            variable_value = " ".join(var_words)
+            
+            if variable_value:
+                if variable_value.isdigit():
+                    payload[var_name] = int(variable_value)
+                else:
+                    payload[var_name] = variable_value
+                    
+        return payload
+
+    def process_voice_command(self, text: str) -> List[Tuple[Dict[str, Any], str]]:
+        """Parses audio transcripts against the Fuzzy Engine with Specificity Tie-Breaking."""
+        import re
+        text = text.lower().strip()
+        
+        # 1. State Intercepts & Hard Aborts
+        if self.awaiting_spotify_choice and text.isdigit():
+            self.awaiting_spotify_choice = False
+            return [({"action": "play_choice", "choice_index": int(text)}, "pc/spotify/control")]
+            
+        if self.awaiting_discovery_choice and text.isdigit():
+            self.awaiting_discovery_choice = False
+            return [({"action": "save_discovery", "index": int(text)}, "system/discovery")]
+
+        if any(abort_word in text for abort_word in ["abort", "cancel", "nevermind"]):
+            self.awaiting_spotify_choice = False
+            self.awaiting_discovery_choice = False
+            return [({"action": "abort"}, "jarvis/sys/control")]
+
+        text = text.replace(",", "")
+        
+        text = text.replace("playlists", "playlist")
+        text = text.replace("lights", "light")
+        text = text.replace("songs", "song")
+
+        # 2. Split compound commands by conjunctions ONLY
+        chunks = re.split(r'\b(?:and|then)\b', text)
+        
+        executed_intents = []
+        
+        for chunk in chunks:
+            chunk = chunk.strip()
+            if len(chunk) < 3: 
+                continue
+                
+            # 3. Retrieve Top Candidates instead of just ONE
+            matches = process.extract(
+                chunk, 
+                self.flat_templates, 
+                scorer=fuzz.token_set_ratio,
+                limit=10
+            )
+            
+            if matches:
+                # Filter candidates above confidence threshold
+                valid_matches = [m for m in matches if m[1] > 75]
+                
+                if valid_matches:
+                    # Sort by Score (Descending), then by Template Length (Descending).
+                    valid_matches.sort(key=lambda x: (x[1], len(x[0])), reverse=True)
+                    
+                    best_match = valid_matches[0]
+                    matched_phrase = best_match[0]
+                    score = best_match[1]
+                    
+                    intent_info = self.template_to_intent[matched_phrase]
+                    target_topic = intent_info["target_topic"]
+                    
+                    payload = self.extract_variables(chunk, intent_info)
+                    
+                    logging.info(f"[FUZZY MATCH] {intent_info['intent_name']} (Confidence: {score}%) | Payload: {payload}")
+                    executed_intents.append((payload, target_topic))
+                else:
+                    logging.warning(f"Low confidence fuzzy match for chunk: '{chunk}'")
+
+        return executed_intents
+
     async def dispatch_tts_response(self, client: aiomqtt.Client, command: Dict[str, Any], target_topic: str) -> None:
+        """Handles dynamic voice feedback post-routing."""
         action = command.get("action")
         response_key = action
 
@@ -2099,191 +1440,19 @@ class CentralDaemon:
             raw_phrase = random.choice(phrases)
             try:
                 phrase = raw_phrase.format(**command)
-            except KeyError as e:
-                logging.warning(f"Missing variable for TTS string formatting: {e}")
-                phrase = raw_phrase.replace(f"{{{e.args[0]}}}", "unknown")
+            except KeyError:
+                phrase = raw_phrase # Fallback if variables are missing
 
             await client.publish("jarvis/sys/speak", json.dumps({"text": phrase}))
             
-    # --- NLP EXTRACTION ENGINE ---
-    def process_voice_command(self, text: str) -> List[Tuple[Dict[str, Any], Optional[str]]]:
-        text = text.lower()
-        
-        for trigger, response in self.personality_eggs.items():
-            if trigger in text:
-                return [({"action": "personality", "response": response}, "jarvis/sys/speak")]
-                
-        global_restart_match = re.search(r'\b(?:(?:restart|reboot|reload)\s+all\s+modules?|(?:full|complete)\s+system\s+(?:reboot|restart|reload))\b', text, re.IGNORECASE)
-        if global_restart_match:
-            logging.info("Global microservice ecosystem restart requested.")
-            return [({"action": "restart_all_modules"}, "jarvis/sys/manager")]
-
-        if self.restart_regex:
-            module_match = self.restart_regex.search(text)
-            if module_match:
-                trigger_word = module_match.group(1).lower()
-                target_script = self.module_lookup.get(trigger_word)
-                if target_script:
-                    logging.info(f"Microservice restart requested for: {target_script}")
-                    return [({"action": "restart_module", "target": target_script}, "jarvis/sys/manager")]
-        
-        if self.abort_regex and self.abort_regex.search(text):
-            logging.info("User explicitly cancelled the command. Resetting states.")
-            self.awaiting_discovery_choice = False
-            self.awaiting_spotify_choice = False
-            return [({"action": "abort"}, "jarvis/sys/control")]
-
-        for bad, good in self.nlp_rules.get("autocorrect", {}).items():
-            text = text.replace(bad, good)
-            
-        text = re.sub(r'[,!?]', '', text)
-        text = re.sub(r'\.(?!\w)', '', text)
-        
-        if self.debug_nlp:
-            logging.info(f"[DEBUG NLP] Cleaned Text: '{text}'")
-        
-        for word, digit in self.nlp_rules.get("word_to_number", {}).items():
-            text = re.sub(rf'\b{word}\b', digit, text)
-
-        if self.awaiting_spotify_choice:
-            self.awaiting_spotify_choice = False
-            match = re.search(r'\b(\d+)\b', text)
-            if match:
-                choice = int(match.group(1))
-                logging.info(f"User selected Spotify option [{choice}].")
-                return [({"action": "play_choice", "choice_index": choice}, "pc/spotify/control")]
-            return []
-
-        if self.awaiting_discovery_choice:
-            self.awaiting_discovery_choice = False
-            match = re.search(r'\d+', text)
-            if match:
-                return [({"action": "save_discovery", "index": int(match.group())}, "system/discovery")]
-
-        chunks = re.split(r'\b(?:e|and|depois|then|also)\b', text)
-        intents = []
-
-        for chunk in chunks:
-            chunk = chunk.strip()
-            if len(chunk) < 2: continue
-
-            payload: Dict[str, Any] = {}
-            target_topic = None
-            best_action = None
-            action_word_used = None 
-            longest_match = 0
-            
-            for act, regex_obj in self.actions.items():
-                match = regex_obj.search(chunk)
-                if match:
-                    matched_word = match.group(1)
-                    if len(matched_word) > longest_match:
-                        longest_match = len(matched_word)
-                        best_action = act
-                        action_word_used = matched_word 
-            
-            if best_action:
-                payload["action"] = best_action
-                if best_action == "discover":
-                    target_topic = "system/discovery"
-                    self.awaiting_discovery_choice = True 
-
-            if payload.get("action") == "play" or re.search(r'\b(?:song|track|music|música|musica)\b', chunk):
-                if payload.get("action") in ["on", "off", "toggle"]:
-                    payload["action"] = "play"
-
-                topic_keywords = [word for words in [v.pattern for v in self.topics.values()] for word in re.findall(r'\w+', words)]
-                topic_pattern = r'\b(?:' + '|'.join(topic_keywords) + r')\b'
-                stop_boundaries = rf'(?:\s+(?:on|no|em|by|my|artist|artista|de|do|da|playlist|lista|song|música|musica|track|som|{topic_pattern})|$)'
-
-                playlist_match = re.search(rf'\b(?:playlists?|listas?)\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
-                if playlist_match: payload["playlist_name"] = playlist_match.group(1).strip()
-
-                artist_match = re.search(rf'\b(?:by|my|artists?|artistas?|de|do|da)\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
-                if artist_match: payload["artist_name"] = artist_match.group(1).strip()
-
-                track_match = re.search(rf'\b(?:songs?|músicas?|musicas?|tracks?|sons?)\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
-                if track_match: payload["track_name"] = track_match.group(1).strip()
-                    
-                if "track_name" not in payload and "artist_name" in payload:
-                    implicit_match = re.search(rf'\b(?:play|tocar)\s+(.+?)\s+(?:by|my|de|do|da)\b', chunk, re.IGNORECASE)
-                    if implicit_match: payload["track_name"] = implicit_match.group(1).strip()
-                
-                if not any(k in payload for k in ["track_name", "artist_name", "playlist_name"]):
-                    fallback_match = re.search(r'\b(?:play|tocar)\s+(.+)', chunk, re.IGNORECASE)
-                    
-                    if fallback_match:
-                        raw_query = fallback_match.group(1)
-                        # Strip out conversational filler words that confuse the search
-                        filler_words = r'\b(?:some|the|music|música|musica|a|an)\b'
-                        clean_query = re.sub(filler_words, '', raw_query, flags=re.IGNORECASE).strip()
-                        
-                        if clean_query:
-                            # Map to the key your Spotify actuator is already expecting
-                            payload["search_query"] = clean_query
-
-            elif payload.get("action") in ["open", "close", "search", "open_site"] and action_word_used:
-                if payload.get("action") == "search":
-                    sys_match = re.search(rf'\b{action_word_used}\b\s+(?:(?:online|for|sobre|por|na internet|the web for)\s+)*(.+)', chunk, re.IGNORECASE)
-                elif payload.get("action") == "open_site":
-                    sys_match = re.search(rf'\b{action_word_used}\b\s+(?:(?:the site|o site|online|website)\s+)*(.+)', chunk, re.IGNORECASE)
-                else:
-                    sys_match = re.search(rf'\b{action_word_used}\b\s+(?:(?:to|para|the|o|a|pasta|folder|dir|directory|app|aplicativo)\s+)*(.+)', chunk, re.IGNORECASE)
-                
-                if sys_match: payload["target"] = sys_match.group(1).strip()
-
-            if not target_topic:
-                for topic, regex_obj in self.topics.items():
-                    if regex_obj.search(chunk):
-                        target_topic = topic
-                        break
-
-            if not target_topic and best_action:
-                for topic, actions in self.routing_map.items():
-                    if best_action in actions:
-                        target_topic = topic
-                        break
-
-            if not target_topic and self.last_known_topic:
-                target_topic = self.last_known_topic
-
-            if target_topic:
-                self.last_known_topic = target_topic
-
-            temp_match = re.search(r'(\d+)\s*(porcento|percent|%).*(temperatura|temp|temps|temperature|calor|frio|hot|cold)', chunk)
-            if temp_match: 
-                payload["temp"] = int(temp_match.group(1))
-            else:
-                pct_match = re.search(r'(\d+)\s*(porcento|percent|%)', chunk)
-                if pct_match:
-                    valor = int(pct_match.group(1))
-                    if target_topic and "spotify" in target_topic:
-                        payload["volume"] = valor
-                        if "action" not in payload: payload["action"] = "volume"
-                    else: payload["lum"] = valor
-
-            for regex_obj, color_value, _ in self.colors:
-                if regex_obj.search(chunk):
-                    payload["color"] = color_value
-                    break
-
-            if payload:
-                intents.append((payload, target_topic))
-                if self.debug_nlp:
-                    logging.info(f"[DEBUG NLP] Extracted Payload: {json.dumps(payload, indent=2)}")
-
-        return intents
-
-    # --- ASYNC SUPERVISOR ---
     async def run(self) -> None:
-        """Main non-blocking MQTT loop for the Daemon."""
-        logging.info("Configurations loaded. Connecting to MQTT broker...")
+        """Main non-blocking MQTT loop."""
+        logging.info("Template Intent Engine Online. Connecting to MQTT broker...")
         while True:
             try:
                 async with aiomqtt.Client("localhost") as client:
                     await client.subscribe("jarvis/sensor/voice")
                     await client.subscribe("jarvis/feedback")
-                    logging.info("Online. Listening on topics...")
                     
                     async for message in client.messages:
                         topic = message.topic.value
@@ -2293,54 +1462,27 @@ class CentralDaemon:
                             intents = self.process_voice_command(payload_data)
                             
                             if intents:
-                                logging.info(f"Command Recognized: '{payload_data}'")
-                                
-                                # Default mic state. We will elevate this to 'request_reply' if an intent requires it.
                                 final_mic_state = "open_window"
                                 
                                 for command, target_topic in intents:
                                     if target_topic == "jarvis/sys/control" and command.get("action") == "abort":
-                                        logging.info("[SYSTEM] Abort sequence initiated. Wiping conversational state.")
-                                        
-                                        # 1. Clear all conversational memory locks
-                                        self.awaiting_spotify_choice = False
-                                        self.awaiting_discovery_choice = False
-                                        
-                                        # 2. Kill ongoing audio and confirm the abort
+                                        logging.info("[SYSTEM] Abort sequence initiated.")
                                         await client.publish("jarvis/sys/tts_stop", "1")
-                                        await client.publish("jarvis/sys/speak", json.dumps({
-                                            "text": "Command aborted, sir.", "request_reply": False
-                                        }))
-                                        
-                                        # 3. Forcefully shut down the microphone
+                                        await client.publish("jarvis/sys/speak", json.dumps({"text": "Aborted.", "request_reply": False}))
                                         final_mic_state = None  
                                         break
                                         
-                                    elif command.get("action") == "personality":
-                                        await client.publish("jarvis/sys/speak", json.dumps({"text": command["response"]}))
-                                        
                                     elif target_topic:
-                                        logging.info(f"Intent Decoded: {command} -> Routing to [{target_topic}]")
-                                        
-                                        # 1. Dispatch the Actuator Command
                                         await client.publish(target_topic, json.dumps(command))
-                                        
-                                        # 2. Synchronously await the TTS to guarantee packet sequencing
                                         await self.dispatch_tts_response(client, command, target_topic)
                                         
-                                        # Elevate the required microphone state if an intent demands a specific reply
                                         if self.awaiting_discovery_choice or self.awaiting_spotify_choice:
                                             final_mic_state = "request_reply"
                                             
-                                    else:
-                                        logging.warning(f"Intent decoded ({command}), but no target topic known.")
-                                    
-                                    await asyncio.sleep(0.05)
-                                    
-                                # 3. Broadcast the microphone state trigger exactly ONCE after all intents finish
                                 if final_mic_state:
                                     await client.publish("jarvis/sys/mic_control", json.dumps({"action": final_mic_state}))
                         
+                        # Handle feedback loops
                         elif topic == "jarvis/feedback":
                             try:
                                 fb = json.loads(payload_data)
@@ -2348,129 +1490,19 @@ class CentralDaemon:
                                 
                                 if "CONFIDENCE_LOW|" in msg:
                                     self.awaiting_spotify_choice = True
-                                    options_text = msg.split("CONFIDENCE_LOW|")[1] if "CONFIDENCE_LOW|" in msg else msg
-                                    
-                                    print("\n" + "="*50)
-                                    print("SPOTIFY MULTIPLE MATCHES FOUND. AWAITING YOUR SELECTION:")
-                                    print(options_text.strip())
-                                    print("="*50 + "\n")
-                                    
-                                    await client.publish("jarvis/sys/speak", json.dumps({
-                                        "text": "My apologies, sir. The audio match was ambiguous. Could you select an option from the terminal?",
-                                        "request_reply": True 
-                                    }))
+                                    await client.publish("jarvis/sys/speak", json.dumps({"text": "Please select an option from the terminal.", "request_reply": True}))
                                     await client.publish("jarvis/sys/mic_control", json.dumps({"action": "request_reply"}))
-                                    
-                                elif "AWAITING_SELECTION|" in msg:
-                                    self.awaiting_discovery_choice = True
-                                    options_text = msg.split("AWAITING_SELECTION|")[1] if "AWAITING_SELECTION|" in msg else msg
-                                    
-                                    print("\n" + "="*50)
-                                    print("DISCOVERED DEVICES. AWAITING YOUR SELECTION:")
-                                    print(options_text.strip())
-                                    print("="*50 + "\n")
-                                    
-                                    await client.publish("jarvis/sys/speak", json.dumps({
-                                        "text": "Diagnostics complete. I have displayed the discovered devices on your terminal. Which index would you like to save?",
-                                        "request_reply": True 
-                                    }))
-                                    await client.publish("jarvis/sys/mic_control", json.dumps({"action": "request_reply"}))
-                                    
-                                else:
-                                    status_icon = "V" if fb.get('status') == "success" else "X"
-                                    logging.info(f"Feedback [{fb.get('device', 'unknown')}]: {status_icon} {msg}")
                                     
                             except json.JSONDecodeError:
-                                logging.error("Received malformed feedback packet.")
+                                pass
                                 
             except aiomqtt.MqttError as e:
-                    logging.error(f"MQTT Connection Error: {e}. Retrying in 5 seconds...")
-                    await asyncio.sleep(5)
+                logging.error(f"MQTT Error: {e}. Retrying in 5s...")
+                await asyncio.sleep(5)
             except asyncio.CancelledError:
-                logging.info("Shutting down Central Brain.")
                 break
 
-# --- MAIN ---
 if __name__ == "__main__":
-    logging.info("Booting Central Brain...")
-    daemon = CentralDaemon(debug_nlp=False)
+    daemon = CentralDaemon()
     asyncio.run(daemon.run())
 ```
-
-## File: `src/clMonitor.py`
-```python
-import asyncio
-import logging
-import json
-import time
-from bleak import BleakScanner
-from typing import Dict, Any
-import paho.mqtt.client as mqtt_client
-
-logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [MONITOR] %(message)s", datefmt="%H:%M:%S")
-
-class PresenceMonitor:
-    def __init__(self):
-        self.tracked_devices: Dict[str, Dict[str, Any]] = {}
-        self.is_present: bool = False
-        self.room_threshold = -60
-        self.exit_threshold = -70
-
-        # --- PERSISTENT MQTT CONNECTION ---
-        self.mqtt = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION1)
-        try:
-            self.mqtt.connect("localhost", 1883, 60)
-            self.mqtt.loop_start()  # Starts the background network thread
-            logging.info("Connected to persistent MQTT bus.")
-        except Exception as e:
-            logging.critical(f"Failed to connect to MQTT Broker: {e}")
-
-    def _trigger_light(self, action: str):
-        try:
-            payload = json.dumps({"action": action})
-            self.mqtt.publish("home/room/desk_light/set", payload)
-        except Exception as e:
-            logging.error(f"MQTT Publish Failed: {e}")
-
-    async def _monitor_loop(self):
-        def callback(device, adv):
-            mac = device.address
-            rssi = adv.rssi
-            if rssi > self.exit_threshold:
-                self.tracked_devices[mac] = {"rssi": rssi, "last_seen": time.time()}
-
-        async with BleakScanner(detection_callback=callback) as scanner:
-            while True:
-                await asyncio.sleep(2)
-                now = time.time()
-                
-                # Logic: Check if any device exceeds the threshold
-                active = any(d["rssi"] >= self.room_threshold for d in self.tracked_devices.values())
-                
-                if active and not self.is_present:
-                    logging.info("Proximity detected. Lights ON.")
-                    self._trigger_light("on")
-                    self.is_present = True
-                elif not active and self.is_present:
-                    logging.info("Presence lost. Lights OFF.")
-                    self._trigger_light("off")
-                    self.is_present = False
-
-                # Cleanup stale devices
-                self.tracked_devices = {m: d for m, d in self.tracked_devices.items() 
-                                      if (now - d["last_seen"]) < 60}
-
-    def run(self):
-        try:
-            asyncio.run(self._monitor_loop())
-        except KeyboardInterrupt:
-            logging.info("Shutting down Presence Monitor.")
-        finally:
-            self.mqtt.loop_stop()
-            self.mqtt.disconnect()
-
-if __name__ == "__main__":
-    monitor = PresenceMonitor()
-    monitor.run()
-```
-

@@ -99,9 +99,10 @@ class VoiceSensor:
         
         # Parallel Conversational State Tracking Memory
         self.tts_busy: bool = False
-        self.tts_queue_count: int = 0  # --- NEW: Tracks multiple TTS sentences
+        self.tts_queue_count: int = 0  
         self.already_spoke: bool = False
         self.ambient_noise_buffer: Deque[float] = collections.deque(maxlen=100)
+        self.tts_lock_time: float = 0.0
         
         # Microservice Control States
         self.active_window_end: float = 0.0
@@ -219,6 +220,7 @@ class VoiceSensor:
         if msg.topic == "jarvis/sys/speak":
             self.tts_queue_count += 1
             self.tts_busy = True
+            self.tts_lock_time = time.time()
             
         elif msg.topic == "jarvis/sys/tts_done":
             if self.tts_queue_count > 0:
@@ -328,8 +330,13 @@ class VoiceSensor:
         if self.use_gpu_concurrency:
             self.speculative_text = ""
             self.transcription_done_event.clear()
-            with self.stt_queue.mutex:
-                self.stt_queue.queue.clear()
+            
+            while not self.stt_queue.empty():
+                try:
+                    self.stt_queue.get_nowait()
+                    self.stt_queue.task_done()
+                except queue.Empty:
+                    break
             
         max_chunks = int(self.RATE / self.CHUNK * self.MAX_RECORD_SECONDS)
         silence_limit_chunks = int(self.RATE / self.CHUNK * self.SILENCE_LIMIT_SECONDS)
@@ -370,8 +377,12 @@ class VoiceSensor:
                     silence_counter = 0
                     if self.use_gpu_concurrency and len(frames) % 15 == 0:
                         audio_copy = np.concatenate(frames).astype(np.float32) / 32768.0
-                        with self.stt_queue.mutex:
-                            self.stt_queue.queue.clear()
+                        while not self.stt_queue.empty():
+                            try:
+                                self.stt_queue.get_nowait()
+                                self.stt_queue.task_done()
+                            except queue.Empty:
+                                break
                         self.stt_queue.put((audio_copy, False))
                     
             if started_speaking and silence_counter >= silence_limit_chunks:
@@ -387,8 +398,12 @@ class VoiceSensor:
         final_audio = np.concatenate(frames).astype(np.float32) / 32768.0
         
         if self.use_gpu_concurrency:
-            with self.stt_queue.mutex:
-                self.stt_queue.queue.clear()
+            while not self.stt_queue.empty():
+                try:
+                    self.stt_queue.get_nowait()
+                    self.stt_queue.task_done()
+                except queue.Empty:
+                    break
             self.stt_queue.put((final_audio, True))
             
             while not self.transcription_done_event.is_set():
@@ -410,6 +425,12 @@ class VoiceSensor:
 
         while True:
             if self.tts_busy:
+                if hasattr(self, 'tts_lock_time') and (time.time() - self.tts_lock_time) > 15.0:
+                    logging.warning("TTS Lock TTL expired! Forcing microphone release.")
+                    self.tts_busy = False
+                    self.tts_queue_count = 0
+                    continue
+
                 try:
                     available = self.mic_stream.get_read_available()
                     if available > 0: 

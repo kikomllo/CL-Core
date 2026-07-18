@@ -1,0 +1,194 @@
+{
+  "light_on": {
+    "target_topic": "home/room/desk_light/set",
+    "action_override": "on",
+    "templates": [
+      "turn on the light",
+      "turn the light on",
+      "lights on",
+      "power on the lights",
+      "activate the lights"
+    ]
+  },
+  "light_off": {
+    "target_topic": "home/room/desk_light/set",
+    "action_override": "off",
+    "templates": [
+      "turn off the light",
+      "turn the light off",
+      "lights off",
+      "kill the lights",
+      "power off the lights",
+      "deactivate the lights"
+    ]
+  },
+  "light_toggle": {
+    "target_topic": "home/room/desk_light/set",
+    "action_override": "toggle",
+    "templates": [
+      "toggle the light",
+      "toggle lights",
+      "switch the light"
+    ]
+  },
+  "light_color": {
+    "target_topic": "home/room/desk_light/set",
+    "action_override": "on",
+    "templates": [
+      "set the light to {color}",
+      "change the light to {color}",
+      "change light color to {color}",
+      "make it {color} in here",
+      "set lights to {color}"
+    ]
+  },
+  "light_dim": {
+    "target_topic": "home/room/desk_light/set",
+    "action_override": "on",
+    "templates": [
+      "set light to {lum} percent",
+      "set brightness to {lum} percent",
+      "dim the light to {lum} percent",
+      "make the light {lum} percent",
+      "lights {lum} percent"
+    ]
+  },
+  "spotify_play_generic": {
+    "target_topic": "pc/spotify/control",
+    "action_override": "play",
+    "templates": [
+      "resume music",
+      "resume the music",
+      "play music",
+      "start playing",
+      "continue playback"
+    ]
+  },
+  "spotify_play_playlist": {
+    "target_topic": "pc/spotify/control",
+    "action_override": "play",
+    "templates": [
+      "play the playlist {playlist_name}",
+      "play playlist {playlist_name}",
+      "put on my {playlist_name} playlist",
+      "play my playlist {playlist_name}",
+      "play playlist {playlist_name}",
+      "play the playlist {playlist_name}",
+      "my playlist {playlist_name}"
+    ]
+  },
+  "spotify_play_specific": {
+    "target_topic": "pc/spotify/control",
+    "action_override": "play",
+    "templates": [
+      "play {track_name} by {artist_name}",
+      "play {track_name}",
+      "play songs by {artist_name}",
+      "play artist {artist_name}",
+      "play some {search_query}",
+      "put on some {search_query}"
+    ]
+  },
+  "spotify_pause": {
+    "target_topic": "pc/spotify/control",
+    "action_override": "pause",
+    "templates": [
+      "pause the music",
+      "pause music",
+      "pause playback",
+      "stop the music"
+    ]
+  },
+  "spotify_next": {
+    "target_topic": "pc/spotify/control",
+    "action_override": "next",
+    "templates": [
+      "skip this song",
+      "skip song",
+      "next song",
+      "play the next song",
+      "skip music",
+      "next"
+    ]
+  },
+  "spotify_prev": {
+    "target_topic": "pc/spotify/control",
+    "action_override": "prev",
+    "templates": [
+      "previous song",
+      "go back a song",
+      "play the previous song",
+      "go back"
+    ]
+  },
+  "spotify_volume": {
+    "target_topic": "pc/spotify/control",
+    "action_override": "volume",
+    "templates": [
+      "set volume to {volume} percent",
+      "change volume to {volume} percent",
+      "set music volume to {volume} percent",
+      "music volume {volume} percent"
+    ]
+  },
+  "system_discovery": {
+    "target_topic": "system/discovery",
+    "action_override": "discover",
+    "templates": [
+      "start discovery mode",
+      "run device discovery",
+      "search for new devices",
+      "scan the network",
+      "find new hardware",
+      "discovery mode"
+    ]
+  },
+  "system_restart_all": {
+    "target_topic": "jarvis/sys/manager",
+    "action_override": "restart_all_modules",
+    "templates": [
+      "restart all modules",
+      "reboot the system",
+      "restart the framework",
+      "restart everything"
+    ]
+  },
+  "system_restart_module": {
+    "target_topic": "jarvis/sys/manager",
+    "action_override": "restart_module",
+    "templates": [
+      "restart module {target}",
+      "reboot the {target} service",
+      "restart {target}",
+      "reboot {target}"
+    ]
+  },
+  
+  "system_attention_on": {
+    "target_topic": "jarvis/sys/mic_control",
+    "action_override": "attention_on",
+    "templates": [
+      "attention mode",
+      "enter attention mode",
+      "pay attention",
+      "work mode",
+      "start working",
+      "i need to focus",
+      "focus mode"
+    ]
+  },
+  "system_attention_off": {
+    "target_topic": "jarvis/sys/mic_control",
+    "action_override": "attention_off",
+    "templates": [
+      "exit attention mode",
+      "time to rest",
+      "go to rest",
+      "work's done",
+      "exit work mode",
+      "stop focusing",
+      "im done working",
+      "normal mode"
+    ]
+  }
+}
