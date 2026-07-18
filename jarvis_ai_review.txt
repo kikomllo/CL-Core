@@ -1,0 +1,2476 @@
+# JARVIS SMART HOME OS - FULL CODEBASE
+
+## File: `clJarvis.py`
+```python
+import subprocess
+import sys
+import time
+import json
+import logging
+import paho.mqtt.client as mqtt_client
+
+# --- SUPERVISOR CONFIGURATION ---
+MODULES = [
+    ("Text-To-Speech", "src/clTTS.py"),
+    ("Light Actuator", "src/clControl.py"),
+    ("Music Actuator", "src/clSpotify.py"),
+    ("Central Brain", "src/clDaemon.py"),
+    ("Voice Sensor", "src/clVoice.py"),
+    ("Terminal Actuator", "src/clTerminal.py")
+]
+
+PROCESSES = {}
+
+def start_module(desc, filename):
+    """Spawns a microservice and registers its process handle."""
+    print(f">>> Starting {filename} ({desc})...")
+    proc = subprocess.Popen([sys.executable, filename])
+    PROCESSES[filename] = proc
+
+def stop_module(filename):
+    """Gracefully terminates a microservice using its registered handle."""
+    if filename in PROCESSES:
+        proc = PROCESSES[filename]
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        del PROCESSES[filename]
+
+# --- MQTT LISTENER ---
+def on_message(client, userdata, msg):
+    """Listens for commands from the Central Brain."""
+    try:
+        payload = json.loads(msg.payload.decode('utf-8'))
+        action = payload.get("action")
+        target = payload.get("target")
+
+        # --- GLOBAL ECOSYSTEM RESTART SEQUENCE ---
+        if action == "restart_all_modules":
+            print("\n" + "="*60)
+            print("[SUPERVISOR] INITIATING FULL ECOSYSTEM REBOOT DIRECTIVE")
+            print("="*60)
+            
+            for filename in list(PROCESSES.keys()):
+                print(f"[SUPERVISOR] Terminating: {filename}")
+                stop_module(filename)
+                
+            time.sleep(1.5)
+            
+            print("\n[SUPERVISOR] Resurrecting infrastructure stack...")
+            for desc, filename in MODULES:
+                start_module(desc, filename)
+                time.sleep(0.4)
+                
+            print("\n" + "="*60)
+            print("[SUPERVISOR] GLOBAL ECOSYSTEM REBOOT COMPLETE")
+            print("="*60 + "\n")
+
+        # --- INDIVIDUAL SURGICAL RESTART ---
+        elif action == "restart_module" and target:
+            print(f"\n[SUPERVISOR] Executing surgical restart for: {target}")
+            stop_module(target)
+            time.sleep(1.0) 
+            
+            desc = "Restarted Microservice"
+            for d, f in MODULES:
+                if f == target:
+                    desc = d
+                    break
+                    
+            start_module(desc, target)
+            
+    except json.JSONDecodeError:
+        print("[SUPERVISOR] Received malformed JSON command.")
+    except Exception as e:
+        print(f"[SUPERVISOR] Execution Error: {e}")
+
+# --- MASTER BOOT SEQUENCE ---
+def main():
+    print("="*50)
+    print("BOOTING JARVIS SMART HOME OS")
+    print("="*50 + "\n")
+
+    # 1. Boot the Supervisor Listener
+    client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION1)
+    client.on_message = on_message
+    
+    try:
+        client.connect("localhost", 1883, 60)
+        client.subscribe("jarvis/sys/manager")
+        client.loop_start()
+    except Exception as e:
+        print(f"[SUPERVISOR] FATAL: Could not connect to MQTT Broker. Is Mosquitto running? {e}")
+        sys.exit(1)
+
+    # 2. Spawn the Microservices
+    for desc, filename in MODULES:
+        start_module(desc, filename)
+        time.sleep(0.5)  # Stagger boot to prevent CPU spikes
+
+    print("\n" + "="*50)
+    print("ALL SYSTEMS ONLINE. Press Ctrl+C to shutdown.")
+    print("="*50 + "\n")
+
+    try:
+        while True:
+            time.sleep(3)
+            for filename, proc in list(PROCESSES.items()):
+                if proc.poll() is not None:  # A return code means the process died
+                    print(f"\n[SUPERVISOR] FATAL: {filename} died unexpectedly! Resurrecting...")
+                    
+                    desc = next((d for d, f in MODULES if f == filename), "Unknown Module")
+                    start_module(desc, filename)
+    except KeyboardInterrupt:
+        print("\n[SUPERVISOR] Manual shutdown triggered. Terminating all microservices...")
+        for desc, filename in MODULES:
+            stop_module(filename)
+        print("[SUPERVISOR] System powered down. Goodbye.")
+
+if __name__ == "__main__":
+    main()
+```
+
+## File: `src/clControl.py`
+```python
+# --- IMPORTS ---
+import asyncio
+import argparse
+import socket
+import os
+import logging
+import json
+import sys
+import colorsys
+from typing import Optional, Dict, Any, List, Tuple
+from dotenv import load_dotenv, set_key
+from tapo import ApiClient
+from pywizlight import wizlight, PilotBuilder, discovery as wiz_discovery
+import aiomqtt
+
+# --- LOGGING SETUP ---
+logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [CONTROL] %(message)s", datefmt="%H:%M:%S")
+
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
+class LightManager:
+    """Enterprise state controller for single-device execution, dual discovery, and self-healing recovery."""
+    
+    def __init__(self):
+        self.base_dir: str = os.path.dirname(os.path.abspath(__file__))
+        self.env_path: str = os.path.abspath(os.path.join(self.base_dir, "..", ".env"))
+        load_dotenv(self.env_path)
+
+        self.color_matrix = self._load_color_matrix()
+
+        self.light_type: str = os.getenv("LIGHT_TYPE", "tapo").lower()
+        self.bulb_ip: str = os.getenv("LIGHT_IP", "")
+        self.bulb_mac: str = os.getenv("LIGHT_MAC", "")
+        
+        self.email: str = os.getenv("TAPO_EMAIL", "")
+        self.password: str = os.getenv("TAPO_PASSWORD", "")
+        
+        if self.light_type == "tapo" and not (self.email and self.password):
+            logging.error("Tapo Credentials missing in .env file.")
+            sys.exit(1)
+            
+        self.tapo_client: ApiClient = ApiClient(self.email, self.password)
+        self.last_discovered_devices: List[Dict[str, str]] = []
+        
+    def _load_color_matrix(self) -> Dict[str, Any]:
+        """Loads the absolute truth JSON mapping for colors and temperatures."""
+        matrix_path = os.path.abspath(os.path.join(self.base_dir, "..", "config", "colors.json"))
+        try:
+            with open(matrix_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logging.error(f"Failed to load colors.json: {e}")
+            return {}
+
+    def update_env_credentials(self, ip: str, mac: str, light_type: str) -> None:
+        set_key(self.env_path, "LIGHT_IP", ip)
+        set_key(self.env_path, "LIGHT_MAC", mac)
+        set_key(self.env_path, "LIGHT_TYPE", light_type)
+        self.bulb_ip = ip
+        self.bulb_mac = mac
+        self.light_type = light_type
+
+    # --- TAPO MANUAL NETWORK SWEEPERS ---
+    def _get_subnet_base(self) -> str:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("8.8.8.8", 80))
+                parts = s.getsockname()[0].split('.')
+                return f"{parts[0]}.{parts[1]}.{parts[2]}"
+        except Exception:
+            return "192.168.1"
+
+    async def _sweep_ips(self, ips_to_check: List[str]) -> List[Dict[str, str]]:
+        port_sem = asyncio.Semaphore(50)
+        alive_ips = [ip for ip in await asyncio.gather(*(self._check_port(ip, port_sem) for ip in ips_to_check)) if ip]
+        
+        if not alive_ips: return []
+        
+        tcp_sem = asyncio.Semaphore(15)
+        return [res for res in await asyncio.gather(*(self._probe_ip(ip, tcp_sem) for ip in alive_ips)) if res]
+
+    async def _check_port(self, ip: str, semaphore: asyncio.Semaphore) -> Optional[str]:
+        async with semaphore:
+            for port in [443, 80]:
+                try:
+                    _, writer = await asyncio.wait_for(asyncio.open_connection(ip, port), timeout=0.5)
+                    writer.close()
+                    await writer.wait_closed()
+                    return ip
+                except (asyncio.TimeoutError, ConnectionRefusedError, OSError):
+                    continue
+        return None
+
+    async def _probe_ip(self, ip: str, semaphore: asyncio.Semaphore) -> Optional[Dict[str, str]]:
+        async with semaphore:
+            for model_guess in ["l530", "l510", "p100", "p110", "l900", "l920", "l930", "generic_device"]:
+                if not hasattr(self.tapo_client, model_guess): continue
+                try:
+                    device = await getattr(self.tapo_client, model_guess)(ip)
+                    info = await asyncio.wait_for(device.get_device_info(), timeout=3.0)
+                    true_model = getattr(info, 'model', model_guess).upper()
+                    mac = getattr(info, 'mac', 'UNKNOWN').replace('-', ':').upper()
+                    return {"ip": ip, "model": true_model, "mac": mac}
+                except Exception:
+                    continue
+        return None
+
+    # --- SELF-HEALING ARCHITECTURE ---
+    async def attempt_network_repair(self) -> bool:
+        if not self.bulb_mac:
+            logging.warning("Auto-recovery bypassed: LIGHT_MAC is not assigned in your .env configuration.")
+            return False
+            
+        logging.warning(f"[SELF-HEALING] Lost connection to {self.light_type.upper()}. Scanning local network for MAC: {self.bulb_mac}...")
+        
+        try:
+            if self.light_type == "wiz":
+                results = await wiz_discovery.discover_lights(broadcast_space="255.255.255.255")
+                for dev in results:
+                    if dev.mac.lower() == self.bulb_mac.lower():
+                        logging.info(f"[SELF-HEALING] WiZ Bulb recovered at new IP: {dev.ip}")
+                        self.update_env_credentials(dev.ip, self.bulb_mac, "wiz")
+                        return True
+                        
+            elif self.light_type == "tapo":
+                base_ip = self._get_subnet_base()
+                results = await self._sweep_ips([f"{base_ip}.{i}" for i in range(1, 255)])
+                for dev in results:
+                    if dev['mac'].lower() == self.bulb_mac.lower():
+                        logging.info(f"[SELF-HEALING] Tapo Bulb recovered at new IP: {dev['ip']}")
+                        self.update_env_credentials(dev['ip'], self.bulb_mac, "tapo")
+                        return True
+        except Exception as e:
+            logging.error(f"[SELF-HEALING] Auto-recovery sequence encountered an execution error: {e}")
+            
+        return False
+
+    # --- CONCURRENT LIGHT EXECUTION ENGINE ---
+    async def control_bulb(self, toggle: bool = False, on: bool = False, off: bool = False, 
+                           color: str = None, lum: int = None, temp: int = None, retry_attempt: bool = False) -> None:
+        
+        if not self.bulb_ip:
+            raise ValueError("Target execution IP is completely missing from configurations.")
+
+        try:
+            if self.light_type == "wiz":
+                await self._execute_wiz(toggle, on, off, color, lum, temp)
+            else:
+                await self._execute_tapo(toggle, on, off, color, lum, temp)
+        except Exception as e:
+            logging.error(f"Hardware communication interface error: {e}")
+            if not retry_attempt and await self.attempt_network_repair():
+                await self.control_bulb(toggle, on, off, color, lum, temp, retry_attempt=True)
+            else:
+                raise RuntimeError("Device connection could not be established or repaired.")
+
+    async def _execute_wiz(self, toggle: bool, on: bool, off: bool, color: str, lum: int, temp: int) -> None:
+        bulb = wizlight(self.bulb_ip)
+        
+        if toggle:
+            await bulb.toggle()
+            return
+        elif off:
+            await bulb.turn_off()
+            return
+
+        if on or lum is not None or temp is not None or color:
+            brightness = lum if lum is not None else 255
+            
+            # Use RGB values directly from JSON
+            if color:
+                c_data = self.color_matrix.get(color.lower().strip())
+                if c_data:
+                    if c_data["type"] == "rgb":
+                        r, g, b = c_data["r"], c_data["g"], c_data["b"]
+                        await bulb.turn_on(PilotBuilder(brightness=brightness, rgb=(r, g, b)))
+                        logging.info(f"Setting WiZ Color to RGB: {(r, g, b)}")
+                        return
+                    elif c_data["type"] == "temp":
+                        temp = c_data["val"]
+
+            if temp is not None:
+                kelvin = int(2700 + (temp * (6500 - 2700) / 100))
+                await bulb.turn_on(PilotBuilder(brightness=brightness, colortemp=kelvin))
+                logging.info(f"Setting WiZ Temperature to {kelvin}K")
+                return
+
+            await bulb.turn_on(PilotBuilder(brightness=brightness))
+
+    async def _execute_tapo(self, toggle: bool, on: bool, off: bool, color: str, lum: int, temp: int) -> None:
+        model = os.getenv("TAPO_MODEL", "l530").lower()
+        get_device = getattr(self.tapo_client, model, self.tapo_client.l530)
+        device = await get_device(self.bulb_ip)
+        
+        if toggle:
+            info = await device.get_device_info()
+            if info.device_on: await device.off()
+            else: await device.on()
+            return
+        elif on: await device.on()
+        elif off:
+            await device.off()
+            return
+
+        tasks = []
+        if lum is not None:
+            tasks.append(device.set_brightness(lum))
+            
+        # Convert JSON RGB to Tapo HSV mathematically
+        if color:
+            c_data = self.color_matrix.get(color.lower().strip())
+            if c_data:
+                if c_data["type"] == "rgb":
+                    r, g, b = c_data["r"], c_data["g"], c_data["b"]
+                    h, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
+                    tapo_h = int(h * 360)
+                    tapo_s = int(s * 100)
+                    tasks.append(device.set_hue_saturation(tapo_h, tapo_s))
+                elif c_data["type"] == "temp":
+                    temp = c_data["val"] 
+            else:
+                logging.warning(f"Color '{color}' not found in colors.json truth matrix.")
+
+        if temp is not None:
+            tasks.append(device.set_color_temperature(int(2500 + temp * (6500 - 2500) / 100)))
+
+        if tasks:
+            await asyncio.gather(*tasks)
+
+    # --- DUAL ECOSYSTEM NETWORK DISCOVERY ENGINE ---
+    async def discovery_mode(self, voice_mode: bool = False) -> None:
+        logging.info("Broadcasting dual network discovery queries for Tapo and WiZ protocols...")
+        
+        async def scan_wiz():
+            try: return await wiz_discovery.discover_lights(broadcast_space="255.255.255.255")
+            except Exception: return []
+
+        async def scan_tapo():
+            base_ip = self._get_subnet_base()
+            return await self._sweep_ips([f"{base_ip}.{i}" for i in range(1, 255)])
+
+        wiz_res, tapo_res = await asyncio.gather(scan_wiz(), scan_tapo())
+        
+        parsed_devices = []
+        for dev in wiz_res:
+            parsed_devices.append({"type": "wiz", "model": "WIZ_BULB", "ip": dev.ip, "mac": dev.mac})
+        for dev in tapo_res:
+            parsed_devices.append({"type": "tapo", "model": dev['model'], "ip": dev['ip'], "mac": dev['mac']})
+
+        if not parsed_devices:
+            logging.warning("No responsive devices discovered on local network architectures.")
+            return
+
+        self.last_discovered_devices = parsed_devices
+        
+        table_str = "{:<5} {:<8} {:<18} {:<18}\n".format("#", "TYPE", "MODEL", "IP")
+        table_str += "-" * 55 + "\n"
+        for i, dev in enumerate(parsed_devices):
+            table_str += "{:<5} {:<8} {:<18} {:<18}\n".format(i, dev['type'].upper(), dev['model'], dev['ip'])
+
+        if voice_mode:
+            try:
+                async with aiomqtt.Client("localhost") as mqtt_client:
+                    # Publish to feedback so the Daemon catches the AWAITING_SELECTION signal
+                    await mqtt_client.publish("jarvis/feedback", json.dumps({
+                        "status": "success",
+                        "device": "discovery",
+                        "message": f"AWAITING_SELECTION|\n{table_str}"
+                    }))
+            except Exception as e:
+                logging.error(f"Failed to deploy discovery feedback: {e}")
+        else:
+            print(f"\nDiscovered {len(parsed_devices)} smart light network targets:")
+            print(table_str)
+            self._handle_cli_save(parsed_devices)
+
+    def _handle_cli_save(self, devices: List[Dict[str, str]]) -> None:
+        choice = input("\nSelect a device index to target (or press Enter to exit): ")
+        if choice.isdigit() and int(choice) < len(devices):
+            selected = devices[int(choice)]
+            if input(f"Confirm save for {selected['ip']} to local workspace configurations? (y/n): ").lower() == 'y':
+                self.update_env_credentials(selected["ip"], selected["mac"], selected["type"])
+                logging.info(f"Target locked. Operating system variables updated to track local {selected['type'].upper()} interface.")
+
+# --- MQTT SERVICE LISTENER ---
+async def mqtt_service_listener(manager: LightManager) -> None:
+    logging.info("Service Mode initialized. Listening on MQTT topics...")
+    while True:
+        try:
+            async with aiomqtt.Client("localhost") as mqtt_client:
+                await mqtt_client.subscribe("home/room/+/set") 
+                await mqtt_client.subscribe("system/discovery")
+                
+                async for message in mqtt_client.messages:
+                    try:
+                        payload = json.loads(message.payload.decode('utf-8'))
+                        logging.info(f"Incoming Request Loop Event: {payload}")
+                        action = payload.get("action")
+                        
+                        if action == "discover":
+                            asyncio.create_task(manager.discovery_mode(voice_mode=True))
+                            continue
+                            
+                        if action == "save_discovery":
+                            idx = payload.get("index")
+                            if idx is not None and 0 <= idx < len(manager.last_discovered_devices):
+                                sel = manager.last_discovered_devices[idx]
+                                manager.update_env_credentials(sel["ip"], sel["mac"], sel["type"])
+                                logging.info(f"SUCCESS: System tracking modified to drive {sel['type'].upper()} profile.")
+                            continue
+
+                        # --- ISOLATED HARDWARE TASK ---
+                        async def execute_hardware(payload_data, action_cmd):
+                            try:
+                                await manager.control_bulb(
+                                    on=(action_cmd == "on"), off=(action_cmd == "off"), toggle=(action_cmd == "toggle"),
+                                    color=payload_data.get("color"), lum=payload_data.get("lum"), temp=payload_data.get("temp")
+                                )
+                                await mqtt_client.publish("jarvis/feedback", json.dumps({
+                                    "device": "smart_lights", "status": "success", "message": f"Successfully shifted hardware targets to '{action_cmd}' state."
+                                }))
+                            except Exception as e:
+                                await mqtt_client.publish("jarvis/feedback", json.dumps({
+                                    "device": "smart_lights", "status": "error", "message": str(e)
+                                }))
+
+                        asyncio.create_task(execute_hardware(payload, action))
+                        
+                    except json.JSONDecodeError:
+                        logging.error("JSON formatting syntax mismatch caught on parsing sequence.")
+        except aiomqtt.MqttError as e:
+            logging.error(f"MQTT Connection Error: {e} (Is Mosquitto running?)")
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            logging.info("Light Control service shutting down.")
+            break
+
+# --- UTILITIES ---
+def print_color_list(color_matrix: Dict[str, Any]) -> None:
+    if not color_matrix:
+        print("\nError: No colors found in colors.json matrix.\n")
+        return
+
+    print("\n{:^68}".format("--- AVAILABLE COLOR PRESETS ---"))
+    print("-" * 68)
+    
+    temps = sorted(set([k.title() for k, v in color_matrix.items() if v.get("type") == "temp"]))
+    colors = sorted(set([k.title() for k, v in color_matrix.items() if v.get("type") == "rgb"]))
+    
+    print("\nWhites & Temperatures:\n")
+    for i in range(0, len(temps), 4):
+        row = temps[i:i+4]
+        print("{:<17} {:<17} {:<17} {:<17}".format(*(row + [""] * (4 - len(row)))))
+        
+    print("\nColors (RGB Matrix):\n")
+    for i in range(0, len(colors), 4):
+        row = colors[i:i+4]
+        print("{:<17} {:<17} {:<17} {:<17}".format(*(row + [""] * (4 - len(row)))))
+        
+    print("\n" + "-" * 68 + "\n")
+
+# --- MAIN ---
+def main():
+    parser = argparse.ArgumentParser(description="Microservice Control for Unified Smart Lights")
+    parser.add_argument("--color", "-c", type=str)
+    parser.add_argument("-l", "--lum", type=int)
+    parser.add_argument("-t", "--temp", type=int)
+    parser.add_argument("--toggle", action="store_true")
+    parser.add_argument("--on", action="store_true")
+    parser.add_argument("--off", action="store_true")
+    parser.add_argument("--list", action="store_true")
+    parser.add_argument("-d", "--discovery", action="store_true")
+    
+    args = parser.parse_args()
+
+    manager = LightManager()
+
+    if args.list:
+        print_color_list(manager.color_matrix)
+        return
+
+    if args.discovery:
+        asyncio.run(manager.discovery_mode())
+        return
+
+    if any([args.on, args.off, args.toggle, args.color, args.lum, args.temp]):
+        asyncio.run(manager.control_bulb(
+            toggle=args.toggle, on=args.on, off=args.off, 
+            color=args.color, lum=args.lum, temp=args.temp
+        ))
+    else:
+        try:
+            asyncio.run(mqtt_service_listener(manager))
+        except KeyboardInterrupt:
+            logging.info("Exiting Light Actuator runtime environment.")
+
+if __name__ == "__main__":
+    main()
+```
+
+## File: `src/clTTS.py`
+```python
+import asyncio
+import logging
+import json
+import os
+import uuid
+import edge_tts
+from pygame import mixer
+import aiomqtt
+from typing import Dict, Any
+import sys
+
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [TTS] %(message)s", datefmt="%H:%M:%S")
+
+class TTSManager:
+    def __init__(self):
+        self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.assets_dir = os.path.abspath(os.path.join(self.base_dir, "..", "assets"))
+        self.blip_path = os.path.join(self.assets_dir, "blip.mp3")
+        self.semaphore = asyncio.Semaphore(1) 
+        
+        mixer.init()
+        logging.info("Audio mixer initialized.")
+
+    async def generate_and_play(self, client, text, voice="en-GB-RyanNeural", duck_audio=True, request_reply=False) -> None:
+        temp_file = os.path.join(self.assets_dir, f"tts_{uuid.uuid4().hex}.mp3")
+        
+        # 1. Generate in the background (Non-blocking)
+        communicate = edge_tts.Communicate(text, voice, rate="+27%", pitch="-5Hz")
+        await communicate.save(temp_file)
+
+        # 2. Acquire Semaphore for Playback
+        async with self.semaphore:
+            try:
+                if client and duck_audio:
+                    await client.publish("pc/spotify/control", json.dumps({"action": "duck"}))
+                    await asyncio.sleep(0.3)
+
+                if os.path.exists(self.blip_path):
+                    mixer.music.load(self.blip_path)
+                    mixer.music.play()
+                    while mixer.music.get_busy(): await asyncio.sleep(0.05)
+                
+                # Robust Load with Retry
+                for _ in range(5):
+                    try:
+                        mixer.music.load(temp_file)
+                        break
+                    except Exception: await asyncio.sleep(0.2)
+                
+                mixer.music.play()
+                while mixer.music.get_busy(): await asyncio.sleep(0.05)
+                
+            finally:
+                mixer.music.unload()
+                if os.path.exists(temp_file):
+                    try: os.remove(temp_file)
+                    except Exception: pass
+                
+                if client and duck_audio:
+                    await client.publish("pc/spotify/control", json.dumps({"action": "unduck"}))
+                
+                if client:
+                    await client.publish("jarvis/sys/tts_done", "1")
+
+async def run_tts_service():
+    manager = TTSManager()
+    while True:
+        try:
+            async with aiomqtt.Client("localhost") as client:
+                await client.subscribe("jarvis/sys/speak")
+                await client.subscribe("jarvis/sys/tts_stop")
+                
+                logging.info("TTS Microservice initialized. Listening on MQTT topics...")
+                
+                async for message in client.messages:
+                    topic = message.topic.value
+                    
+                    if topic == "jarvis/sys/tts_stop":
+                        mixer.music.stop()
+                        continue
+                    
+                    if topic == "jarvis/sys/speak":
+                        try:
+                            payload = json.loads(message.payload.decode('utf-8'))
+                            await manager.generate_and_play(
+                                client, 
+                                payload.get("text", ""), 
+                                duck_audio=not payload.get("skip_ducking", False),
+                                request_reply=payload.get("request_reply", False)
+                            )
+                        except json.JSONDecodeError:
+                            logging.error("Received malformed TTS JSON.")
+        except aiomqtt.MqttError as e:
+            logging.error(f"MQTT Connection Error: {e}. Retrying in 5 seconds...")
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            logging.info("TTS service shutting down.")
+            break
+        except Exception as e:
+            logging.error(f"Service Error: {e}")
+            await asyncio.sleep(5)
+if __name__ == "__main__":
+    asyncio.run(run_tts_service())
+```
+
+## File: `src/clTerminal.py`
+```python
+# --- IMPORTS ---
+import os
+import sys
+import subprocess
+import platform
+import json
+import logging
+import asyncio
+import argparse
+import aiomqtt
+import time
+import re
+import webbrowser
+import urllib.parse
+from typing import Tuple, Optional, Dict, Any, List
+
+# --- LOGGING SETUP ---
+logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [TERMINAL] %(message)s", datefmt="%H:%M:%S")
+
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+CURRENT_OS = platform.system().lower()
+
+class TerminalManager:
+    """Encapsulates system state, OS execution routing, and memory handling."""
+    
+    def __init__(self):
+        self.base_dir: str = os.path.dirname(os.path.abspath(__file__))
+        self.shortcuts: Dict[str, Any] = {"apps": {}, "folders": {}, "system_keywords": {}}
+        self.last_opened_dir: str = os.path.expanduser("~")
+        self.terminal_is_open: bool = False
+        self.pid_file: str = os.path.join(os.path.expanduser("~"), ".jarvis_nav_pid")
+        
+        self._load_shortcuts()
+
+    def _load_shortcuts(self) -> None:
+        """Loads shortcuts.json into isolated class memory."""
+        shortcuts_path = os.path.abspath(os.path.join(self.base_dir, "..", "config", "shortcuts.json"))
+        try:
+            with open(shortcuts_path, 'r', encoding='utf-8') as f:
+                self.shortcuts = json.load(f)
+            logging.info(f"Loaded {len(self.shortcuts.get('apps', {}))} apps and {len(self.shortcuts.get('folders', {}))} folders.")
+        except FileNotFoundError:
+            logging.warning("shortcuts.json not found. Operating with empty dictionaries.")
+        except json.JSONDecodeError as e:
+            logging.critical(f"Syntax error in shortcuts.json: {e}")
+
+    # --- PID LIFECYCLE MANAGEMENT ---
+    def _clear_pids(self) -> bool:
+        """Synchronously kills all tracked terminal PIDs and clears the file."""
+        killed_any = False
+        if self.terminal_is_open and os.path.exists(self.pid_file):
+            try:
+                with open(self.pid_file, 'r') as f:
+                    pids = f.read().splitlines()
+            except Exception as e:
+                logging.error(f"Failed to read PID tracker file: {e}")
+                return False
+            
+            for p in pids:
+                if not p.strip(): continue
+                if not p.strip(): continue
+                try:
+                    target_pid = int(p.strip())
+                    if CURRENT_OS == "linux":
+                        os.kill(target_pid, 9) 
+                    elif CURRENT_OS == "windows":
+                        subprocess.run(f"taskkill /F /PID {target_pid} /T", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    killed_any = True
+                except Exception:
+                    pass
+            
+            open(self.pid_file, 'w').close()
+            time.sleep(0.5)
+        
+        self.terminal_is_open = False
+        return killed_any
+
+    def _save_pid(self, pid: int) -> None:
+        """Appends a new Process ID to the tracker file."""
+        with open(self.pid_file, 'a') as f:
+            f.write(f"{pid}\n")
+        self.terminal_is_open = True
+
+    # --- EXECUTION ROUTERS ---
+    def _handle_open(self, target: str) -> Tuple[bool, str]:
+        target_clean = target.lower().strip()
+        sys_kw = self.shortcuts.get("system_keywords", {})
+        terminal_aliases = sys_kw.get("terminal_aliases", ["terminal", "console", "shell", "cmd"])
+        go_back_keywords = sys_kw.get("go_back", ["back", "up", "..", "previous", "return"])
+
+        # A. Open Base Terminal
+        if target_clean in terminal_aliases:
+            if CURRENT_OS == "linux":
+                term_emu = sys_kw.get("default_terminal", "gnome-terminal")
+                subprocess.Popen([term_emu, "--working-directory", self.last_opened_dir, "--", "bash", "-c", f"echo $$ >> {self.pid_file}; exec bash"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.terminal_is_open = True
+            elif CURRENT_OS == "windows":
+                proc = subprocess.Popen(["cmd", "/k", f"title JarvisNavigation && cd /d {self.last_opened_dir}"], creationflags=subprocess.CREATE_NEW_CONSOLE)
+                self._save_pid(proc.pid)
+            return True, "Launched Terminal."
+
+        # B. Open Standard App
+        if target_clean in self.shortcuts.get("apps", {}):
+            app_cmd = self.shortcuts["apps"][target_clean].get(CURRENT_OS)
+            if app_cmd:
+                subprocess.Popen(app_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return True, f"Launched application: {target_clean}"
+            return False, f"No executable defined for app '{target_clean}' on {CURRENT_OS}."
+
+        # C. Path Resolution
+        resolved_path = None
+        if any(target_clean.startswith(kw) for kw in go_back_keywords):
+            if self.last_opened_dir and os.path.exists(self.last_opened_dir):
+                resolved_path = os.path.abspath(os.path.join(self.last_opened_dir, os.pardir))
+        elif target_clean in self.shortcuts.get("folders", {}):
+            guess = os.path.expanduser(self.shortcuts["folders"][target_clean])
+            if os.path.isdir(guess):
+                resolved_path = guess
+        else:
+            home_dir = os.path.expanduser("~")
+            current_base = self.last_opened_dir if self.last_opened_dir else home_dir
+            voiced_path = target_clean.replace(" ", "/")
+            
+            for path_guess in [
+                os.path.expanduser(target_clean),
+                os.path.join(home_dir, target.title().replace(" ", "/")),
+                os.path.join(home_dir, voiced_path),
+                f"/{voiced_path}",
+                os.path.join(current_base, voiced_path),
+                os.path.join(current_base, target.title().replace(" ", "/"))
+            ]:
+                if os.path.isdir(path_guess):
+                    resolved_path = path_guess
+                    break
+
+        if resolved_path:
+            self.last_opened_dir = resolved_path
+            self._clear_pids()
+            
+            if CURRENT_OS == "linux":
+                term_emu = sys_kw.get("default_terminal", "gnome-terminal")
+                spawn_cmd = f"echo $$ >> {self.pid_file}; ls; exec bash"
+                subprocess.Popen([term_emu, "--title=JarvisNavWindow", "--working-directory", resolved_path, "--", "bash", "-c", spawn_cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.terminal_is_open = True
+            elif CURRENT_OS == "windows":
+                proc = subprocess.Popen(["cmd", "/k", f"title JarvisNavigation && cd /d {resolved_path} && dir"], creationflags=subprocess.CREATE_NEW_CONSOLE)
+                self._save_pid(proc.pid)
+            return True, f"Spawned terminal at: {resolved_path}"
+
+        return False, f"Target '{target}' not found."
+
+    def _handle_close(self, target: str) -> Tuple[bool, str]:
+        target_clean = target.lower().strip()
+        terminal_aliases = self.shortcuts.get("system_keywords", {}).get("terminal_aliases", ["terminal", "console", "shell", "cmd"])
+        
+        # A. Close Child Terminals
+        if target_clean in terminal_aliases:
+            if self._clear_pids():
+                return True, "Closed tracked terminal instances."
+
+        # B. Close Standard App
+        if target_clean in self.shortcuts.get("apps", {}):
+            app_data = self.shortcuts["apps"][target_clean]
+            kill_target = app_data.get(f"{CURRENT_OS}_kill")
+            
+            if not kill_target:
+                launch_cmd = app_data.get(CURRENT_OS, "")
+                if CURRENT_OS == "windows":
+                    exe_matches = re.findall(r'[\w.-]+\.exe', launch_cmd, re.IGNORECASE)
+                    kill_target = exe_matches[-1] if exe_matches else launch_cmd.split()[0]
+                elif CURRENT_OS == "linux":
+                    kill_target = launch_cmd.split()[0].split('/')[-1]
+
+            if not kill_target:
+                return False, f"Could not determine kill target for '{target_clean}'."
+
+            if CURRENT_OS == "linux":
+                subprocess.Popen(["pkill", "-f", kill_target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            elif CURRENT_OS == "windows":
+                subprocess.run(f"taskkill /F /IM {kill_target} /T", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                
+            return True, f"Sent termination signal to process: {kill_target}"
+            
+        return False, f"Target '{target}' not found in apps."
+
+    def _handle_power(self, action: str) -> Tuple[bool, str]:
+        if action == "shutdown":
+            subprocess.Popen(["shutdown", "now"] if CURRENT_OS == "linux" else ["shutdown", "/s", "/t", "0"])
+            return True, "Initiating system shutdown."
+        elif action == "restart":
+            subprocess.Popen(["reboot"] if CURRENT_OS == "linux" else ["shutdown", "/r", "/t", "0"])
+            return True, "Initiating system reboot."
+        return False, "Invalid power command."
+
+    def _handle_web(self, action: str, target: str) -> Tuple[bool, str]:
+        """Handles web navigation and direct browser searches natively."""
+        try:
+            if action == "search":
+                # Convert "python tutorials" into "python+tutorials"
+                encoded_query = urllib.parse.quote_plus(target)
+                target_url = f"https://www.google.com/search?q={encoded_query}"
+                webbrowser.open(target_url, new=2)
+                return True, f"Executed web search for: '{target}'"
+                
+            elif action == "open_site":
+                clean_target = target.replace(" ", "")
+                
+                if not clean_target.startswith("http"):
+                    clean_target = f"https://{clean_target}"
+                    
+                webbrowser.open(clean_target, new=2)
+                return True, f"Opened URL: {clean_target}"
+                
+            return False, "Invalid web action specified."
+        except Exception as e:
+            return False, f"Browser execution failed: {str(e)}"
+
+    def execute_command(self, action: str, target: Optional[str] = None, level: Optional[int] = None) -> Tuple[bool, str]:
+        """Main routing switchboard for the actuator."""
+        try:
+            if action == "open" and target:
+                return self._handle_open(target)
+            elif action == "close" and target:
+                return self._handle_close(target)
+            elif action in ["search", "open_site"] and target:
+                return self._handle_web(action, target)
+            elif action in ["shutdown", "restart"]:
+                return self._handle_power(action)
+            elif action == "volume" and level is not None:
+                clean_level = max(0, min(100, level))
+                if CURRENT_OS == "linux":
+                    subprocess.Popen(["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{clean_level}%"])
+                    return True, f"Linux master volume set to {clean_level}%."
+                return False, "Windows volume control requires the 'pycaw' library."
+            return False, f"Action '{action}' is not recognized."
+        except Exception as e:
+            return False, f"OS Execution Error: {str(e)}"
+
+# --- MQTT SERVICE LISTENER ---
+async def mqtt_service_listener(manager: TerminalManager) -> None:
+    logging.info(f"Terminal Service initialized for {CURRENT_OS.upper()}. Listening on 'pc/system/control'...")
+    while True:
+        try:
+            async with aiomqtt.Client("localhost") as mqtt_client:
+                await mqtt_client.subscribe("pc/system/control")
+                async for message in mqtt_client.messages:
+                    try:
+                        payload = json.loads(message.payload.decode('utf-8'))
+                        logging.info(f"Command Received: {payload}")
+                        
+                        success, msg = await asyncio.to_thread(
+                            manager.execute_command, 
+                            payload.get("action"), 
+                            payload.get("target"), 
+                            payload.get("level")
+                        )
+                        
+                        await mqtt_client.publish("jarvis/feedback", json.dumps({
+                            "device": "terminal",
+                            "status": "success" if success else "error",
+                            "message": msg
+                        }))
+                    except json.JSONDecodeError:
+                        logging.error("Received malformed JSON data.")
+        except aiomqtt.MqttError as e:
+            logging.error(f"MQTT Connection Error: {e}")
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            logging.info("Terminal service shutting down.")
+            break
+
+# --- MAIN ---
+def main():
+    parser = argparse.ArgumentParser(description="Microservice Control for OS Terminal")
+    parser.add_argument("--open", type=str, help="Open an app or path by dictionary nickname")
+    parser.add_argument("--search", type=str, help="Search Google for a query")
+    parser.add_argument("--site", type=str, help="Open a direct URL")
+    parser.add_argument("--shutdown", action="store_true", help="Shutdown the computer")
+    args = parser.parse_args()
+
+    manager = TerminalManager()
+
+    if args.open:
+        success, msg = manager.execute_command("open", target=args.open)
+        logging.info(msg)
+    elif args.search:
+        success, msg = manager.execute_command("search", target=args.search)
+        logging.info(msg)
+    elif args.site:
+        success, msg = manager.execute_command("open_site", target=args.site)
+        logging.info(msg)
+    elif args.shutdown:
+        success, msg = manager.execute_command("shutdown")
+        logging.info(msg)
+    else:
+        try:
+            asyncio.run(mqtt_service_listener(manager))
+        except KeyboardInterrupt:
+            logging.info("Exiting Service Mode.")
+
+if __name__ == "__main__":
+    main()
+```
+
+## File: `src/clSpotify.py`
+```python
+# --- IMPORTS ---
+import os
+import re
+import sys
+import argparse
+import logging
+import asyncio
+import json
+import jellyfish
+import threading
+from typing import Tuple, Optional, Dict, Any, List
+from dotenv import load_dotenv
+import spotipy
+from spotipy.oauth2 import SpotifyOAuth
+import aiomqtt
+
+# --- LOGGING SETUP ---
+logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [SPOTIFY] %(message)s", datefmt="%H:%M:%S")
+
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+class SpotifyManager:
+    """Enterprise state controller for Spotify API interaction and playback logic."""
+    
+    def __init__(self, debug_math: bool = True):
+        self.base_dir: str = os.path.dirname(os.path.abspath(__file__))
+        self.env_path: str = os.path.abspath(os.path.join(self.base_dir, "..", ".env"))
+        load_dotenv(self.env_path)
+
+        self.client_id: str = os.getenv("SPOTIPY_CLIENT_ID", "")
+        self.client_secret: str = os.getenv("SPOTIPY_CLIENT_SECRET", "")
+        self.redirect_uri: str = os.getenv("SPOTIPY_REDIRECT_URI", "")
+        
+        if not all([self.client_id, self.client_secret, self.redirect_uri]):
+            logging.critical("Spotify credentials missing in .env file!")
+            sys.exit(1)
+
+        self.scope: str = "user-read-playback-state user-modify-playback-state playlist-read-private playlist-read-collaborative"
+        self.sp: spotipy.Spotify = spotipy.Spotify(auth_manager=SpotifyOAuth(
+            client_id=self.client_id,
+            client_secret=self.client_secret,
+            redirect_uri=self.redirect_uri,
+            scope=self.scope
+        ))
+
+        # Isolated State Memory
+        self.search_cache: Dict[int, str] = {}
+        self.cache_lock = threading.Lock()
+        self.pre_duck_volume: Optional[int] = None
+        
+        # Configuration
+        self.confidence_threshold: float = 0.60
+        self.perfect_match_threshold: float = 0.85
+        self.debug_math: bool = debug_math
+
+    # --- STATUS ENGINE ---
+    def get_status(self) -> None:
+        """Reads the API and prints the currently playing track."""
+        try:
+            playback = self.sp.current_playback()
+            if not playback or not playback.get('is_playing'):
+                print("\n--- Spotify Status ---\nStatus:\t\tPaused / Inactive\n" + "-" * 22 + "\n")
+                return
+
+            item = playback.get('item', {})
+            track_name = item.get('name', 'Unknown')
+            artists = ", ".join([artist['name'] for artist in item.get('artists', [])])
+            device_name = playback.get('device', {}).get('name', 'Unknown')
+            volume = playback.get('device', {}).get('volume_percent', 'N/A')
+            
+            print("\n--- Spotify Status ---")
+            print(f"Status:\t\tPlaying")
+            print(f"Track:\t\t{track_name}")
+            print(f"Artist(s):\t{artists}")
+            print(f"Device:\t\t{device_name}")
+            print(f"Volume:\t\t{volume}%")
+            print("-" * 22 + "\n")
+        except Exception as e:
+            logging.error(f"Error getting Spotify status: {e}")
+
+    # --- MATHEMATICS & LOGIC ENGINES ---
+    def _calculate_confidence(self, track_query: str, artist_query: str, actual_name: str, actual_artist: str, popularity: int) -> float:
+        """Calculates independent track and artist phonetic scores with strict penalties."""
+        t_q = track_query.lower() if track_query else ""
+        a_q = artist_query.lower() if artist_query else ""
+        a_n = actual_name.lower()
+        a_a = actual_artist.lower()
+        
+        # 1. Track Match
+        track_score = 1.0
+        if t_q:
+            track_phonetic = jellyfish.jaro_winkler_similarity(jellyfish.metaphone(t_q), jellyfish.metaphone(a_n))
+            track_text = jellyfish.jaro_winkler_similarity(t_q, a_n)
+            track_score = max(track_phonetic, track_text)
+
+        # 2. Artist Match
+        artist_score = 1.0
+        if a_q:
+            artist_phonetic = jellyfish.jaro_winkler_similarity(jellyfish.metaphone(a_q), jellyfish.metaphone(a_a))
+            artist_text = jellyfish.jaro_winkler_similarity(a_q, a_a)
+            artist_score = max(artist_phonetic, artist_text)
+
+        # 3. Base Match: Strict Minimum Requirements
+        if t_q and a_q:
+            base_match = (track_score * 0.5) + (artist_score * 0.5)
+            if track_score < 0.75 or artist_score < 0.75:
+                base_match *= 0.3  # False positive nuke
+        elif t_q:
+            base_match = track_score
+        else:
+            base_match = artist_score
+
+        # 4. Popularity Weight 
+        pop_weight = popularity / 100.0
+        composite = (base_match * 0.85) + (pop_weight * 0.15)
+        
+        if self.debug_math:
+            print(f"\n[DEBUG] Evaluating: '{actual_name}' by '{actual_artist}' (Pop: {popularity})")
+            print(f"  ├─ Track Score:  {track_score:.2f}")
+            print(f"  ├─ Artist Score: {artist_score:.2f}")
+            print(f"  └─ Final Math:   (Base {base_match:.2f} * 0.85) + (Pop {pop_weight:.2f} * 0.15) = {composite:.0%}")
+            print("-" * 50)
+            
+        return composite
+
+    # --- PLAYBACK ROUTERS ---
+    def _play_playlist(self, playlist_name: str) -> Tuple[bool, str]:
+        compressed_query = re.sub(r'\W+', '', playlist_name).lower()
+        query_tokens = [re.sub(r'\W+', '', t) for t in playlist_name.lower().replace('-', ' ').split() if t]
+        
+        user_playlists = self.sp.current_user_playlists(limit=50)
+        target_uri, target_actual_name = None, None
+        
+        # 1: Compressed Match
+        for item in user_playlists.get('items', []):
+            if item and compressed_query == re.sub(r'\W+', '', item['name']).lower():
+                target_uri, target_actual_name = item['uri'], item['name']
+                break
+        
+        # 2: Tokenized Substring Match
+        if not target_uri and query_tokens:
+            best_score = 0
+            for item in user_playlists.get('items', []):
+                if not item: continue
+                compressed_p_name = re.sub(r'\W+', '', item['name']).lower()
+                current_score = sum(1 for token in query_tokens if token in compressed_p_name)
+                
+                if current_score > best_score:
+                    best_score = current_score
+                    target_uri, target_actual_name = item['uri'], item['name']
+                    
+        if target_uri:
+            self.sp.start_playback(context_uri=target_uri)
+            return True, f"Playing your personal playlist: {target_actual_name}"
+        
+        # 3: Global Fallback
+        results = self.sp.search(q=playlist_name, type='playlist', limit=1)
+        if results['playlists']['items']:
+            self.sp.start_playback(context_uri=results['playlists']['items'][0]['uri'])
+            return True, f"Playing global playlist: {playlist_name}"
+            
+        return False, f"Playlist '{playlist_name}' not found anywhere."
+
+    def _play_track_fuzzy(self, track_name: Optional[str] = None, artist_name: Optional[str] = None, search_query: Optional[str] = None) -> Tuple[bool, str]:
+        self.search_cache.clear()
+        
+        queries_to_try = []
+        if track_name and artist_name: queries_to_try.extend([f"{track_name} {artist_name}", track_name])
+        elif track_name: queries_to_try.append(track_name)
+        elif search_query: queries_to_try.append(search_query)
+        else: return False, "No valid track query provided."
+
+        best_items_list, best_confidence = [], 0
+        top_item_uri, top_actual_name, top_actual_artist = "", "", ""
+        
+        if self.debug_math: logging.info(f"[DEBUG] Cascade Queue: {queries_to_try}")
+
+        for q in queries_to_try:
+            logging.info(f"Searching Spotify for: '{q}'")
+            results = self.sp.search(q=q, type='track', limit=5)
+            
+            if not results['tracks']['items']: continue 
+                
+            for item in results['tracks']['items']:
+                actual_name = item['name']
+                actual_artist = item['artists'][0]['name']
+                popularity = item.get('popularity', 50)
+                
+                confidence = self._calculate_confidence(track_name, artist_name, actual_name, actual_artist, popularity)
+                
+                if confidence > best_confidence:
+                    best_confidence = confidence
+                    best_items_list = results['tracks']['items']
+                    top_item_uri, top_actual_name, top_actual_artist = item['uri'], actual_name, actual_artist
+
+            if best_confidence >= self.perfect_match_threshold:
+                logging.info("Found a perfect match. Halting cascade early.")
+                break 
+
+        if not best_items_list:
+            return False, f"Could not find any results for '{queries_to_try[0]}'."
+        
+        logging.info(f"-> Math Engine Selected: '{top_actual_name} by {top_actual_artist}' | Score: {best_confidence:.0%}")
+        
+        if best_confidence >= self.confidence_threshold:
+            self.sp.start_playback(uris=[top_item_uri])
+            return True, f"Playing: {top_actual_name} by {top_actual_artist}"
+        
+        # Low confidence fallback cache
+        msg = "CONFIDENCE_LOW|"
+        with self.cache_lock:
+            for idx, item in enumerate(best_items_list): 
+                choice_num = idx + 1
+                self.search_cache[choice_num] = item['uri']
+                msg += f"\n[{choice_num}] {item['name']} by {item['artists'][0]['name']}"
+            
+        return True, msg
+    def _play_artist_fuzzy(self, artist_name: str) -> Tuple[bool, str]:
+        logging.info(f"Fuzzy searching Spotify for artist: '{artist_name}'")
+        results = self.sp.search(q=artist_name, type='artist', limit=1)
+        
+        if results['artists']['items']:
+            item = results['artists']['items'][0]
+            self.sp.start_playback(context_uri=item['uri'])
+            return True, f"Playing artist radio: {item['name']}"
+            
+        return False, f"Artist '{artist_name}' not found."
+
+    def _handle_ducking(self, action: str) -> Tuple[bool, str]:
+        if action == "duck":
+            if self.pre_duck_volume is not None:
+                return True, "Volume is already ducked."
+                
+            playback = self.sp.current_playback()
+            if playback and playback.get('is_playing') and playback.get('device'):
+                self.pre_duck_volume = playback['device']['volume_percent']
+                new_vol = max(0, self.pre_duck_volume - 20)
+                self.sp.volume(new_vol)
+                return True, f"Listening... Volume dipped to {new_vol}%."
+            return False, "Nothing is playing, no need to duck."
+
+        elif action == "unduck":
+            if self.pre_duck_volume is not None:
+                self.sp.volume(self.pre_duck_volume)
+                restored = self.pre_duck_volume
+                self.pre_duck_volume = None
+                return True, f"Done listening. Restored volume to {restored}%."
+            return False, "No original volume to restore."
+        
+        return False, "Invalid ducking command."
+
+    # --- MAIN EXECUTION ENGINE ---
+    def execute_command(self, action: str, volume: Optional[int] = None, track_name: Optional[str] = None, 
+                        artist_name: Optional[str] = None, playlist_name: Optional[str] = None, 
+                        search_query: Optional[str] = None, choice_index: Optional[int] = None) -> Tuple[bool, str]:
+        """Clean router that delegates actions to the appropriate class helper methods."""
+        try:
+            if action in ["duck", "unduck"]:
+                return self._handle_ducking(action)
+            
+            if action == "play_choice" and choice_index is not None:
+                with self.cache_lock:
+                    uri = self.search_cache.get(choice_index)
+                    if uri:
+                        self.search_cache.clear()
+                        
+                if uri:
+                    self.sp.start_playback(uris=[uri])
+                    return True, f"Playing option {choice_index}."
+                return False, f"Option {choice_index} is invalid or expired."
+                
+            if action == "play":
+                if playlist_name: return self._play_playlist(playlist_name)
+                elif track_name or search_query: return self._play_track_fuzzy(track_name, artist_name, search_query)
+                elif artist_name: return self._play_artist_fuzzy(artist_name)
+                else:
+                    self.sp.start_playback()
+                    return True, "Resuming playback."
+                
+            if action == "pause":
+                self.sp.pause_playback()
+                return True, "Music paused."
+                
+            if action == "next":
+                self.sp.next_track()
+                return True, "Skipped to next track."
+                
+            if action == "prev":
+                self.sp.previous_track()
+                return True, "Returned to previous track."
+                
+            if action == "volume" and volume is not None:
+                clean_vol = max(0, min(100, volume))
+                self.sp.volume(clean_vol)
+                return True, f"Volume changed to {clean_vol}%."
+            
+            return False, f"Action '{action}' is not recognized."
+                
+        except spotipy.exceptions.SpotifyException as e:
+            if e.http_status == 403: 
+                if action == "play" and not any([track_name, artist_name, playlist_name, search_query, choice_index]):
+                    return False, "Music is already playing."
+                return False, "Action refused. Premium account required or playback restriction."
+            elif e.http_status == 404: 
+                return False, "No active device found. Open Spotify first."
+            return False, f"Spotify API Error: {e}"
+        except Exception as e:
+            return False, f"Internal Error: {str(e)}"
+
+
+# --- MQTT SERVICE LISTENER ---
+async def mqtt_service_listener(manager: SpotifyManager) -> None:
+    logging.info("Service Mode initialized. Listening on topic 'pc/spotify/control'...")
+    while True:
+        try:
+            async with aiomqtt.Client("localhost") as mqtt_client:
+                await mqtt_client.subscribe("pc/spotify/control")
+                
+                async for message in mqtt_client.messages:
+                    try:
+                        payload = json.loads(message.payload.decode('utf-8'))
+                        logging.info(f"Command Received: {payload}")
+                        
+                        # Offload strictly synchronous Spotipy requests to a background thread
+                        success, msg = await asyncio.to_thread(
+                            manager.execute_command, 
+                            action=payload.get("action"), 
+                            volume=payload.get("volume"), 
+                            track_name=payload.get("track_name"), 
+                            artist_name=payload.get("artist_name"), 
+                            playlist_name=payload.get("playlist_name"), 
+                            search_query=payload.get("search_query"), 
+                            choice_index=payload.get("choice_index")
+                        )
+                        
+                        await mqtt_client.publish("jarvis/feedback", json.dumps({
+                            "device": "spotify",
+                            "status": "success" if success else "error",
+                            "message": msg
+                        }))
+                        
+                    except json.JSONDecodeError:
+                        logging.error("Received malformed JSON data.")
+        except aiomqtt.MqttError as e:
+            await asyncio.sleep(5)
+            logging.error(f"MQTT Connection Error: {e} (Is Mosquitto running?)")
+        except asyncio.CancelledError:
+            logging.info("Spotify service shutting down.")
+            break
+
+
+# --- MAIN ---
+def main():
+    parser = argparse.ArgumentParser(description="Microservice Control for Spotify")
+    parser.add_argument("--status", action="store_true", help="Show current track")
+    parser.add_argument("--play", action="store_true", help="Resume playback")
+    parser.add_argument("--pause", action="store_true", help="Pause playback")
+    parser.add_argument("--next", action="store_true", help="Next track")
+    parser.add_argument("--prev", action="store_true", help="Previous track")
+    parser.add_argument("--vol", type=int, help="Set volume (0-100)")
+    parser.add_argument("--track", type=str, help="Play a specific track")
+    parser.add_argument("--artist", type=str, help="Play a specific artist")
+    parser.add_argument("--playlist", type=str, help="Play a specific playlist")
+    args = parser.parse_args()
+
+    try:
+        manager = SpotifyManager()
+    except Exception as e:
+        logging.critical(f"Failed to initialize Manager: {e}")
+        sys.exit(1)
+
+    if args.status:
+        manager.get_status()
+        return
+
+    has_direct_command = any([args.play, args.pause, args.next, args.prev, args.vol is not None, args.track, args.artist, args.playlist])
+
+    if has_direct_command:
+        logging.info("Executing manual override command directly...")
+        if args.playlist: manager.execute_command("play", playlist_name=args.playlist)
+        elif args.track: manager.execute_command("play", track_name=args.track, artist_name=args.artist)
+        elif args.artist: manager.execute_command("play", artist_name=args.artist)
+        elif args.play: manager.execute_command("play")
+            
+        if args.pause: manager.execute_command("pause")
+        if args.next: manager.execute_command("next")
+        if args.prev: manager.execute_command("prev")
+        if args.vol is not None: manager.execute_command("volume", volume=args.vol)
+    else:
+        try:
+            asyncio.run(mqtt_service_listener(manager))
+        except KeyboardInterrupt:
+            logging.info("Exiting Service Mode.")
+
+if __name__ == "__main__":
+    main()
+```
+
+## File: `src/clDebug.py`
+```python
+import sys
+import time
+import logging
+import paho.mqtt.client as mqtt_client
+
+# --- LOGGING SETUP ---
+logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [DEBUG] %(message)s", datefmt="%H:%M:%S")
+
+def main():
+    # Setup persistent MQTT connection
+    client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION1)
+    
+    try:
+        client.connect("localhost", 1883, 60)
+        client.loop_start()
+        logging.info("Connected to central MQTT bus.")
+    except Exception as e:
+        logging.error(f"Could not connect to broker: {e}")
+        sys.exit(1)
+
+    print("==================================================")
+    print(" JARVIS TEXT DEBUGGER ONLINE")
+    print(" Type a direct command (e.g., 'turn on the desk light')")
+    print(" NOTE: Do not type 'hey jarvis'. The wake word is bypassed.")
+    print(" Press Ctrl+C to exit.")
+    print("==================================================\n")
+    
+    while True:
+        try:
+            # Blocks and waits for terminal input
+            text_command = input("\033[94m[TEXT INPUT] > \033[0m")
+            
+            if text_command.strip():
+                # Publish with QoS 1 to guarantee the Daemon receives it
+                client.publish("jarvis/sensor/voice", text_command, qos=1)
+                logging.info(f"Injected payload: '{text_command}'")
+                
+                # Give the system a tiny fraction of a second to process before asking for next input
+                time.sleep(0.2)
+                
+        except KeyboardInterrupt:
+            print("\n")
+            logging.info("Shutting down text debugger.")
+            client.loop_stop()
+            client.disconnect()
+            sys.exit(0)
+        except Exception as e:
+            logging.error(f"Injection failed: {e}")
+
+if __name__ == "__main__":
+    main()
+```
+
+## File: `src/clVoice.py`
+```python
+import os
+import re
+import sys
+import json
+import numpy as np
+import pyaudio
+import logging
+import collections
+import time
+import site
+import threading
+import queue
+import paho.mqtt.publish as publish
+import paho.mqtt.client as mqtt_client
+from typing import Dict, Any, Tuple, Optional, Deque
+from contextlib import contextmanager
+from ctypes import CFUNCTYPE, c_char_p, c_int, cdll
+
+# --- OPTIMIZATION FLAGS ---
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["TFLITE_NUM_THREADS"] = "1"
+
+# --- LINUX C-LEVEL ALSA & JACK SILENCER ---
+def py_error_handler(filename, line, function, err, fmt):
+    pass
+
+try:
+    ERROR_HANDLER_FUNC = CFUNCTYPE(None, c_char_p, c_int, c_char_p, c_int, c_char_p)
+    c_error_handler = ERROR_HANDLER_FUNC(py_error_handler)
+    asound = cdll.LoadLibrary('libasound.so.2')
+    asound.snd_lib_error_set_handler(c_error_handler)
+except Exception:
+    pass
+
+# --- LOGGING SETUP ---
+import warnings
+warnings.filterwarnings("ignore")
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("faster_whisper").setLevel(logging.WARNING)
+
+logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [VOICE] %(message)s", datefmt="%H:%M:%S")
+
+@contextmanager
+def silence_c_errors():
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    old_stderr = os.dup(2)
+    sys.stderr.flush()
+    try:
+        os.dup2(devnull, 2)
+        yield
+    finally:
+        os.dup2(old_stderr, 2)
+        os.close(old_stderr)
+        os.close(devnull)
+
+# --- WINDOWS CUDA PATH INJECTION ---
+if sys.platform == 'win32':
+    cuda_path = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
+    if os.path.exists(cuda_path):
+        for version in os.listdir(cuda_path):
+            if version.startswith("v12"):
+                bin_folder = os.path.join(cuda_path, version, "bin")
+                os.environ["PATH"] = bin_folder + os.pathsep + os.environ["PATH"]
+                try: os.add_dll_directory(bin_folder)
+                except OSError: pass
+                
+    for site_pkg in site.getsitepackages() + [site.getusersitepackages()]:
+        for lib in ["cublas", "cudnn"]:
+            lib_bin = os.path.join(site_pkg, "nvidia", lib, "bin")
+            if os.path.exists(lib_bin):
+                os.environ["PATH"] = lib_bin + os.pathsep + os.environ["PATH"]
+                try: os.add_dll_directory(lib_bin)
+                except OSError: pass
+
+from faster_whisper import WhisperModel
+
+class VoiceSensor:
+    """Enterprise class for managing audio capture, wake word detection, and STT pipelines."""
+    
+    FORMAT: int = pyaudio.paInt16
+    CHANNELS: int = 1
+    RATE: int = 16000
+    CHUNK: int = 1280
+
+    MAX_RECORD_SECONDS: int = 10
+    INITIAL_SILENCE_SECONDS: float = 1.5
+    SILENCE_LIMIT_SECONDS: float = 1
+
+    MIN_BASELINE: int = 2000              
+    VOICE_ACT_BUFFER: float = 1.40  
+    SILENCE_CUT_BUFFER: float = 1.15    
+    MAX_CEILING_BUFFER: float = 3.00       
+
+    def __init__(self, target_word: str = "hey_jarvis"):
+        self.target_word: str = target_word
+        self.base_dir: str = os.path.dirname(os.path.abspath(__file__))
+        
+        # Parallel Conversational State Tracking Memory
+        self.tts_busy: bool = False
+        self.tts_queue_count: int = 0  # --- NEW: Tracks multiple TTS sentences
+        self.already_spoke: bool = False
+        self.ambient_noise_buffer: Deque[float] = collections.deque(maxlen=100)
+        
+        # Microservice Control States
+        self.active_window_end: float = 0.0
+        self.pending_active_window: bool = False
+        self.awaiting_reply: bool = False
+        self.attention_mode: bool = False
+        
+        # On-Demand CPU Masking Engine
+        self.vad_hangtime: int = 0
+        self.pre_speech_buffer: Deque[np.ndarray] = collections.deque(maxlen=15)
+        
+        self.settings: Dict[str, Any] = self._load_settings()
+        self.hw_choice = self.settings.get("hardware", "cpu").lower()
+        
+        # --- GPU Concurrency Engine Setup ---
+        self.use_gpu_concurrency = self.hw_choice in ["gpu", "cuda"]
+        
+        if self.use_gpu_concurrency:
+            self.stt_queue: queue.Queue = queue.Queue()
+            self.speculative_text: str = ""
+            self.transcription_done_event = threading.Event()
+            
+            self.stt_worker_thread = threading.Thread(target=self._stt_worker, daemon=True)
+            self.stt_worker_thread.start()
+            logging.info("GPU concurrency engine initialized.")
+        
+        with silence_c_errors():
+            self.audio: pyaudio.PyAudio = pyaudio.PyAudio()
+            
+        self.mic_stream: Optional[pyaudio.Stream] = None
+        
+        self.oww_model = self._init_wakeword()
+        self.stt_model = self._init_whisper()
+        self.mqtt: mqtt_client.Client = self._init_mqtt()
+
+    def _load_settings(self) -> Dict[str, Any]:
+        config_path = os.path.abspath(os.path.join(self.base_dir, "..", "config", "settings.json"))
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            logging.warning("Failed to load settings.json. Using fallback defaults.")
+            return {"language": "en", "hardware": "cpu", "stt_model": "small"}
+
+    def _init_wakeword(self) -> Any:
+        logging.info("Booting Wake Word Engine...")
+        import openwakeword
+        from openwakeword.model import Model
+        
+        available_models = openwakeword.get_pretrained_model_paths()
+        jarvis_path = next((path for path in available_models if self.target_word in path), None)
+        if not jarvis_path:
+            logging.critical(f"Error: Pre-trained '{self.target_word}' model not found!")
+            sys.exit(1)
+            
+        try:
+            return Model(wakeword_models=[jarvis_path])
+        except TypeError:
+            return Model(wakeword_model_paths=[jarvis_path])
+
+    def _init_whisper(self) -> WhisperModel:
+        size = self.settings.get("stt_model", "base")
+        
+        if self.hw_choice in ["gpu", "cuda"]:
+            stt_device, stt_compute = "cuda", "float16"
+            logging.info(f"Booting Whisper STT ({size}) -> GRAPHICS CARD (CUDA)")
+        else:
+            stt_device, stt_compute = "cpu", "int8"
+            logging.info(f"Booting Whisper STT ({size}) -> PROCESSOR (CPU)")
+            
+        try:
+            return WhisperModel(size, device=stt_device, compute_type=stt_compute)
+        except Exception as e:
+            logging.critical(f"Error loading voice module: {e}")
+            if self.hw_choice in ["gpu", "cuda"]:
+                logging.critical("Retrying with CPU fallback...")
+                try: 
+                    # If fallback, disable concurrency feature meant for GPU
+                    self.use_gpu_concurrency = False 
+                    return WhisperModel(size, device="cpu", compute_type="int8")
+                except Exception: 
+                    sys.exit(1)
+            sys.exit(1)
+
+    # --- MQTT CONTEXT BUS ENGINE ---
+    def _init_mqtt(self) -> mqtt_client.Client:
+        client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION1)
+        client.on_message = self._on_mqtt_message
+        
+        try:
+            client.connect("localhost", 1883, 60)
+            
+            client.subscribe("jarvis/sys/speak")
+            client.subscribe("jarvis/sys/mic_open")
+            client.subscribe("jarvis/sys/mic_control")
+            client.subscribe("jarvis/sys/tts_done") 
+            client.loop_start()
+            return client
+        except Exception as e:
+            logging.critical(f"Failed to connect to MQTT broker: {e}")
+            sys.exit(1)
+
+    def _on_mqtt_message(self, client: mqtt_client.Client, userdata: Any, msg: mqtt_client.MQTTMessage) -> None:
+        payload_str = msg.payload.decode('utf-8')
+        payload = {}
+        if payload_str.strip().startswith("{"):
+            try: payload = json.loads(payload_str)
+            except json.JSONDecodeError: pass
+        else:
+            payload = {"action": payload_str}
+
+        action = payload.get("action")
+
+        # 1. TTS Tracking
+        if msg.topic == "jarvis/sys/speak":
+            self.tts_queue_count += 1
+            self.tts_busy = True
+            
+        elif msg.topic == "jarvis/sys/tts_done":
+            if self.tts_queue_count > 0:
+                self.tts_queue_count -= 1
+                
+            if self.tts_queue_count == 0:
+                self.tts_busy = False
+                self.ambient_noise_buffer.clear()
+                self.oww_model.reset()
+                self.pre_speech_buffer.clear()
+                self.vad_hangtime = 0
+                
+                try:
+                    available = self.mic_stream.get_read_available()
+                    if available > 0:
+                        self.mic_stream.read(available, exception_on_overflow=False)
+                except Exception: pass
+                
+                logging.info("TTS pipeline completely clear. Releasing microphone lock.")
+
+        # 2. Conversational States
+        elif msg.topic == "jarvis/sys/mic_open" or action == "open_window":
+            self.pending_active_window = True
+            
+        elif action == "request_reply":
+            self.awaiting_reply = True
+            self.ambient_noise_buffer.clear()
+            self.oww_model.reset()
+            self.pre_speech_buffer.clear()
+            self.vad_hangtime = 0
+            
+            
+        elif action == "attention_on":
+            self.attention_mode = True
+            
+            self.ambient_noise_buffer.clear()
+            self.oww_model.reset()
+            self.pre_speech_buffer.clear()
+            self.vad_hangtime = 0
+            
+            
+        elif action == "attention_off":
+            self.attention_mode = False
+            logging.info("Attention Mode DEACTIVATED. Resetting to standard wake word anchors.")
+
+    def _publish(self, topic: str, payload: Any) -> None:
+        try:
+            data = json.dumps(payload) if isinstance(payload, dict) else payload
+            self.mqtt.publish(topic, data)
+        except Exception as e:
+            logging.warning(f"MQTT Publish Error on '{topic}': {e}")
+
+    def _calculate_thresholds(self) -> Tuple[float, float, float]:
+        if len(self.ambient_noise_buffer) > 10:
+            true_background = list(self.ambient_noise_buffer)[:-5]
+            baseline = float(np.percentile(true_background, 75))
+        else:
+            baseline = float(np.percentile(self.ambient_noise_buffer, 75)) if self.ambient_noise_buffer else float(self.MIN_BASELINE)
+            
+        baseline = max(baseline, self.MIN_BASELINE)
+        activation = min(baseline * self.VOICE_ACT_BUFFER, baseline * self.MAX_CEILING_BUFFER)
+        silence = min(baseline * self.SILENCE_CUT_BUFFER, baseline * self.MAX_CEILING_BUFFER)
+        
+        return baseline, activation, silence
+
+    def _transcribe(self, command_audio: np.ndarray) -> str:
+        lang = self.settings.get("language", "auto")
+        args = {
+            "audio": command_audio,
+            "beam_size": 2,
+            "vad_filter": True,
+            "initial_prompt": "",
+            "vad_parameters": dict(min_silence_duration_ms=500)
+        }
+        if lang != "auto":
+            args["language"] = lang
+            
+        segments, info = self.stt_model.transcribe(**args)
+        return "".join([s.text for s in segments]).strip()
+
+    def _stt_worker(self) -> None:
+        """Dedicated thread that safely handles all Whisper processing sequentially (GPU ONLY)."""
+        while True:
+            audio_data, is_final = self.stt_queue.get()
+            try:
+                text = self._transcribe(audio_data)
+                self.speculative_text = text
+            except Exception as e:
+                logging.error(f"STT Worker Error: {e}")
+            finally:
+                self.stt_queue.task_done()
+                if is_final:
+                    self.transcription_done_event.set()
+
+    def _record_command(self, act_thresh: float, sil_thresh: float, bypass_wakeword: bool) -> str:
+        if self.tts_busy:
+            logging.warning("Microphone gated by TTS activity. Aborting capture.")
+            return ""
+
+        wait_limit = 5.0 if bypass_wakeword else self.INITIAL_SILENCE_SECONDS
+        
+        if not self.attention_mode:
+            logging.info(f"LISTENING... (Trigger: >{act_thresh:.0f} | Cutoff: <{sil_thresh:.0f} | Timeout: {wait_limit}s)")
+        
+        frames = []
+        
+        if self.use_gpu_concurrency:
+            self.speculative_text = ""
+            self.transcription_done_event.clear()
+            with self.stt_queue.mutex:
+                self.stt_queue.queue.clear()
+            
+        max_chunks = int(self.RATE / self.CHUNK * self.MAX_RECORD_SECONDS)
+        silence_limit_chunks = int(self.RATE / self.CHUNK * self.SILENCE_LIMIT_SECONDS)
+        wait_limit_chunks = int(self.RATE / self.CHUNK * wait_limit)
+        
+        silence_counter, wait_counter = 0, 0
+        started_speaking = False
+        
+        try:
+            available = self.mic_stream.get_read_available()
+            if available > 0: self.mic_stream.read(available, exception_on_overflow=False)
+        except Exception: pass
+
+        for _ in range(max_chunks):
+            if self.tts_busy:
+                logging.warning("TTS interrupt detected! Aborting capture to prevent self-transcription.")
+                return ""
+
+            data = self.mic_stream.read(self.CHUNK, exception_on_overflow=False)
+            audio_chunk = np.frombuffer(data, dtype=np.int16)
+            frames.append(audio_chunk)
+            
+            rms = np.sqrt(np.mean(np.square(audio_chunk.astype(np.float32))))
+            
+            bar_length = int(max(0, min(rms / 100, 40))) 
+            meter = "█" * bar_length + "-" * (40 - bar_length)
+            print(f"\r\033[K[RECORDING] Vol: {rms:5.0f} ||{meter}||", end='', flush=True)
+            
+            if not started_speaking:
+                if rms > act_thresh:
+                    started_speaking, silence_counter = True, 0
+                else:
+                    wait_counter += 1
+            else:
+                if rms < sil_thresh: 
+                    silence_counter += 1
+                else: 
+                    silence_counter = 0
+                    if self.use_gpu_concurrency and len(frames) % 15 == 0:
+                        audio_copy = np.concatenate(frames).astype(np.float32) / 32768.0
+                        with self.stt_queue.mutex:
+                            self.stt_queue.queue.clear()
+                        self.stt_queue.put((audio_copy, False))
+                    
+            if started_speaking and silence_counter >= silence_limit_chunks:
+                if not self.attention_mode:
+                    logging.info("Silence Detected! Command captured with success.")
+                break
+                
+            if not started_speaking and wait_counter >= wait_limit_chunks:
+                if not self.attention_mode:
+                    logging.warning("No voice detected. Closing microphone!")
+                return ""
+                
+        final_audio = np.concatenate(frames).astype(np.float32) / 32768.0
+        
+        if self.use_gpu_concurrency:
+            with self.stt_queue.mutex:
+                self.stt_queue.queue.clear()
+            self.stt_queue.put((final_audio, True))
+            
+            while not self.transcription_done_event.is_set():
+                self.transcription_done_event.wait(timeout=0.01)
+            return self.speculative_text
+        else:
+            return self._transcribe(final_audio)
+
+    # --- CORE RUNTIME SWITCHBOARD ---
+    def listen(self) -> None:
+        with silence_c_errors():
+            self.mic_stream = self.audio.open(
+                format=self.FORMAT, channels=self.CHANNELS, rate=self.RATE, 
+                input=True, frames_per_buffer=self.CHUNK
+            )
+            
+        self._publish("jarvis/sys/speak", {"text": "System online!", "skip_ducking": False, "request_reply": False})
+        logging.info(f"--- SYSTEM READY: Listening for '{self.target_word}' ---")
+
+        while True:
+            if self.tts_busy:
+                try:
+                    available = self.mic_stream.get_read_available()
+                    if available > 0: 
+                        self.mic_stream.read(available, exception_on_overflow=False)
+                except Exception: pass
+                time.sleep(0.1)
+                continue
+
+            if self.pending_active_window:
+                self.active_window_end = time.time() + 7.0
+                self.pending_active_window = False
+                
+                self.ambient_noise_buffer.clear() 
+                
+
+            audio_data = np.frombuffer(self.mic_stream.read(self.CHUNK, exception_on_overflow=False), dtype=np.int16)
+            current_rms = np.sqrt(np.mean(np.square(audio_data.astype(np.float32))))
+            self.ambient_noise_buffer.append(current_rms)
+            
+            bar_length = int(max(0, min(current_rms / 100, 40))) 
+            meter = "█" * bar_length + "-" * (40 - bar_length)
+            
+            status_tag = "STANDARD"
+            if self.attention_mode: status_tag = "ATTENTION"
+            elif self.awaiting_reply: status_tag = "REPLY"
+            elif time.time() < self.active_window_end: status_tag = "ACTIVE_WIN"
+            
+            print(f"\r\033[K[{status_tag}] Vol: {current_rms:5.0f} ||{meter}||", end='', flush=True)
+            
+            is_active_window = time.time() < self.active_window_end
+            bypass_wakeword = self.attention_mode or self.awaiting_reply or is_active_window
+            
+            b_noise, a_thresh, s_thresh = self._calculate_thresholds()
+            
+            voice_triggered = (self.attention_mode and (current_rms > a_thresh)) or self.awaiting_reply or is_active_window
+            wakeword_triggered = False
+
+            # --- ON-DEMAND CPU MASKING ENGINE ---
+            if not bypass_wakeword:
+                model_ran = False
+                
+                # 1. Volume Spikes: Wake up the neural network
+                if current_rms > a_thresh:
+                    self.vad_hangtime = 15
+                    
+                    # Flush the acoustic memory buffer to process the start of the word
+                    while self.pre_speech_buffer:
+                        self.oww_model.predict(self.pre_speech_buffer.popleft())
+                        
+                    self.oww_model.predict(audio_data)
+                    model_ran = True
+                            
+                # 2. Hangtime: Keep listening through the rest of the sentence
+                elif self.vad_hangtime > 0:
+                    self.vad_hangtime -= 1
+                    self.oww_model.predict(audio_data)
+                    model_ran = True
+                    
+                # 3. Absolute Silence: Suspend the neural network and save CPU
+                else:
+                    self.pre_speech_buffer.append(audio_data)
+                    self.oww_model.reset()
+                    
+                if model_ran:
+                    for mdl in self.oww_model.prediction_buffer.keys():
+                        if list(self.oww_model.prediction_buffer[mdl])[-1] > 0.5:
+                            wakeword_triggered = True
+                            break
+            
+            if wakeword_triggered or voice_triggered:
+                if not self.attention_mode:
+                    print("\n")
+                
+                if wakeword_triggered:
+                    print("="*50)
+                    logging.info("WAKE WORD DETECTED!")
+                    self._publish("pc/spotify/control", {"action": "duck"})
+                
+                if not bypass_wakeword:
+                    try:
+                        self.tts_busy = True 
+                        greeting = "Hello Sir, what can I do?" if not self.already_spoke else "Yes sir?"
+                        self.already_spoke = True
+                        
+                        self._publish("jarvis/sys/speak", {
+                            "text": greeting, "skip_ducking": True, "request_reply": True
+                        })
+                    except Exception as e:
+                        logging.warning(f"Could not vocalize wake greeting: {e}")
+                        self.tts_busy = False
+                        
+                wait_start = time.time()
+                while self.tts_busy and (time.time() - wait_start) < 30.0:
+                    time.sleep(0.1)
+                    
+                if self.awaiting_reply:
+                    self.awaiting_reply = False
+                if is_active_window:
+                    self.active_window_end = 0.0
+                
+                b_noise, a_thresh, s_thresh = self._calculate_thresholds()
+                
+                if not self.attention_mode:
+                    logging.info(f"Room Baseline: {b_noise:.0f} | Activate: {a_thresh:.0f} | Silence: {s_thresh:.0f}")
+                    
+                command_text = self._record_command(a_thresh, s_thresh, bypass_wakeword)
+                
+                if wakeword_triggered:
+                        self._publish("pc/spotify/control", {"action": "unduck"})
+                if command_text:
+                    self._publish("jarvis/sensor/voice", command_text)
+                    
+                if not self.attention_mode:
+                    print("="*50 + "\n")
+                
+                self.oww_model.reset()
+                self.ambient_noise_buffer.clear()
+                self.pre_speech_buffer.clear()
+                self.vad_hangtime = 0
+                
+                try:
+                    available = self.mic_stream.get_read_available()
+                    if available > 0: self.mic_stream.read(available, exception_on_overflow=False)
+                except Exception: pass
+
+    def shutdown(self) -> None:
+        if self.mic_stream is not None:
+            self.mic_stream.stop_stream()
+            self.mic_stream.close()
+        self.audio.terminate()
+        self.mqtt.loop_stop()
+        self.mqtt.disconnect()
+
+def main():
+    logging.info("Initiating safety checks and loading configs...")
+    try:
+        sensor = VoiceSensor(target_word="hey_jarvis")
+        sensor.listen()
+    except KeyboardInterrupt:
+        logging.info("MANUAL SHUTDOWN TRIGGERED...")
+    except Exception as e:
+        logging.critical(f"FATAL ERROR AT RUNTIME: {e}")
+    finally:
+        if 'sensor' in locals():
+            sensor.shutdown()
+
+if __name__ == "__main__":
+    main()
+```
+
+## File: `src/clDaemon.py`
+```python
+# --- IMPORTS ---
+import sys
+import asyncio
+import os
+import json
+import re
+import logging
+import random
+import aiomqtt
+from typing import Dict, List, Tuple, Any, Optional, Pattern
+
+# --- LOGGING SETUP ---
+logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [DAEMON] %(message)s", datefmt="%H:%M:%S")
+
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+class CentralDaemon:
+    """Enterprise class for Natural Language Processing, intent extraction, and ecosystem routing."""
+    
+    def __init__(self, debug_nlp: bool = True):
+        self.debug_nlp: bool = debug_nlp
+        
+        # Pathing
+        self.base_dir: str = os.path.dirname(os.path.abspath(__file__))
+        self.config_dir: str = os.path.abspath(os.path.join(self.base_dir, "..", "config"))
+        
+        # NLP Memory & Configuration
+        self.topics: Dict[str, Pattern] = {}
+        self.actions: Dict[str, Pattern] = {}
+        self.colors: List[Tuple[Pattern, str, str]] = []
+        self.routing_map: Dict[str, List[str]] = {}
+        self.nlp_rules: Dict[str, Any] = {}
+        self.personality_eggs: Dict[str, str] = {}
+        self.module_lookup: Dict[str, str] = {}
+        self.tts_responses: Dict[str, Dict[str, List[str]]] = {} 
+        
+        # Compiled Regexes
+        self.abort_regex: Optional[Pattern] = None
+        self.restart_regex: Optional[Pattern] = None
+        
+        # Contextual State Memory
+        self.last_known_topic: Optional[str] = None
+        self.awaiting_discovery_choice: bool = False
+        self.awaiting_spotify_choice: bool = False
+
+        # Boot Sequence
+        self._load_configs()
+
+    def _safe_load(self, filename: str) -> Optional[Any]:
+        """Safely parses JSON configs from the config directory."""
+        try:
+            with open(os.path.join(self.config_dir, filename), 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            logging.warning(f"File '{filename}' not found.")
+        except json.JSONDecodeError as e:
+            logging.critical(f"Syntax error in '{filename}': {e}")
+            sys.exit(1)
+        return None
+
+    def _load_configs(self) -> None:
+        """Hydrates the Daemon's brain with vocabulary, rules, and system maps."""
+        self.routing_map = self._safe_load("routing.json") or {}
+        
+        topics_data = self._safe_load("topics.json") or {}
+        for topic, words in topics_data.items():
+            self.topics[topic] = re.compile(r'\b(' + '|'.join(words) + r')\b')
+
+        actions_data = self._safe_load("actions.json") or {}
+        for act, words in actions_data.items():
+            self.actions[act] = re.compile(r'\b(' + '|'.join(words) + r')\b')
+            
+        self.nlp_rules = self._safe_load("nlp_rules.json") or {}
+        abort_words = self.nlp_rules.get("abort_keywords", [])
+        if abort_words:
+            self.abort_regex = re.compile(r'\b(?:' + '|'.join(abort_words) + r')\b', re.IGNORECASE)
+
+        colors_data = self._safe_load("colors.json") or {}
+        for name in sorted(colors_data.keys(), key=len, reverse=True):
+            regex_str = r'\b' + re.sub(r'o\b', r'[oa]s?', name) + r'\b'
+            self.colors.append((re.compile(regex_str), colors_data[name], name))
+            
+        self.personality_eggs = self._safe_load("easter_eggs.json") or {}
+
+        microservices_data = self._safe_load("microservices.json") or {}
+        aliases = []
+        for filename, trigger_words in microservices_data.items():
+            for word in trigger_words:
+                clean_word = word.lower().strip()
+                self.module_lookup[clean_word] = filename
+                aliases.append(re.escape(clean_word))
+                
+        if aliases:
+            regex_str = r'\b(?:restart|reboot|reload)\s+module\s+(' + '|'.join(aliases) + r')\b'
+            self.restart_regex = re.compile(regex_str, re.IGNORECASE)
+            
+        self.tts_responses = self._safe_load("tts_responses.json") or {}
+
+    # --- TEXT-TO-SPEECH DISPATCHER ---
+    async def dispatch_tts_response(self, client: aiomqtt.Client, command: Dict[str, Any], target_topic: str) -> None:
+        action = command.get("action")
+        response_key = action
+
+        if target_topic == "home/room/desk_light/set":
+            if "color" in command: response_key = "color"
+            elif "lum" in command: response_key = "lum"
+            elif "temp" in command: response_key = "temp"
+            
+        elif target_topic == "pc/spotify/control" and action == "play":
+            if "track_name" in command and "artist_name" in command: response_key = "play_track_artist"
+            elif "track_name" in command: response_key = "play_track"
+            elif "artist_name" in command: response_key = "play_artist"
+            elif "playlist_name" in command: response_key = "play_playlist"
+
+        topic_responses = self.tts_responses.get(target_topic, {})
+        phrases = topic_responses.get(response_key, [])
+
+        if phrases:
+            raw_phrase = random.choice(phrases)
+            try:
+                phrase = raw_phrase.format(**command)
+            except KeyError as e:
+                logging.warning(f"Missing variable for TTS string formatting: {e}")
+                phrase = raw_phrase.replace(f"{{{e.args[0]}}}", "unknown")
+
+            await client.publish("jarvis/sys/speak", json.dumps({"text": phrase}))
+            
+    # --- NLP EXTRACTION ENGINE ---
+    def process_voice_command(self, text: str) -> List[Tuple[Dict[str, Any], Optional[str]]]:
+        text = text.lower()
+        
+        for trigger, response in self.personality_eggs.items():
+            if trigger in text:
+                return [({"action": "personality", "response": response}, "jarvis/sys/speak")]
+                
+        global_restart_match = re.search(r'\b(?:(?:restart|reboot|reload)\s+all\s+modules?|(?:full|complete)\s+system\s+(?:reboot|restart|reload))\b', text, re.IGNORECASE)
+        if global_restart_match:
+            logging.info("Global microservice ecosystem restart requested.")
+            return [({"action": "restart_all_modules"}, "jarvis/sys/manager")]
+
+        if self.restart_regex:
+            module_match = self.restart_regex.search(text)
+            if module_match:
+                trigger_word = module_match.group(1).lower()
+                target_script = self.module_lookup.get(trigger_word)
+                if target_script:
+                    logging.info(f"Microservice restart requested for: {target_script}")
+                    return [({"action": "restart_module", "target": target_script}, "jarvis/sys/manager")]
+        
+        if self.abort_regex and self.abort_regex.search(text):
+            logging.info("User explicitly cancelled the command. Resetting states.")
+            self.awaiting_discovery_choice = False
+            self.awaiting_spotify_choice = False
+            return [({"action": "abort"}, "jarvis/sys/control")]
+
+        for bad, good in self.nlp_rules.get("autocorrect", {}).items():
+            text = text.replace(bad, good)
+            
+        text = re.sub(r'[,!?]', '', text)
+        text = re.sub(r'\.(?!\w)', '', text)
+        
+        if self.debug_nlp:
+            logging.info(f"[DEBUG NLP] Cleaned Text: '{text}'")
+        
+        for word, digit in self.nlp_rules.get("word_to_number", {}).items():
+            text = re.sub(rf'\b{word}\b', digit, text)
+
+        if self.awaiting_spotify_choice:
+            self.awaiting_spotify_choice = False
+            match = re.search(r'\b(\d+)\b', text)
+            if match:
+                choice = int(match.group(1))
+                logging.info(f"User selected Spotify option [{choice}].")
+                return [({"action": "play_choice", "choice_index": choice}, "pc/spotify/control")]
+            return []
+
+        if self.awaiting_discovery_choice:
+            self.awaiting_discovery_choice = False
+            match = re.search(r'\d+', text)
+            if match:
+                return [({"action": "save_discovery", "index": int(match.group())}, "system/discovery")]
+
+        chunks = re.split(r'\b(?:e|and|depois|then|also)\b', text)
+        intents = []
+
+        for chunk in chunks:
+            chunk = chunk.strip()
+            if len(chunk) < 2: continue
+
+            payload: Dict[str, Any] = {}
+            target_topic = None
+            best_action = None
+            action_word_used = None 
+            longest_match = 0
+            
+            for act, regex_obj in self.actions.items():
+                match = regex_obj.search(chunk)
+                if match:
+                    matched_word = match.group(1)
+                    if len(matched_word) > longest_match:
+                        longest_match = len(matched_word)
+                        best_action = act
+                        action_word_used = matched_word 
+            
+            if best_action:
+                payload["action"] = best_action
+                if best_action == "discover":
+                    target_topic = "system/discovery"
+                    self.awaiting_discovery_choice = True 
+
+            if payload.get("action") == "play" or re.search(r'\b(?:song|track|music|música|musica)\b', chunk):
+                if payload.get("action") in ["on", "off", "toggle"]:
+                    payload["action"] = "play"
+
+                topic_keywords = [word for words in [v.pattern for v in self.topics.values()] for word in re.findall(r'\w+', words)]
+                topic_pattern = r'\b(?:' + '|'.join(topic_keywords) + r')\b'
+                stop_boundaries = rf'(?:\s+(?:on|no|em|by|my|artist|artista|de|do|da|playlist|lista|song|música|musica|track|som|{topic_pattern})|$)'
+
+                playlist_match = re.search(rf'\b(?:playlists?|listas?)\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
+                if playlist_match: payload["playlist_name"] = playlist_match.group(1).strip()
+
+                artist_match = re.search(rf'\b(?:by|my|artists?|artistas?|de|do|da)\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
+                if artist_match: payload["artist_name"] = artist_match.group(1).strip()
+
+                track_match = re.search(rf'\b(?:songs?|músicas?|musicas?|tracks?|sons?)\s+(.+?){stop_boundaries}', chunk, re.IGNORECASE)
+                if track_match: payload["track_name"] = track_match.group(1).strip()
+                    
+                if "track_name" not in payload and "artist_name" in payload:
+                    implicit_match = re.search(rf'\b(?:play|tocar)\s+(.+?)\s+(?:by|my|de|do|da)\b', chunk, re.IGNORECASE)
+                    if implicit_match: payload["track_name"] = implicit_match.group(1).strip()
+                
+                if not any(k in payload for k in ["track_name", "artist_name", "playlist_name"]):
+                    fallback_match = re.search(r'\b(?:play|tocar)\s+(.+)', chunk, re.IGNORECASE)
+                    
+                    if fallback_match:
+                        raw_query = fallback_match.group(1)
+                        # Strip out conversational filler words that confuse the search
+                        filler_words = r'\b(?:some|the|music|música|musica|a|an)\b'
+                        clean_query = re.sub(filler_words, '', raw_query, flags=re.IGNORECASE).strip()
+                        
+                        if clean_query:
+                            # Map to the key your Spotify actuator is already expecting
+                            payload["search_query"] = clean_query
+
+            elif payload.get("action") in ["open", "close", "search", "open_site"] and action_word_used:
+                if payload.get("action") == "search":
+                    sys_match = re.search(rf'\b{action_word_used}\b\s+(?:(?:online|for|sobre|por|na internet|the web for)\s+)*(.+)', chunk, re.IGNORECASE)
+                elif payload.get("action") == "open_site":
+                    sys_match = re.search(rf'\b{action_word_used}\b\s+(?:(?:the site|o site|online|website)\s+)*(.+)', chunk, re.IGNORECASE)
+                else:
+                    sys_match = re.search(rf'\b{action_word_used}\b\s+(?:(?:to|para|the|o|a|pasta|folder|dir|directory|app|aplicativo)\s+)*(.+)', chunk, re.IGNORECASE)
+                
+                if sys_match: payload["target"] = sys_match.group(1).strip()
+
+            if not target_topic:
+                for topic, regex_obj in self.topics.items():
+                    if regex_obj.search(chunk):
+                        target_topic = topic
+                        break
+
+            if not target_topic and best_action:
+                for topic, actions in self.routing_map.items():
+                    if best_action in actions:
+                        target_topic = topic
+                        break
+
+            if not target_topic and self.last_known_topic:
+                target_topic = self.last_known_topic
+
+            if target_topic:
+                self.last_known_topic = target_topic
+
+            temp_match = re.search(r'(\d+)\s*(porcento|percent|%).*(temperatura|temp|temps|temperature|calor|frio|hot|cold)', chunk)
+            if temp_match: 
+                payload["temp"] = int(temp_match.group(1))
+            else:
+                pct_match = re.search(r'(\d+)\s*(porcento|percent|%)', chunk)
+                if pct_match:
+                    valor = int(pct_match.group(1))
+                    if target_topic and "spotify" in target_topic:
+                        payload["volume"] = valor
+                        if "action" not in payload: payload["action"] = "volume"
+                    else: payload["lum"] = valor
+
+            for regex_obj, color_value, _ in self.colors:
+                if regex_obj.search(chunk):
+                    payload["color"] = color_value
+                    break
+
+            if payload:
+                intents.append((payload, target_topic))
+                if self.debug_nlp:
+                    logging.info(f"[DEBUG NLP] Extracted Payload: {json.dumps(payload, indent=2)}")
+
+        return intents
+
+    # --- ASYNC SUPERVISOR ---
+    async def run(self) -> None:
+        """Main non-blocking MQTT loop for the Daemon."""
+        logging.info("Configurations loaded. Connecting to MQTT broker...")
+        while True:
+            try:
+                async with aiomqtt.Client("localhost") as client:
+                    await client.subscribe("jarvis/sensor/voice")
+                    await client.subscribe("jarvis/feedback")
+                    logging.info("Online. Listening on topics...")
+                    
+                    async for message in client.messages:
+                        topic = message.topic.value
+                        payload_data = message.payload.decode('utf-8')
+                        
+                        if topic == "jarvis/sensor/voice":
+                            intents = self.process_voice_command(payload_data)
+                            
+                            if intents:
+                                logging.info(f"Command Recognized: '{payload_data}'")
+                                
+                                # Default mic state. We will elevate this to 'request_reply' if an intent requires it.
+                                final_mic_state = "open_window"
+                                
+                                for command, target_topic in intents:
+                                    if target_topic == "jarvis/sys/control" and command.get("action") == "abort":
+                                        logging.info("[SYSTEM] Abort sequence initiated. Wiping conversational state.")
+                                        
+                                        # 1. Clear all conversational memory locks
+                                        self.awaiting_spotify_choice = False
+                                        self.awaiting_discovery_choice = False
+                                        
+                                        # 2. Kill ongoing audio and confirm the abort
+                                        await client.publish("jarvis/sys/tts_stop", "1")
+                                        await client.publish("jarvis/sys/speak", json.dumps({
+                                            "text": "Command aborted, sir.", "request_reply": False
+                                        }))
+                                        
+                                        # 3. Forcefully shut down the microphone
+                                        final_mic_state = None  
+                                        break
+                                        
+                                    elif command.get("action") == "personality":
+                                        await client.publish("jarvis/sys/speak", json.dumps({"text": command["response"]}))
+                                        
+                                    elif target_topic:
+                                        logging.info(f"Intent Decoded: {command} -> Routing to [{target_topic}]")
+                                        
+                                        # 1. Dispatch the Actuator Command
+                                        await client.publish(target_topic, json.dumps(command))
+                                        
+                                        # 2. Synchronously await the TTS to guarantee packet sequencing
+                                        await self.dispatch_tts_response(client, command, target_topic)
+                                        
+                                        # Elevate the required microphone state if an intent demands a specific reply
+                                        if self.awaiting_discovery_choice or self.awaiting_spotify_choice:
+                                            final_mic_state = "request_reply"
+                                            
+                                    else:
+                                        logging.warning(f"Intent decoded ({command}), but no target topic known.")
+                                    
+                                    await asyncio.sleep(0.05)
+                                    
+                                # 3. Broadcast the microphone state trigger exactly ONCE after all intents finish
+                                if final_mic_state:
+                                    await client.publish("jarvis/sys/mic_control", json.dumps({"action": final_mic_state}))
+                        
+                        elif topic == "jarvis/feedback":
+                            try:
+                                fb = json.loads(payload_data)
+                                msg = fb.get('message', '')
+                                
+                                if "CONFIDENCE_LOW|" in msg:
+                                    self.awaiting_spotify_choice = True
+                                    options_text = msg.split("CONFIDENCE_LOW|")[1] if "CONFIDENCE_LOW|" in msg else msg
+                                    
+                                    print("\n" + "="*50)
+                                    print("SPOTIFY MULTIPLE MATCHES FOUND. AWAITING YOUR SELECTION:")
+                                    print(options_text.strip())
+                                    print("="*50 + "\n")
+                                    
+                                    await client.publish("jarvis/sys/speak", json.dumps({
+                                        "text": "My apologies, sir. The audio match was ambiguous. Could you select an option from the terminal?",
+                                        "request_reply": True 
+                                    }))
+                                    await client.publish("jarvis/sys/mic_control", json.dumps({"action": "request_reply"}))
+                                    
+                                elif "AWAITING_SELECTION|" in msg:
+                                    self.awaiting_discovery_choice = True
+                                    options_text = msg.split("AWAITING_SELECTION|")[1] if "AWAITING_SELECTION|" in msg else msg
+                                    
+                                    print("\n" + "="*50)
+                                    print("DISCOVERED DEVICES. AWAITING YOUR SELECTION:")
+                                    print(options_text.strip())
+                                    print("="*50 + "\n")
+                                    
+                                    await client.publish("jarvis/sys/speak", json.dumps({
+                                        "text": "Diagnostics complete. I have displayed the discovered devices on your terminal. Which index would you like to save?",
+                                        "request_reply": True 
+                                    }))
+                                    await client.publish("jarvis/sys/mic_control", json.dumps({"action": "request_reply"}))
+                                    
+                                else:
+                                    status_icon = "V" if fb.get('status') == "success" else "X"
+                                    logging.info(f"Feedback [{fb.get('device', 'unknown')}]: {status_icon} {msg}")
+                                    
+                            except json.JSONDecodeError:
+                                logging.error("Received malformed feedback packet.")
+                                
+            except aiomqtt.MqttError as e:
+                    logging.error(f"MQTT Connection Error: {e}. Retrying in 5 seconds...")
+                    await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                logging.info("Shutting down Central Brain.")
+                break
+
+# --- MAIN ---
+if __name__ == "__main__":
+    logging.info("Booting Central Brain...")
+    daemon = CentralDaemon(debug_nlp=False)
+    asyncio.run(daemon.run())
+```
+
+## File: `src/clMonitor.py`
+```python
+import asyncio
+import logging
+import json
+import time
+from bleak import BleakScanner
+from typing import Dict, Any
+import paho.mqtt.client as mqtt_client
+
+logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [MONITOR] %(message)s", datefmt="%H:%M:%S")
+
+class PresenceMonitor:
+    def __init__(self):
+        self.tracked_devices: Dict[str, Dict[str, Any]] = {}
+        self.is_present: bool = False
+        self.room_threshold = -60
+        self.exit_threshold = -70
+
+        # --- PERSISTENT MQTT CONNECTION ---
+        self.mqtt = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION1)
+        try:
+            self.mqtt.connect("localhost", 1883, 60)
+            self.mqtt.loop_start()  # Starts the background network thread
+            logging.info("Connected to persistent MQTT bus.")
+        except Exception as e:
+            logging.critical(f"Failed to connect to MQTT Broker: {e}")
+
+    def _trigger_light(self, action: str):
+        try:
+            payload = json.dumps({"action": action})
+            self.mqtt.publish("home/room/desk_light/set", payload)
+        except Exception as e:
+            logging.error(f"MQTT Publish Failed: {e}")
+
+    async def _monitor_loop(self):
+        def callback(device, adv):
+            mac = device.address
+            rssi = adv.rssi
+            if rssi > self.exit_threshold:
+                self.tracked_devices[mac] = {"rssi": rssi, "last_seen": time.time()}
+
+        async with BleakScanner(detection_callback=callback) as scanner:
+            while True:
+                await asyncio.sleep(2)
+                now = time.time()
+                
+                # Logic: Check if any device exceeds the threshold
+                active = any(d["rssi"] >= self.room_threshold for d in self.tracked_devices.values())
+                
+                if active and not self.is_present:
+                    logging.info("Proximity detected. Lights ON.")
+                    self._trigger_light("on")
+                    self.is_present = True
+                elif not active and self.is_present:
+                    logging.info("Presence lost. Lights OFF.")
+                    self._trigger_light("off")
+                    self.is_present = False
+
+                # Cleanup stale devices
+                self.tracked_devices = {m: d for m, d in self.tracked_devices.items() 
+                                      if (now - d["last_seen"]) < 60}
+
+    def run(self):
+        try:
+            asyncio.run(self._monitor_loop())
+        except KeyboardInterrupt:
+            logging.info("Shutting down Presence Monitor.")
+        finally:
+            self.mqtt.loop_stop()
+            self.mqtt.disconnect()
+
+if __name__ == "__main__":
+    monitor = PresenceMonitor()
+    monitor.run()
+```
+

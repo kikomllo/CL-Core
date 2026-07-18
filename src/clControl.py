@@ -73,7 +73,7 @@ class LightManager:
             return "192.168.1"
 
     async def _sweep_ips(self, ips_to_check: List[str]) -> List[Dict[str, str]]:
-        port_sem = asyncio.Semaphore(300)
+        port_sem = asyncio.Semaphore(50)
         alive_ips = [ip for ip in await asyncio.gather(*(self._check_port(ip, port_sem) for ip in ips_to_check)) if ip]
         
         if not alive_ips: return []
@@ -254,19 +254,26 @@ class LightManager:
             return
 
         self.last_discovered_devices = parsed_devices
-        print(f"\nDiscovered {len(parsed_devices)} smart light network targets:")
-        print("{:<5} {:<8} {:<18} {:<18}".format("#", "TYPE", "MODEL", "IP"))
-        print("-" * 55)
+        
+        table_str = "{:<5} {:<8} {:<18} {:<18}\n".format("#", "TYPE", "MODEL", "IP")
+        table_str += "-" * 55 + "\n"
         for i, dev in enumerate(parsed_devices):
-            print("{:<5} {:<8} {:<18} {:<18}".format(i, dev['type'].upper(), dev['model'], dev['ip']))
+            table_str += "{:<5} {:<8} {:<18} {:<18}\n".format(i, dev['type'].upper(), dev['model'], dev['ip'])
 
         if voice_mode:
             try:
                 async with aiomqtt.Client("localhost") as mqtt_client:
-                    await mqtt_client.publish("jarvis/sys/mic_open", "1")
+                    # Publish to feedback so the Daemon catches the AWAITING_SELECTION signal
+                    await mqtt_client.publish("jarvis/feedback", json.dumps({
+                        "status": "success",
+                        "device": "discovery",
+                        "message": f"AWAITING_SELECTION|\n{table_str}"
+                    }))
             except Exception as e:
-                logging.error(f"Failed to deploy remote mic trigger via system socket: {e}")
+                logging.error(f"Failed to deploy discovery feedback: {e}")
         else:
+            print(f"\nDiscovered {len(parsed_devices)} smart light network targets:")
+            print(table_str)
             self._handle_cli_save(parsed_devices)
 
     def _handle_cli_save(self, devices: List[Dict[str, str]]) -> None:
@@ -280,45 +287,55 @@ class LightManager:
 # --- MQTT SERVICE LISTENER ---
 async def mqtt_service_listener(manager: LightManager) -> None:
     logging.info("Service Mode initialized. Listening on MQTT topics...")
-    try:
-        async with aiomqtt.Client("localhost") as mqtt_client:
-            await mqtt_client.subscribe("home/room/+/set") 
-            await mqtt_client.subscribe("system/discovery")
-            
-            async for message in mqtt_client.messages:
-                try:
-                    payload = json.loads(message.payload.decode('utf-8'))
-                    logging.info(f"Incoming Request Loop Event: {payload}")
-                    action = payload.get("action")
-                    
-                    if action == "discover":
-                        asyncio.create_task(manager.discovery_mode(voice_mode=True))
-                        continue
-                        
-                    if action == "save_discovery":
-                        idx = payload.get("index")
-                        if idx is not None and 0 <= idx < len(manager.last_discovered_devices):
-                            sel = manager.last_discovered_devices[idx]
-                            manager.update_env_credentials(sel["ip"], sel["mac"], sel["type"])
-                            logging.info(f"SUCCESS: System tracking modified to drive {sel['type'].upper()} profile.")
-                        continue
-
+    while True:
+        try:
+            async with aiomqtt.Client("localhost") as mqtt_client:
+                await mqtt_client.subscribe("home/room/+/set") 
+                await mqtt_client.subscribe("system/discovery")
+                
+                async for message in mqtt_client.messages:
                     try:
-                        await manager.control_bulb(
-                            on=(action == "on"), off=(action == "off"), toggle=(action == "toggle"),
-                            color=payload.get("color"), lum=payload.get("lum"), temp=payload.get("temp")
-                        )
-                        await mqtt_client.publish("jarvis/feedback", json.dumps({
-                            "device": "smart_lights", "status": "success", "message": f"Successfully shifted hardware targets to '{action}' state."
-                        }))
-                    except Exception as e:
-                        await mqtt_client.publish("jarvis/feedback", json.dumps({
-                            "device": "smart_lights", "status": "error", "message": str(e)
-                        }))
-                except json.JSONDecodeError:
-                    logging.error("JSON formatting syntax mismatch caught on parsing sequence.")
-    except aiomqtt.MqttError as e:
-        logging.error(f"MQTT service backbone tracking failed connection check: {e}")
+                        payload = json.loads(message.payload.decode('utf-8'))
+                        logging.info(f"Incoming Request Loop Event: {payload}")
+                        action = payload.get("action")
+                        
+                        if action == "discover":
+                            asyncio.create_task(manager.discovery_mode(voice_mode=True))
+                            continue
+                            
+                        if action == "save_discovery":
+                            idx = payload.get("index")
+                            if idx is not None and 0 <= idx < len(manager.last_discovered_devices):
+                                sel = manager.last_discovered_devices[idx]
+                                manager.update_env_credentials(sel["ip"], sel["mac"], sel["type"])
+                                logging.info(f"SUCCESS: System tracking modified to drive {sel['type'].upper()} profile.")
+                            continue
+
+                        # --- ISOLATED HARDWARE TASK ---
+                        async def execute_hardware(payload_data, action_cmd):
+                            try:
+                                await manager.control_bulb(
+                                    on=(action_cmd == "on"), off=(action_cmd == "off"), toggle=(action_cmd == "toggle"),
+                                    color=payload_data.get("color"), lum=payload_data.get("lum"), temp=payload_data.get("temp")
+                                )
+                                await mqtt_client.publish("jarvis/feedback", json.dumps({
+                                    "device": "smart_lights", "status": "success", "message": f"Successfully shifted hardware targets to '{action_cmd}' state."
+                                }))
+                            except Exception as e:
+                                await mqtt_client.publish("jarvis/feedback", json.dumps({
+                                    "device": "smart_lights", "status": "error", "message": str(e)
+                                }))
+
+                        asyncio.create_task(execute_hardware(payload, action))
+                        
+                    except json.JSONDecodeError:
+                        logging.error("JSON formatting syntax mismatch caught on parsing sequence.")
+        except aiomqtt.MqttError as e:
+            logging.error(f"MQTT Connection Error: {e} (Is Mosquitto running?)")
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            logging.info("Light Control service shutting down.")
+            break
 
 # --- UTILITIES ---
 def print_color_list(color_matrix: Dict[str, Any]) -> None:

@@ -106,5 +106,17 @@
       "Cycling power to the {target} microservice sir.",
       "Restarting the {target} module."
     ]
+  },
+  "jarvis/sys/mic_control": {
+    "attention_on": [
+      "I am listening sir.",
+      "Continuous attention mode activated.",
+      "Awaiting your commands."
+    ],
+    "attention_off": [
+      "Going to sleep sir.",
+      "Powering down active listening.",
+      "Resting. Wake me if you need me."
+    ]
   }
 }

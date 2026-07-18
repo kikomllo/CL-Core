@@ -67,32 +67,40 @@ class TTSManager:
 
 async def run_tts_service():
     manager = TTSManager()
-    try:
-        async with aiomqtt.Client("localhost") as client:
-            await client.subscribe("jarvis/sys/speak")
-            await client.subscribe("jarvis/sys/tts_stop")
-            
-            logging.info("TTS Microservice initialized. Listening on MQTT topics...")
-            
-            async for message in client.messages:
-                topic = message.topic.value
+    while True:
+        try:
+            async with aiomqtt.Client("localhost") as client:
+                await client.subscribe("jarvis/sys/speak")
+                await client.subscribe("jarvis/sys/tts_stop")
                 
-                if topic == "jarvis/sys/tts_stop":
-                    mixer.music.stop()
-                    continue
+                logging.info("TTS Microservice initialized. Listening on MQTT topics...")
                 
-                if topic == "jarvis/sys/speak":
-                    try:
-                        payload = json.loads(message.payload.decode('utf-8'))
-                        await manager.generate_and_play(
-                            client, 
-                            payload.get("text", ""), 
-                            duck_audio=not payload.get("skip_ducking", False),
-                            request_reply=payload.get("request_reply", False)
-                        )
-                    except json.JSONDecodeError:
-                        logging.error("Received malformed TTS JSON.")
-    except Exception as e:
-        logging.error(f"Service Error: {e}")
+                async for message in client.messages:
+                    topic = message.topic.value
+                    
+                    if topic == "jarvis/sys/tts_stop":
+                        mixer.music.stop()
+                        continue
+                    
+                    if topic == "jarvis/sys/speak":
+                        try:
+                            payload = json.loads(message.payload.decode('utf-8'))
+                            await manager.generate_and_play(
+                                client, 
+                                payload.get("text", ""), 
+                                duck_audio=not payload.get("skip_ducking", False),
+                                request_reply=payload.get("request_reply", False)
+                            )
+                        except json.JSONDecodeError:
+                            logging.error("Received malformed TTS JSON.")
+        except aiomqtt.MqttError as e:
+            logging.error(f"MQTT Connection Error: {e}. Retrying in 5 seconds...")
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            logging.info("TTS service shutting down.")
+            break
+        except Exception as e:
+            logging.error(f"Service Error: {e}")
+            await asyncio.sleep(5)
 if __name__ == "__main__":
     asyncio.run(run_tts_service())

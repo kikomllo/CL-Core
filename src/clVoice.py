@@ -8,6 +8,8 @@ import logging
 import collections
 import time
 import site
+import threading
+import queue
 import paho.mqtt.publish as publish
 import paho.mqtt.client as mqtt_client
 from typing import Dict, Any, Tuple, Optional, Deque
@@ -84,8 +86,7 @@ class VoiceSensor:
 
     MAX_RECORD_SECONDS: int = 10
     INITIAL_SILENCE_SECONDS: float = 1.5
-    BACKGROUND_GRACE_SECONDS: float = 1.5
-    SILENCE_LIMIT_SECONDS: float = 1.0
+    SILENCE_LIMIT_SECONDS: float = 1
 
     MIN_BASELINE: int = 2000              
     VOICE_ACT_BUFFER: float = 1.40  
@@ -98,17 +99,34 @@ class VoiceSensor:
         
         # Parallel Conversational State Tracking Memory
         self.tts_busy: bool = False
+        self.tts_queue_count: int = 0  # --- NEW: Tracks multiple TTS sentences
         self.already_spoke: bool = False
         self.ambient_noise_buffer: Deque[float] = collections.deque(maxlen=100)
         
         # Microservice Control States
         self.active_window_end: float = 0.0
         self.pending_active_window: bool = False
-        self.window_grace_end: float = 0.0
         self.awaiting_reply: bool = False
         self.attention_mode: bool = False
         
+        # On-Demand CPU Masking Engine
+        self.vad_hangtime: int = 0
+        self.pre_speech_buffer: Deque[np.ndarray] = collections.deque(maxlen=15)
+        
         self.settings: Dict[str, Any] = self._load_settings()
+        self.hw_choice = self.settings.get("hardware", "cpu").lower()
+        
+        # --- GPU Concurrency Engine Setup ---
+        self.use_gpu_concurrency = self.hw_choice in ["gpu", "cuda"]
+        
+        if self.use_gpu_concurrency:
+            self.stt_queue: queue.Queue = queue.Queue()
+            self.speculative_text: str = ""
+            self.transcription_done_event = threading.Event()
+            
+            self.stt_worker_thread = threading.Thread(target=self._stt_worker, daemon=True)
+            self.stt_worker_thread.start()
+            logging.info("GPU concurrency engine initialized.")
         
         with silence_c_errors():
             self.audio: pyaudio.PyAudio = pyaudio.PyAudio()
@@ -145,10 +163,9 @@ class VoiceSensor:
             return Model(wakeword_model_paths=[jarvis_path])
 
     def _init_whisper(self) -> WhisperModel:
-        hw_choice = self.settings.get("hardware", "cpu").lower()
         size = self.settings.get("stt_model", "base")
         
-        if hw_choice in ["gpu", "cuda"]:
+        if self.hw_choice in ["gpu", "cuda"]:
             stt_device, stt_compute = "cuda", "float16"
             logging.info(f"Booting Whisper STT ({size}) -> GRAPHICS CARD (CUDA)")
         else:
@@ -159,9 +176,11 @@ class VoiceSensor:
             return WhisperModel(size, device=stt_device, compute_type=stt_compute)
         except Exception as e:
             logging.critical(f"Error loading voice module: {e}")
-            if hw_choice in ["gpu", "cuda"]:
+            if self.hw_choice in ["gpu", "cuda"]:
                 logging.critical("Retrying with CPU fallback...")
                 try: 
+                    # If fallback, disable concurrency feature meant for GPU
+                    self.use_gpu_concurrency = False 
                     return WhisperModel(size, device="cpu", compute_type="int8")
                 except Exception: 
                     sys.exit(1)
@@ -198,22 +217,27 @@ class VoiceSensor:
 
         # 1. TTS Tracking
         if msg.topic == "jarvis/sys/speak":
+            self.tts_queue_count += 1
             self.tts_busy = True
             
         elif msg.topic == "jarvis/sys/tts_done":
-            self.tts_busy = False
-            self.ambient_noise_buffer.clear()
-            self.oww_model.reset()
-            
-            self.window_grace_end = time.time() + self.BACKGROUND_GRACE_SECONDS
-            
-            try:
-                available = self.mic_stream.get_read_available()
-                if available > 0:
-                    self.mic_stream.read(available, exception_on_overflow=False)
-            except Exception: pass
-            
-            logging.info("TTS completion signal received. Releasing microphone lock.")
+            if self.tts_queue_count > 0:
+                self.tts_queue_count -= 1
+                
+            if self.tts_queue_count == 0:
+                self.tts_busy = False
+                self.ambient_noise_buffer.clear()
+                self.oww_model.reset()
+                self.pre_speech_buffer.clear()
+                self.vad_hangtime = 0
+                
+                try:
+                    available = self.mic_stream.get_read_available()
+                    if available > 0:
+                        self.mic_stream.read(available, exception_on_overflow=False)
+                except Exception: pass
+                
+                logging.info("TTS pipeline completely clear. Releasing microphone lock.")
 
         # 2. Conversational States
         elif msg.topic == "jarvis/sys/mic_open" or action == "open_window":
@@ -221,20 +245,20 @@ class VoiceSensor:
             
         elif action == "request_reply":
             self.awaiting_reply = True
-            self.window_grace_end = time.time() + self.BACKGROUND_GRACE_SECONDS
             self.ambient_noise_buffer.clear()
             self.oww_model.reset()
+            self.pre_speech_buffer.clear()
+            self.vad_hangtime = 0
             
-            logging.info(f"Direct question sequence locked. Adapting room acoustics for {self.BACKGROUND_GRACE_SECONDS}s...")
             
         elif action == "attention_on":
             self.attention_mode = True
             
-            self.window_grace_end = time.time() + self.BACKGROUND_GRACE_SECONDS
             self.ambient_noise_buffer.clear()
             self.oww_model.reset()
+            self.pre_speech_buffer.clear()
+            self.vad_hangtime = 0
             
-            logging.info(f"Continuous Attention Mode ACTIVATED. Adapting room acoustics for {self.BACKGROUND_GRACE_SECONDS}s...")
             
         elif action == "attention_off":
             self.attention_mode = False
@@ -250,9 +274,9 @@ class VoiceSensor:
     def _calculate_thresholds(self) -> Tuple[float, float, float]:
         if len(self.ambient_noise_buffer) > 10:
             true_background = list(self.ambient_noise_buffer)[:-5]
-            baseline = np.mean(true_background)
+            baseline = float(np.percentile(true_background, 75))
         else:
-            baseline = np.mean(self.ambient_noise_buffer) if self.ambient_noise_buffer else self.MIN_BASELINE
+            baseline = float(np.percentile(self.ambient_noise_buffer, 75)) if self.ambient_noise_buffer else float(self.MIN_BASELINE)
             
         baseline = max(baseline, self.MIN_BASELINE)
         activation = min(baseline * self.VOICE_ACT_BUFFER, baseline * self.MAX_CEILING_BUFFER)
@@ -275,13 +299,38 @@ class VoiceSensor:
         segments, info = self.stt_model.transcribe(**args)
         return "".join([s.text for s in segments]).strip()
 
-    def _record_command(self, act_thresh: float, sil_thresh: float, bypass_wakeword: bool) -> np.ndarray:
+    def _stt_worker(self) -> None:
+        """Dedicated thread that safely handles all Whisper processing sequentially (GPU ONLY)."""
+        while True:
+            audio_data, is_final = self.stt_queue.get()
+            try:
+                text = self._transcribe(audio_data)
+                self.speculative_text = text
+            except Exception as e:
+                logging.error(f"STT Worker Error: {e}")
+            finally:
+                self.stt_queue.task_done()
+                if is_final:
+                    self.transcription_done_event.set()
+
+    def _record_command(self, act_thresh: float, sil_thresh: float, bypass_wakeword: bool) -> str:
+        if self.tts_busy:
+            logging.warning("Microphone gated by TTS activity. Aborting capture.")
+            return ""
+
         wait_limit = 5.0 if bypass_wakeword else self.INITIAL_SILENCE_SECONDS
         
         if not self.attention_mode:
             logging.info(f"LISTENING... (Trigger: >{act_thresh:.0f} | Cutoff: <{sil_thresh:.0f} | Timeout: {wait_limit}s)")
         
         frames = []
+        
+        if self.use_gpu_concurrency:
+            self.speculative_text = ""
+            self.transcription_done_event.clear()
+            with self.stt_queue.mutex:
+                self.stt_queue.queue.clear()
+            
         max_chunks = int(self.RATE / self.CHUNK * self.MAX_RECORD_SECONDS)
         silence_limit_chunks = int(self.RATE / self.CHUNK * self.SILENCE_LIMIT_SECONDS)
         wait_limit_chunks = int(self.RATE / self.CHUNK * wait_limit)
@@ -297,7 +346,7 @@ class VoiceSensor:
         for _ in range(max_chunks):
             if self.tts_busy:
                 logging.warning("TTS interrupt detected! Aborting capture to prevent self-transcription.")
-                return np.array([], dtype=np.float32)
+                return ""
 
             data = self.mic_stream.read(self.CHUNK, exception_on_overflow=False)
             audio_chunk = np.frombuffer(data, dtype=np.int16)
@@ -315,8 +364,15 @@ class VoiceSensor:
                 else:
                     wait_counter += 1
             else:
-                if rms < sil_thresh: silence_counter += 1
-                else: silence_counter = 0
+                if rms < sil_thresh: 
+                    silence_counter += 1
+                else: 
+                    silence_counter = 0
+                    if self.use_gpu_concurrency and len(frames) % 15 == 0:
+                        audio_copy = np.concatenate(frames).astype(np.float32) / 32768.0
+                        with self.stt_queue.mutex:
+                            self.stt_queue.queue.clear()
+                        self.stt_queue.put((audio_copy, False))
                     
             if started_speaking and silence_counter >= silence_limit_chunks:
                 if not self.attention_mode:
@@ -326,10 +382,20 @@ class VoiceSensor:
             if not started_speaking and wait_counter >= wait_limit_chunks:
                 if not self.attention_mode:
                     logging.warning("No voice detected. Closing microphone!")
-                break
+                return ""
                 
-        audio_int16 = np.concatenate(frames)
-        return audio_int16.astype(np.float32) / 32768.0
+        final_audio = np.concatenate(frames).astype(np.float32) / 32768.0
+        
+        if self.use_gpu_concurrency:
+            with self.stt_queue.mutex:
+                self.stt_queue.queue.clear()
+            self.stt_queue.put((final_audio, True))
+            
+            while not self.transcription_done_event.is_set():
+                self.transcription_done_event.wait(timeout=0.01)
+            return self.speculative_text
+        else:
+            return self._transcribe(final_audio)
 
     # --- CORE RUNTIME SWITCHBOARD ---
     def listen(self) -> None:
@@ -352,21 +418,17 @@ class VoiceSensor:
                 time.sleep(0.1)
                 continue
 
-            # --- THE ACTIVE WINDOW TIMING ENGINE ---
             if self.pending_active_window:
                 self.active_window_end = time.time() + 7.0
-                self.window_grace_end = time.time() + self.BACKGROUND_GRACE_SECONDS
                 self.pending_active_window = False
                 
                 self.ambient_noise_buffer.clear() 
                 
-                logging.info(f"Continuous Window opened. Adapting room acoustics for {self.BACKGROUND_GRACE_SECONDS}s...")
 
             audio_data = np.frombuffer(self.mic_stream.read(self.CHUNK, exception_on_overflow=False), dtype=np.int16)
             current_rms = np.sqrt(np.mean(np.square(audio_data.astype(np.float32))))
             self.ambient_noise_buffer.append(current_rms)
             
-            # Live Contextual Status Monitor
             bar_length = int(max(0, min(current_rms / 100, 40))) 
             meter = "█" * bar_length + "-" * (40 - bar_length)
             
@@ -377,86 +439,101 @@ class VoiceSensor:
             
             print(f"\r\033[K[{status_tag}] Vol: {current_rms:5.0f} ||{meter}||", end='', flush=True)
             
-            self.oww_model.predict(audio_data)
+            is_active_window = time.time() < self.active_window_end
+            bypass_wakeword = self.attention_mode or self.awaiting_reply or is_active_window
             
-            for mdl in self.oww_model.prediction_buffer.keys():
-                scores = list(self.oww_model.prediction_buffer[mdl])
+            b_noise, a_thresh, s_thresh = self._calculate_thresholds()
+            
+            voice_triggered = (self.attention_mode and (current_rms > a_thresh)) or self.awaiting_reply or is_active_window
+            wakeword_triggered = False
+
+            # --- ON-DEMAND CPU MASKING ENGINE ---
+            if not bypass_wakeword:
+                model_ran = False
                 
-                is_active_window = time.time() < self.active_window_end
-                bypass_wakeword = self.attention_mode or self.awaiting_reply or is_active_window
+                # 1. Volume Spikes: Wake up the neural network
+                if current_rms > a_thresh:
+                    self.vad_hangtime = 15
+                    
+                    # Flush the acoustic memory buffer to process the start of the word
+                    while self.pre_speech_buffer:
+                        self.oww_model.predict(self.pre_speech_buffer.popleft())
+                        
+                    self.oww_model.predict(audio_data)
+                    model_ran = True
+                            
+                # 2. Hangtime: Keep listening through the rest of the sentence
+                elif self.vad_hangtime > 0:
+                    self.vad_hangtime -= 1
+                    self.oww_model.predict(audio_data)
+                    model_ran = True
+                    
+                # 3. Absolute Silence: Suspend the neural network and save CPU
+                else:
+                    self.pre_speech_buffer.append(audio_data)
+                    self.oww_model.reset()
+                    
+                if model_ran:
+                    for mdl in self.oww_model.prediction_buffer.keys():
+                        if list(self.oww_model.prediction_buffer[mdl])[-1] > 0.5:
+                            wakeword_triggered = True
+                            break
+            
+            if wakeword_triggered or voice_triggered:
+                if not self.attention_mode:
+                    print("\n")
+                
+                if wakeword_triggered:
+                    print("="*50)
+                    logging.info("WAKE WORD DETECTED!")
+                    self._publish("pc/spotify/control", {"action": "duck"})
+                
+                if not bypass_wakeword:
+                    try:
+                        self.tts_busy = True 
+                        greeting = "Hello Sir, what can I do?" if not self.already_spoke else "Yes sir?"
+                        self.already_spoke = True
+                        
+                        self._publish("jarvis/sys/speak", {
+                            "text": greeting, "skip_ducking": True, "request_reply": True
+                        })
+                    except Exception as e:
+                        logging.warning(f"Could not vocalize wake greeting: {e}")
+                        self.tts_busy = False
+                        
+                wait_start = time.time()
+                while self.tts_busy and (time.time() - wait_start) < 30.0:
+                    time.sleep(0.1)
+                    
+                if self.awaiting_reply:
+                    self.awaiting_reply = False
+                if is_active_window:
+                    self.active_window_end = 0.0
                 
                 b_noise, a_thresh, s_thresh = self._calculate_thresholds()
                 
-                wakeword_triggered = scores[-1] > 0.5
+                if not self.attention_mode:
+                    logging.info(f"Room Baseline: {b_noise:.0f} | Activate: {a_thresh:.0f} | Silence: {s_thresh:.0f}")
+                    
+                command_text = self._record_command(a_thresh, s_thresh, bypass_wakeword)
                 
-                in_grace_period = time.time() < self.window_grace_end
-                voice_triggered = bypass_wakeword and (current_rms > a_thresh) and not in_grace_period
+                if wakeword_triggered:
+                        self._publish("pc/spotify/control", {"action": "unduck"})
+                if command_text:
+                    self._publish("jarvis/sensor/voice", command_text)
+                    
+                if not self.attention_mode:
+                    print("="*50 + "\n")
                 
-                if wakeword_triggered or voice_triggered:
-                    if not self.attention_mode:
-                        print("\n")
-                    
-                    if wakeword_triggered:
-                        print("="*50)
-                        logging.info("WAKE WORD DETECTED!")
-                        self._publish("pc/spotify/control", {"action": "duck"})
-                    
-                    if not bypass_wakeword:
-                        try:
-                            self.tts_busy = True 
-                            greeting = "Hello Sir, what can I do?" if not self.already_spoke else "Yes sir?"
-                            self.already_spoke = True
-                            
-                            self._publish("jarvis/sys/speak", {
-                                "text": greeting, "skip_ducking": True, "request_reply": True
-                            })
-                        except Exception as e:
-                            logging.warning(f"Could not vocalize wake greeting: {e}")
-                            self.tts_busy = False
-                            
-                    wait_start = time.time()
-                    while self.tts_busy and (time.time() - wait_start) < 30.0:
-                        time.sleep(0.1)
-                        
-                    if self.awaiting_reply:
-                        self.awaiting_reply = False
-                    if is_active_window:
-                        self.active_window_end = 0.0
-                    
-                    b_noise, a_thresh, s_thresh = self._calculate_thresholds()
-                    
-                    if not self.attention_mode:
-                        logging.info(f"Room Baseline: {b_noise:.0f} | Activate: {a_thresh:.0f} | Silence: {s_thresh:.0f}")
-                        
-                    command_audio = self._record_command(a_thresh, s_thresh, bypass_wakeword)
-                    
-                    if command_audio.size > 0:
-                        if wakeword_triggered:
-                            self._publish("pc/spotify/control", {"action": "unduck"})
-                        
-                        text = self._transcribe(command_audio)
-                        
-                        if text:
-                            self._publish("jarvis/sensor/voice", text)
-                    else:
-                        if wakeword_triggered:
-                            self._publish("pc/spotify/control", {"action": "unduck"})
-                        
-                    if not self.attention_mode:
-                        print("="*50 + "\n")
-                    
-                    self.oww_model.reset()
-                    self.ambient_noise_buffer.clear()
-                    
-                    if self.attention_mode or (time.time() < self.active_window_end):
-                        self.window_grace_end = time.time() + self.BACKGROUND_GRACE_SECONDS
-                    
-                    try:
-                        available = self.mic_stream.get_read_available()
-                        if available > 0: self.mic_stream.read(available, exception_on_overflow=False)
-                    except Exception: pass
-                    
-                    break
+                self.oww_model.reset()
+                self.ambient_noise_buffer.clear()
+                self.pre_speech_buffer.clear()
+                self.vad_hangtime = 0
+                
+                try:
+                    available = self.mic_stream.get_read_available()
+                    if available > 0: self.mic_stream.read(available, exception_on_overflow=False)
+                except Exception: pass
 
     def shutdown(self) -> None:
         if self.mic_stream is not None:

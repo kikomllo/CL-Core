@@ -229,6 +229,19 @@ class CentralDaemon:
                 if "track_name" not in payload and "artist_name" in payload:
                     implicit_match = re.search(rf'\b(?:play|tocar)\s+(.+?)\s+(?:by|my|de|do|da)\b', chunk, re.IGNORECASE)
                     if implicit_match: payload["track_name"] = implicit_match.group(1).strip()
+                
+                if not any(k in payload for k in ["track_name", "artist_name", "playlist_name"]):
+                    fallback_match = re.search(r'\b(?:play|tocar)\s+(.+)', chunk, re.IGNORECASE)
+                    
+                    if fallback_match:
+                        raw_query = fallback_match.group(1)
+                        # Strip out conversational filler words that confuse the search
+                        filler_words = r'\b(?:some|the|music|música|musica|a|an)\b'
+                        clean_query = re.sub(filler_words, '', raw_query, flags=re.IGNORECASE).strip()
+                        
+                        if clean_query:
+                            # Map to the key your Spotify actuator is already expecting
+                            payload["search_query"] = clean_query
 
             elif payload.get("action") in ["open", "close", "search", "open_site"] and action_word_used:
                 if payload.get("action") == "search":
@@ -286,76 +299,117 @@ class CentralDaemon:
     async def run(self) -> None:
         """Main non-blocking MQTT loop for the Daemon."""
         logging.info("Configurations loaded. Connecting to MQTT broker...")
-        
-        try:
-            async with aiomqtt.Client("localhost") as client:
-                await client.subscribe("jarvis/sensor/voice")
-                await client.subscribe("jarvis/feedback")
-                logging.info("Online. Listening on topics...")
-                
-                async for message in client.messages:
-                    topic = message.topic.value
-                    payload_data = message.payload.decode('utf-8')
+        while True:
+            try:
+                async with aiomqtt.Client("localhost") as client:
+                    await client.subscribe("jarvis/sensor/voice")
+                    await client.subscribe("jarvis/feedback")
+                    logging.info("Online. Listening on topics...")
                     
-                    if topic == "jarvis/sensor/voice":
-                        intents = self.process_voice_command(payload_data)
+                    async for message in client.messages:
+                        topic = message.topic.value
+                        payload_data = message.payload.decode('utf-8')
                         
-                        if intents:
-                            logging.info(f"Command Recognized: '{payload_data}'")
+                        if topic == "jarvis/sensor/voice":
+                            intents = self.process_voice_command(payload_data)
                             
-                            for command, target_topic in intents:
-                                if target_topic == "jarvis/sys/control" and command.get("action") == "abort":
-                                    await client.publish("jarvis/sys/tts_stop", "1")
-                                    await client.publish("jarvis/sys/speak", json.dumps({
-                                        "text": "Command aborted, sir.", "request_reply": False
-                                    }))
-                                elif command.get("action") == "personality":
-                                    await client.publish("jarvis/sys/speak", json.dumps({"text": command["response"]}))
-                                elif target_topic:
-                                    logging.info(f"Intent Decoded: {command} -> Routing to [{target_topic}]")
-                                    await client.publish(target_topic, json.dumps(command))
-                                    asyncio.create_task(self.dispatch_tts_response(client, command, target_topic))
-                                    
-                                    if target_topic != "jarvis/sys/mic_control":
-                                        if self.awaiting_discovery_choice or self.awaiting_spotify_choice:
-                                            await client.publish("jarvis/sys/mic_control", json.dumps({"action": "request_reply"}))
-                                        else:
-                                            await client.publish("jarvis/sys/mic_control", json.dumps({"action": "open_window"}))
+                            if intents:
+                                logging.info(f"Command Recognized: '{payload_data}'")
+                                
+                                # Default mic state. We will elevate this to 'request_reply' if an intent requires it.
+                                final_mic_state = "open_window"
+                                
+                                for command, target_topic in intents:
+                                    if target_topic == "jarvis/sys/control" and command.get("action") == "abort":
+                                        logging.info("[SYSTEM] Abort sequence initiated. Wiping conversational state.")
                                         
+                                        # 1. Clear all conversational memory locks
+                                        self.awaiting_spotify_choice = False
+                                        self.awaiting_discovery_choice = False
+                                        
+                                        # 2. Kill ongoing audio and confirm the abort
+                                        await client.publish("jarvis/sys/tts_stop", "1")
+                                        await client.publish("jarvis/sys/speak", json.dumps({
+                                            "text": "Command aborted, sir.", "request_reply": False
+                                        }))
+                                        
+                                        # 3. Forcefully shut down the microphone
+                                        final_mic_state = None  
+                                        break
+                                        
+                                    elif command.get("action") == "personality":
+                                        await client.publish("jarvis/sys/speak", json.dumps({"text": command["response"]}))
+                                        
+                                    elif target_topic:
+                                        logging.info(f"Intent Decoded: {command} -> Routing to [{target_topic}]")
+                                        
+                                        # 1. Dispatch the Actuator Command
+                                        await client.publish(target_topic, json.dumps(command))
+                                        
+                                        # 2. Synchronously await the TTS to guarantee packet sequencing
+                                        await self.dispatch_tts_response(client, command, target_topic)
+                                        
+                                        # Elevate the required microphone state if an intent demands a specific reply
+                                        if self.awaiting_discovery_choice or self.awaiting_spotify_choice:
+                                            final_mic_state = "request_reply"
+                                            
+                                    else:
+                                        logging.warning(f"Intent decoded ({command}), but no target topic known.")
+                                    
+                                    await asyncio.sleep(0.05)
+                                    
+                                # 3. Broadcast the microphone state trigger exactly ONCE after all intents finish
+                                if final_mic_state:
+                                    await client.publish("jarvis/sys/mic_control", json.dumps({"action": final_mic_state}))
+                        
+                        elif topic == "jarvis/feedback":
+                            try:
+                                fb = json.loads(payload_data)
+                                msg = fb.get('message', '')
+                                
+                                if "CONFIDENCE_LOW|" in msg:
+                                    self.awaiting_spotify_choice = True
+                                    options_text = msg.split("CONFIDENCE_LOW|")[1] if "CONFIDENCE_LOW|" in msg else msg
+                                    
+                                    print("\n" + "="*50)
+                                    print("SPOTIFY MULTIPLE MATCHES FOUND. AWAITING YOUR SELECTION:")
+                                    print(options_text.strip())
+                                    print("="*50 + "\n")
+                                    
+                                    await client.publish("jarvis/sys/speak", json.dumps({
+                                        "text": "My apologies, sir. The audio match was ambiguous. Could you select an option from the terminal?",
+                                        "request_reply": True 
+                                    }))
+                                    await client.publish("jarvis/sys/mic_control", json.dumps({"action": "request_reply"}))
+                                    
+                                elif "AWAITING_SELECTION|" in msg:
+                                    self.awaiting_discovery_choice = True
+                                    options_text = msg.split("AWAITING_SELECTION|")[1] if "AWAITING_SELECTION|" in msg else msg
+                                    
+                                    print("\n" + "="*50)
+                                    print("DISCOVERED DEVICES. AWAITING YOUR SELECTION:")
+                                    print(options_text.strip())
+                                    print("="*50 + "\n")
+                                    
+                                    await client.publish("jarvis/sys/speak", json.dumps({
+                                        "text": "Diagnostics complete. I have displayed the discovered devices on your terminal. Which index would you like to save?",
+                                        "request_reply": True 
+                                    }))
+                                    await client.publish("jarvis/sys/mic_control", json.dumps({"action": "request_reply"}))
+                                    
                                 else:
-                                    logging.warning(f"Intent decoded ({command}), but no target topic known.")
-                                await asyncio.sleep(0.1)
-                    
-                    elif topic == "jarvis/feedback":
-                        try:
-                            fb = json.loads(payload_data)
-                            msg = fb.get('message', '')
-                            
-                            if "CONFIDENCE_LOW|" in msg:
-                                self.awaiting_spotify_choice = True
-                                options_text = msg.split("CONFIDENCE_LOW|")[1] if "CONFIDENCE_LOW|" in msg else msg
+                                    status_icon = "V" if fb.get('status') == "success" else "X"
+                                    logging.info(f"Feedback [{fb.get('device', 'unknown')}]: {status_icon} {msg}")
+                                    
+                            except json.JSONDecodeError:
+                                logging.error("Received malformed feedback packet.")
                                 
-                                print("\n" + "="*50)
-                                print("SPOTIFY MULTIPLE MATCHES FOUND. AWAITING YOUR SELECTION:")
-                                print(options_text.strip())
-                                print("="*50 + "\n")
-                                
-                                await client.publish("jarvis/sys/speak", json.dumps({
-                                    "text": "My apologies, sir. The audio match was ambiguous. Could you select an option from the terminal?",
-                                    "request_reply": True 
-                                }))
-                                await client.publish("jarvis/sys/mic_control", json.dumps({"action": "request_reply"}))
-                            else:
-                                status_icon = "V" if fb.get('status') == "success" else "X"
-                                logging.info(f"Feedback [{fb.get('device', 'unknown')}]: {status_icon} {msg}")
-                                
-                        except json.JSONDecodeError:
-                            logging.error("Received malformed feedback packet.")
-                            
-        except aiomqtt.MqttError as e:
-            logging.error(f"MQTT Connection Error: {e}")
-        except asyncio.CancelledError:
-            logging.info("Shutting down Central Brain.")
+            except aiomqtt.MqttError as e:
+                    logging.error(f"MQTT Connection Error: {e}. Retrying in 5 seconds...")
+                    await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                logging.info("Shutting down Central Brain.")
+                break
 
 # --- MAIN ---
 if __name__ == "__main__":
