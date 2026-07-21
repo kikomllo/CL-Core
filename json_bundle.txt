@@ -1,0 +1,564 @@
+## File: `config/entities.json`
+```json
+{
+    "colors": {
+        "branco": {"type": "temp", "val": 80},
+        "white": {"type": "temp", "val": 80},
+        "coolwhite": {"type": "temp", "val": 80},
+        
+        "branco quente": {"type": "temp", "val": 20},
+        "warm white": {"type": "temp", "val": 20},
+        "warmwhite": {"type": "temp", "val": 20},
+        
+        "branco gelo": {"type": "temp", "val": 100},
+        "ghost white": {"type": "temp", "val": 100},
+        "ghostwhite": {"type": "temp", "val": 100},
+        
+        "creme": {"type": "temp", "val": 30},
+        "cream": {"type": "temp", "val": 30},
+        "antiquewhite": {"type": "temp", "val": 30},
+        
+        "marfim": {"type": "temp", "val": 40},
+        "ivory": {"type": "temp", "val": 40},
+        
+        "luz do dia": {"type": "temp", "val": 50},
+        "daylight": {"type": "temp", "val": 50},
+
+        "vermelho": {"type": "rgb", "r": 255, "g": 0, "b": 0},
+        "red": {"type": "rgb", "r": 255, "g": 0, "b": 0},
+        "crimson": {"type": "rgb", "r": 220, "g": 20, "b": 60},
+        
+        "vermelho escuro": {"type": "rgb", "r": 139, "g": 0, "b": 0},
+        "dark red": {"type": "rgb", "r": 139, "g": 0, "b": 0},
+        "darkred": {"type": "rgb", "r": 139, "g": 0, "b": 0},
+        
+        "vermelho suave": {"type": "rgb", "r": 255, "g": 102, "b": 102},
+        "soft red": {"type": "rgb", "r": 255, "g": 102, "b": 102},
+        "softred": {"type": "rgb", "r": 255, "g": 102, "b": 102},
+        
+        "vermelhão": {"type": "rgb", "r": 227, "g": 66, "b": 52},
+        "vermilion": {"type": "rgb", "r": 227, "g": 66, "b": 52},
+        
+        "laranja": {"type": "rgb", "r": 255, "g": 165, "b": 0},
+        "orange": {"type": "rgb", "r": 255, "g": 165, "b": 0},
+        "orangered": {"type": "rgb", "r": 255, "g": 69, "b": 0},
+
+        "amarelo": {"type": "rgb", "r": 255, "g": 255, "b": 0},
+        "yellow": {"type": "rgb", "r": 255, "g": 255, "b": 0},
+        "gold": {"type": "rgb", "r": 255, "g": 215, "b": 0},
+        
+        "dourado": {"type": "rgb", "r": 255, "g": 215, "b": 0},
+        "golden": {"type": "rgb", "r": 255, "g": 215, "b": 0},
+
+        "amarelo claro": {"type": "rgb", "r": 255, "g": 250, "b": 205},
+        "light yellow": {"type": "rgb", "r": 255, "g": 250, "b": 205},
+        "lemonchiffon": {"type": "rgb", "r": 255, "g": 250, "b": 205},
+
+        "verde": {"type": "rgb", "r": 0, "g": 255, "b": 0},
+        "green": {"type": "rgb", "r": 0, "g": 255, "b": 0},
+        "forestgreen": {"type": "rgb", "r": 34, "g": 139, "b": 34},
+
+        "verde claro": {"type": "rgb", "r": 144, "g": 238, "b": 144},
+        "light green": {"type": "rgb", "r": 144, "g": 238, "b": 144},
+        "lightgreen": {"type": "rgb", "r": 144, "g": 238, "b": 144},
+        
+        "verde limão": {"type": "rgb", "r": 0, "g": 255, "b": 0},
+        "lime": {"type": "rgb", "r": 0, "g": 255, "b": 0},
+        
+        "verde água": {"type": "rgb", "r": 127, "g": 255, "b": 212},
+        "aquamarine": {"type": "rgb", "r": 127, "g": 255, "b": 212},
+        
+        "ciano": {"type": "rgb", "r": 0, "g": 255, "b": 255},
+        "cyan": {"type": "rgb", "r": 0, "g": 255, "b": 255},
+        "turquoise": {"type": "rgb", "r": 64, "g": 224, "b": 208},
+        "turquesa": {"type": "rgb", "r": 64, "g": 224, "b": 208},
+
+        "azul": {"type": "rgb", "r": 0, "g": 0, "b": 255},
+        "blue": {"type": "rgb", "r": 0, "g": 0, "b": 255},
+        "ultramarine": {"type": "rgb", "r": 18, "g": 10, "b": 143},
+
+        "azul claro": {"type": "rgb", "r": 135, "g": 206, "b": 250},
+        "light blue": {"type": "rgb", "r": 135, "g": 206, "b": 250},
+        "lightskyblue": {"type": "rgb", "r": 135, "g": 206, "b": 250},
+        
+        "azul escuro": {"type": "rgb", "r": 0, "g": 0, "b": 139},
+        "dark blue": {"type": "rgb", "r": 0, "g": 0, "b": 139},
+        "navyblue": {"type": "rgb", "r": 0, "g": 0, "b": 128},
+        
+        "azul marinho": {"type": "rgb", "r": 0, "g": 0, "b": 128},
+        "navy blue": {"type": "rgb", "r": 0, "g": 0, "b": 128},
+        
+        "azul bebé": {"type": "temp", "val": 90},
+        "baby blue": {"type": "temp", "val": 90},
+        "aliceblue": {"type": "temp", "val": 90},
+        
+        "azul céu": {"type": "rgb", "r": 0, "g": 191, "b": 255},
+        "sky blue": {"type": "rgb", "r": 0, "g": 191, "b": 255},
+        "deepskyblue": {"type": "rgb", "r": 0, "g": 191, "b": 255},
+
+        "roxo": {"type": "rgb", "r": 128, "g": 0, "b": 128},
+        "purple": {"type": "rgb", "r": 128, "g": 0, "b": 128},
+        "mediumpurple": {"type": "rgb", "r": 147, "g": 112, "b": 219},
+        
+        "lilás": {"type": "rgb", "r": 200, "g": 162, "b": 200},
+        "lilac": {"type": "rgb", "r": 200, "g": 162, "b": 200},
+        "softmauve": {"type": "rgb", "r": 212, "g": 175, "b": 217},
+
+        "rosa": {"type": "rgb", "r": 255, "g": 192, "b": 203},
+        "pink": {"type": "rgb", "r": 255, "g": 192, "b": 203},
+
+        "rosa choque": {"type": "rgb", "r": 255, "g": 105, "b": 180},
+        "hot pink": {"type": "rgb", "r": 255, "g": 105, "b": 180},
+        "hotpink": {"type": "rgb", "r": 255, "g": 105, "b": 180},
+
+        "castanho": {"type": "rgb", "r": 165, "g": 42, "b": 42},
+        "brown": {"type": "rgb", "r": 165, "g": 42, "b": 42},
+        "chocolate": {"type": "rgb", "r": 210, "g": 105, "b": 30},
+        
+        "âmbar": {"type": "rgb", "r": 255, "g": 191, "b": 0},
+        "amber": {"type": "rgb", "r": 255, "g": 191, "b": 0},
+        "amberglow": {"type": "rgb", "r": 255, "g": 191, "b": 0},
+        
+        "pêssego": {"type": "rgb", "r": 255, "g": 218, "b": 185},
+        "peach": {"type": "rgb", "r": 255, "g": 218, "b": 185},
+        "zenpeach": {"type": "rgb", "r": 255, "g": 218, "b": 185},
+        
+        "areia": {"type": "rgb", "r": 244, "g": 164, "b": 96},
+        "sand": {"type": "rgb", "r": 244, "g": 164, "b": 96},
+        "desertsand": {"type": "rgb", "r": 244, "g": 164, "b": 96},
+        
+        "luar": {"type": "rgb", "r": 240, "g": 248, "b": 255},
+        "moonlight": {"type": "rgb", "r": 240, "g": 248, "b": 255},
+        
+        "cyberpunkpink": {"type": "rgb", "r": 255, "g": 0, "b": 128},
+        "deepsea": {"type": "rgb", "r": 0, "g": 51, "b": 102},
+        "forestmist": {"type": "rgb", "r": 102, "g": 153, "b": 102},
+        "midnightrose": {"type": "rgb", "r": 77, "g": 0, "b": 26},
+        "vaporwaveblue": {"type": "rgb", "r": 0, "g": 255, "b": 255},
+        "shadypurple": {"type": "rgb", "r": 75, "g": 0, "b": 130},
+        "cleansky": {"type": "rgb", "r": 135, "g": 206, "b": 235},
+        "focusgold": {"type": "rgb", "r": 255, "g": 215, "b": 0}
+    }
+}
+```
+
+## File: `config/system.json`
+```json
+{
+  "apps": {
+    "browser": { "linux": "firefox", "windows": "firefox.exe" },
+    "vs": { "linux": "code", "linux_kill": "code", "windows": "code.cmd", "windows_kill": "Code.exe" },
+    "terminal": { "linux": "gnome-terminal", "windows": "wt.exe", "windows_kill": "WindowsTerminal.exe" },
+    "discord": { "linux": "/usr/bin/flatpak run --branch=stable --arch=x86_64 com.discordapp.Discord", "linux_kill": "Discord", "windows": "Update.exe --processStart Discord.exe", "windows_kill": "Discord.exe" },
+    "spotify": { "linux": "spotify", "windows": "spotify.exe" }
+  },
+  "folders": {
+    "downloads": "~/Downloads",
+    "documents": "~/Documents",
+    "desktop": "~/Desktop",
+    "github": "~/Desktop/Stuff/Programming/GitHub",
+    "project folder": "~/OneDrive/Programming/GitHub/CL-Core"
+  },
+  "terminal_commands": {
+    "open terminal": { "type": "system", "action": "spawn" },
+    "close terminal": { "type": "system", "action": "close" },
+    "go back": { "type": "system", "action": "back" },
+    "run with venv": { "type": "shell", "exec": "./venv/bin/python", "arg_mode": "all" }
+  },
+  "system_keywords": {
+    "default_terminal": "gnome-terminal",
+    "terminal_aliases": ["terminal", "console", "shell", "cmd"],
+    "go_back": ["back", "up", "..", "previous", "return", "voltar", "trás"]
+  },
+  "microservices": {
+    "src/clVoice.py": ["voice", "microphone", "sensor", "ears", "stt"],
+    "src/clTTS.py": ["tts", "voice box", "mouth", "speaker"],
+    "src/clSpotify.py": ["spotify", "music", "audio module"],
+    "src/clControl.py": ["control", "lights", "light actuator"],
+    "src/clDaemon.py": ["daemon", "brain", "core"],
+    "src/clTerminal.py": ["terminal"]
+  }
+}
+```
+
+## File: `config/intents.json`
+```json
+{
+  "light_on": {
+    "target_topic": "home/room/desk_light/set",
+    "action_override": "on",
+    "priority_words": ["on", "activate", "power on"],
+    "templates": [
+      "turn on the light",
+      "turn the light on",
+      "light on",
+      "power on the light",
+      "activate the light"
+    ]
+  },
+  "light_off": {
+    "target_topic": "home/room/desk_light/set",
+    "action_override": "off",
+    "priority_words": ["off", "deactivate", "kill", "power off"],
+    "templates": [
+      "turn off the light",
+      "turn the light off",
+      "light off",
+      "kill the light",
+      "power off the light",
+      "deactivate the light"
+    ]
+  },
+  "light_toggle": {
+    "target_topic": "home/room/desk_light/set",
+    "action_override": "toggle",
+    "priority_words": ["toggle", "switch"],
+    "templates": [
+      "toggle the light",
+      "toggle light",
+      "switch the light"
+    ]
+  },
+  "light_color": {
+    "target_topic": "home/room/desk_light/set",
+    "action_override": "on",
+    "priority_words": ["color", "change"],
+    "templates": [
+      "set the light to {color}",
+      "change the light to {color}",
+      "change light color to {color}",
+      "make it {color} in here",
+      "set lights to {color}"
+    ]
+  },
+  "light_dim": {
+    "target_topic": "home/room/desk_light/set",
+    "action_override": "on",
+    "priority_words": ["brightness", "dim", "percent"],
+    "templates": [
+      "set light to {lum} percent",
+      "set brightness to {lum} percent",
+      "dim the light to {lum} percent",
+      "make the light {lum} percent",
+      "lights {lum} percent"
+    ]
+  },
+  "spotify_play_generic": {
+    "target_topic": "pc/spotify/control",
+    "action_override": "play",
+    "priority_words": ["resume", "start"],
+    "templates": [
+      "resume music",
+      "resume the music",
+      "play music",
+      "start playing",
+      "continue playback",
+      "play spotify"
+    ]
+  },
+  "spotify_play_playlist": {
+    "target_topic": "pc/spotify/control",
+    "action_override": "play",
+    "priority_words": ["playlist"],
+    "templates": [
+      "play the playlist {playlist_name}",
+      "play playlist {playlist_name}",
+      "put on my {playlist_name} playlist",
+      "play my playlist {playlist_name}",
+      "my playlist {playlist_name}"
+    ]
+  },
+  "spotify_play_specific": {
+    "target_topic": "pc/spotify/control",
+    "action_override": "play",
+    "priority_words": ["play", "song", "track", "artist"],
+    "templates": [
+      "play {track_name} by {artist_name}",
+      "play {track_name}",
+      "play songs by {artist_name}",
+      "play artist {artist_name}",
+      "play some {search_query}",
+      "put on some {search_query}"
+    ]
+  },
+  "spotify_pause": {
+    "target_topic": "pc/spotify/control",
+    "action_override": "pause",
+    "priority_words": ["pause", "stop"],
+    "templates": [
+      "pause the music",
+      "pause music",
+      "pause playback",
+      "stop the music",
+      "pause spotify"
+    ]
+  },
+  "spotify_next": {
+    "target_topic": "pc/spotify/control",
+    "action_override": "next",
+    "priority_words": ["skip", "next"],
+    "templates": [
+      "skip this song",
+      "skip song",
+      "next song",
+      "play the next song",
+      "skip music",
+      "next"
+    ]
+  },
+  "spotify_prev": {
+    "target_topic": "pc/spotify/control",
+    "action_override": "prev",
+    "priority_words": ["previous", "back"],
+    "templates": [
+      "previous song",
+      "go back a song",
+      "play the previous song",
+      "go back",
+      "last song"
+    ]
+  },
+  "spotify_volume": {
+    "target_topic": "pc/spotify/control",
+    "action_override": "volume",
+    "priority_words": ["volume"],
+    "templates": [
+      "set volume to {volume} percent",
+      "change volume to {volume} percent",
+      "set music volume to {volume} percent",
+      "music volume {volume} percent"
+    ]
+  },
+  "spotify_status_track": {
+    "target_topic": "pc/spotify/control",
+    "action_override": "status_track",
+    "priority_words": ["playing", "song", "sings", "track"],
+    "templates": [
+      "what is playing",
+      "what song is this",
+      "what's playing right now",
+      "who sings this",
+      "what track is this",
+      "track name",
+      "song name",
+      "artist's name",
+      "artist name",
+      "give me the track name"
+    ]
+  },
+  "spotify_status_playlist": {
+    "target_topic": "pc/spotify/control",
+    "action_override": "status_playlist",
+    "priority_words": ["playlist", "context", "radio"],
+    "templates": [
+      "what playlist is this",
+      "what playlist is playing",
+      "what playlist are we on",
+      "what is this playlist",
+      "what radio is this",
+      "what is the context"
+    ]
+  },
+  "spotify_status_queue": {
+    "target_topic": "pc/spotify/control",
+    "action_override": "status_queue",
+    "priority_words": ["queue", "up next"],
+    "templates": [
+      "what is next",
+      "what's next",
+      "what's next in the queue",
+      "what is playing next",
+      "up next",
+      "what's the next song"
+    ]
+  },
+  "spotify_status_full": {
+    "target_topic": "pc/spotify/control",
+    "action_override": "status_full",
+    "priority_words": ["status"],
+    "templates": [
+      "spotify status",
+      "music status"
+    ]
+  },
+  "system_discovery": {
+    "target_topic": "system/discovery",
+    "action_override": "discover",
+    "priority_words": ["discovery", "scan", "hardware", "devices"],
+    "templates": [
+      "start discovery mode",
+      "search light bulbs",
+      "run device discovery",
+      "search for new devices",
+      "scan the network",
+      "find new hardware",
+      "discovery mode"
+    ]
+  },
+  "system_restart_all": {
+    "target_topic": "jarvis/sys/manager",
+    "action_override": "restart_all_modules",
+    "priority_words": ["restart all", "reboot all", "everything"],
+    "templates": [
+      "restart all modules",
+      "reboot all modules",
+      "reboot the system",
+      "restart the system",
+      "restart the framework",
+      "reboot the framework",
+      "restart everything",
+      "reboot everything",
+      "restart all services",
+      "reboot all services"
+    ]
+  },
+  "system_restart_module": {
+    "target_topic": "jarvis/sys/manager",
+    "action_override": "restart_module",
+    "priority_words": ["module", "service"],
+    "templates": [
+      "restart module {target}",
+      "reboot module {target}",
+      "reboot the {target} service",
+      "restart the {target} service",
+      "restart {target}",
+      "reboot {target}"
+    ]
+  },
+  "system_attention_on": {
+    "target_topic": "jarvis/sys/mic_control",
+    "action_override": "attention_on",
+    "priority_words": ["attention", "focus"],
+    "templates": [
+      "attention mode",
+      "enter attention mode",
+      "pay attention",
+      "work mode",
+      "start working",
+      "i need to focus",
+      "focus mode"
+    ]
+  },
+  "system_attention_off": {
+    "target_topic": "jarvis/sys/mic_control",
+    "action_override": "attention_off",
+    "priority_words": ["rest", "chill", "exit", "leave"],
+    "templates": [
+      "exit attention mode",
+      "time to rest",
+      "go to rest",
+      "you can rest",
+      "work's done",
+      "you can chill",
+      "leave work mode",
+      "exit work mode",
+      "stop focusing",
+      "im done working",
+      "normal mode",
+      "chill mode"
+    ]
+  }
+}
+```
+
+## File: `config/responses.json`
+```json
+{
+  "mqtt": {
+    "home/room/desk_light/set": {
+      "on": ["At your service sir. Lights on.", "Powering them up.", "Let there be light!"],
+      "off": ["Bravo going dark!", "Preparing to power down.", "Going dark sir."],
+      "toggle": ["Reconfiguring the ambient illumination sir.", "Changing light state."],
+      "color": ["Changing color to {color}."],
+      "lum": ["Calibrating brightness levels to {lum} percent."],
+      "temp": ["Calibrating temperature spectrum."]
+    },
+    "pc/spotify/control": {
+      "play_track_artist": ["Playing {track_name} by {artist_name}."],
+      "play_track": ["Sourcing the track {track_name}. Enjoy."],
+      "play_artist": ["Playing artist: {artist_name}."],
+      "play_playlist": ["Retrieving your playlist: {playlist_name}."],
+      "pause": ["Halting the media streams."],
+      "next": ["Skipping to the subsequent track."],
+      "prev": ["Reverting to the previous track."],
+      "volume": ["Adjusting audio to {volume} percent."],
+      "status_full": [
+        "Currently playing {track} by {artist} from the {context} playlist. Up next is {next_in_queue}.",
+        "We are listening to {track} by {artist}. The context is {context}, and the next track is {next_in_queue}."
+      ],
+      "status_track": [
+        "This is {track} by {artist}.",
+        "Currently playing {track} from {artist}."
+      ],
+      "status_playlist": [
+        "We are listening to {context}.",
+        "This is the {context} playlist."
+      ],
+      "status_queue": [
+        "Up next is {next_in_queue}.",
+        "The next track in the queue is {next_in_queue}."
+      ],
+      "status_idle": ["Nothing is currently playing sir."]
+    },
+    "system/discovery": {
+      "discover": ["Running diagnostics and scanning local networks for hardware."],
+      "save_discovery": ["Query complete, sir. Committing device hardware addresses."]
+    },
+    "pc/system/control": {
+      "restart_all_modules": ["Cycling power to the entire microservice ecosystem sir."],
+      "restart_module": ["Cycling power to the {target} microservice sir."],
+      "open": ["Launching {target}."],
+      "close": ["Shutting down the {target} application."],
+      "shutdown": ["Initiating critical system shutdown. Goodbye sir."],
+      "restart": ["Rebooting the master operating system."],
+      "volume": ["Adjusting master system volume to {level} percent."]
+    },
+    "jarvis/sys/mic_control": {
+      "attention_on": ["I am listening sir.", "Continuous attention mode activated."],
+      "attention_off": ["Going to sleep sir.", "Powering down active listening."]
+    }
+  },
+  "conversational": {
+    "call lucy": "How about I call your mother instead, Uhm? If it's you Estriga, scratch my balls",
+    "scratch my balls": "Beginning the scratching in 3... 2... 1... Scratching in progress sir, hope you like it."
+  }
+}
+```
+
+## File: `config/core.json`
+```json
+{
+  "settings": {
+    "language": "en",
+    "hardware": "cpu",
+    "stt_model": "small",
+    "debug_mqtt": true
+  },
+  "vad_settings": {
+    "energy_threshold_normal": 300,
+    "attention_mode_multiplier": 2.5, 
+    "silence_timeout_seconds": 1.5
+  },
+  "nlp_rules": {
+    "autocorrect": {
+      " dot ": ".",
+      " ponto ": ".",
+      " dotcom": ".com",
+      " pontocom": ".com",
+      "dot com": ".com",
+      "ponto com": ".com"
+    },
+    "abort_keywords": [
+      "cancel", "nevermind", "forget it", "abort"
+    ],
+    "word_to_number": {
+      "max": "100", "hundred": "100", "ninety": "90", "eighty": "80", 
+      "seventy": "70", "sixty": "60", "fifty": "50", "forty": "40", 
+      "thirty": "30", "twenty": "20", "ten": "10",
+      "nine": "9", "eight": "8", "seven": "7", "six": "6", "five": "5",
+      "four": "4", "three": "3", "two": "2", "one": "1", "zero": "0"
+    }
+  }
+}
+```
+

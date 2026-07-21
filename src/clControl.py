@@ -8,10 +8,12 @@ import json
 import sys
 import colorsys
 from typing import Optional, Dict, Any, List, Tuple
-from dotenv import load_dotenv, set_key
 from tapo import ApiClient
 from pywizlight import wizlight, PilotBuilder, discovery as wiz_discovery
 import aiomqtt
+
+# NEW: Import your centralized env loader
+from utils.clEnvLoader import EnvLoader
 
 # --- LOGGING SETUP ---
 logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [CONTROL] %(message)s", datefmt="%H:%M:%S")
@@ -25,17 +27,16 @@ class LightManager:
     
     def __init__(self):
         self.base_dir: str = os.path.dirname(os.path.abspath(__file__))
-        self.env_path: str = os.path.abspath(os.path.join(self.base_dir, "..", ".env"))
-        load_dotenv(self.env_path)
+        self.env = EnvLoader()
 
         self.color_matrix = self._load_color_matrix()
 
-        self.light_type: str = os.getenv("LIGHT_TYPE", "tapo").lower()
-        self.bulb_ip: str = os.getenv("LIGHT_IP", "")
-        self.bulb_mac: str = os.getenv("LIGHT_MAC", "")
+        self.light_type: str = self.env.get("LIGHT_TYPE", "tapo").lower()
+        self.bulb_ip: str = self.env.get("LIGHT_IP", "")
+        self.bulb_mac: str = self.env.get("LIGHT_MAC", "")
         
-        self.email: str = os.getenv("TAPO_EMAIL", "")
-        self.password: str = os.getenv("TAPO_PASSWORD", "")
+        self.email: str = self.env.get("TAPO_EMAIL", "")
+        self.password: str = self.env.get("TAPO_PASSWORD", "")
         
         if self.light_type == "tapo" and not (self.email and self.password):
             logging.error("Tapo Credentials missing in .env file.")
@@ -45,19 +46,18 @@ class LightManager:
         self.last_discovered_devices: List[Dict[str, str]] = []
         
     def _load_color_matrix(self) -> Dict[str, Any]:
-        """Loads the absolute truth JSON mapping for colors and temperatures."""
-        matrix_path = os.path.abspath(os.path.join(self.base_dir, "..", "config", "colors.json"))
+        matrix_path = os.path.abspath(os.path.join(self.base_dir, "..", "config", "entities.json"))
         try:
             with open(matrix_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                return json.load(f).get("colors", {})
         except Exception as e:
-            logging.error(f"Failed to load colors.json: {e}")
+            logging.error(f"Failed to load entities.json: {e}")
             return {}
 
     def update_env_credentials(self, ip: str, mac: str, light_type: str) -> None:
-        set_key(self.env_path, "LIGHT_IP", ip)
-        set_key(self.env_path, "LIGHT_MAC", mac)
-        set_key(self.env_path, "LIGHT_TYPE", light_type)
+        self.env.update("LIGHT_IP", ip)
+        self.env.update("LIGHT_MAC", mac)
+        self.env.update("LIGHT_TYPE", light_type)
         self.bulb_ip = ip
         self.bulb_mac = mac
         self.light_type = light_type
@@ -169,7 +169,6 @@ class LightManager:
         if on or lum is not None or temp is not None or color:
             brightness = lum if lum is not None else 255
             
-            # Use RGB values directly from JSON
             if color:
                 c_data = self.color_matrix.get(color.lower().strip())
                 if c_data:
@@ -208,7 +207,6 @@ class LightManager:
         if lum is not None:
             tasks.append(device.set_brightness(lum))
             
-        # Convert JSON RGB to Tapo HSV mathematically
         if color:
             c_data = self.color_matrix.get(color.lower().strip())
             if c_data:
@@ -221,7 +219,7 @@ class LightManager:
                 elif c_data["type"] == "temp":
                     temp = c_data["val"] 
             else:
-                logging.warning(f"Color '{color}' not found in colors.json truth matrix.")
+                logging.warning(f"Color '{color}' not found in entities.json truth matrix.")
 
         if temp is not None:
             tasks.append(device.set_color_temperature(int(2500 + temp * (6500 - 2500) / 100)))
@@ -250,30 +248,40 @@ class LightManager:
             parsed_devices.append({"type": "tapo", "model": dev['model'], "ip": dev['ip'], "mac": dev['mac']})
 
         if not parsed_devices:
-            logging.warning("No responsive devices discovered on local network architectures.")
+            msg = "No responsive smart light targets discovered on local network architectures."
+            logging.warning(msg)
+            if voice_mode:
+                async with aiomqtt.Client("localhost") as mqtt_client:
+                    await mqtt_client.publish("jarvis/feedback", json.dumps({
+                        "device": "smart_lights", "status": "error", "message": msg
+                    }))
             return
 
         self.last_discovered_devices = parsed_devices
-        
-        table_str = "{:<5} {:<8} {:<18} {:<18}\n".format("#", "TYPE", "MODEL", "IP")
-        table_str += "-" * 55 + "\n"
-        for i, dev in enumerate(parsed_devices):
-            table_str += "{:<5} {:<8} {:<18} {:<18}\n".format(i, dev['type'].upper(), dev['model'], dev['ip'])
 
         if voice_mode:
             try:
                 async with aiomqtt.Client("localhost") as mqtt_client:
-                    # Publish to feedback so the Daemon catches the AWAITING_SELECTION signal
                     await mqtt_client.publish("jarvis/feedback", json.dumps({
                         "status": "success",
-                        "device": "discovery",
-                        "message": f"AWAITING_SELECTION|\n{table_str}"
+                        "device": "smart_lights",
+                        "action": "awaiting_selection",
+                        "message": f"Network scan complete. I found {len(parsed_devices)} hardware targets. Please select a device index from your display.",
+                        "devices": parsed_devices  # Clean structured JSON data data payload
                     }))
             except Exception as e:
                 logging.error(f"Failed to deploy discovery feedback: {e}")
         else:
-            print(f"\nDiscovered {len(parsed_devices)} smart light network targets:")
+            # CLI Mode: Output a clean, beautiful terminal UI wrapper
+            print("\n" + "=" * 60)
+            print("{:^60}".format("DISCOVERED HARDWARE TARGETS"))
+            print("=" * 60)
+            table_str = "  {:<5} {:<8} {:<15} {:<15}\n".format("IDX", "TYPE", "MODEL", "IP")
+            table_str += "  " + "-" * 54 + "\n"
+            for i, dev in enumerate(parsed_devices):
+                table_str += "  {:<5} {:<8} {:<15} {:<15}\n".format(f"[{i}]", dev['type'].upper(), dev['model'], dev['ip'])
             print(table_str)
+            print("=" * 60)
             self._handle_cli_save(parsed_devices)
 
     def _handle_cli_save(self, devices: List[Dict[str, str]]) -> None:
@@ -283,6 +291,85 @@ class LightManager:
             if input(f"Confirm save for {selected['ip']} to local workspace configurations? (y/n): ").lower() == 'y':
                 self.update_env_credentials(selected["ip"], selected["mac"], selected["type"])
                 logging.info(f"Target locked. Operating system variables updated to track local {selected['type'].upper()} interface.")
+                
+    def _load_word_to_number(self) -> Dict[str, str]:
+        """Loads the spoken word-to-number mapping directly from core.json."""
+        config_path = os.path.abspath(os.path.join(self.base_dir, "..", "config", "core.json"))
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                return json.load(f).get("word_to_number", {})
+        except Exception as e:
+            logging.error(f"Failed to load word_to_number from core.json: {e}")
+            return {}
+
+    def _handle_discovery_selection(self, raw_target: Any) -> Dict[str, Any]:
+        if not hasattr(self, 'last_discovered_devices') or not self.last_discovered_devices:
+            return {"status": "error", "action": "awaiting_selection", "message": "No devices in memory. Please run a scan first."}
+
+        parsed_idx = None
+        clean_str = str(raw_target).lower().strip()
+
+        # 1. First Pass: Isolate exact numeric index from spoken words or digits
+        if isinstance(raw_target, int):
+            if 0 <= raw_target < len(self.last_discovered_devices):
+                parsed_idx = raw_target
+        else:
+            word_to_num = {"zero": "0", "one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9"}
+            for word in clean_str.split():
+                val = word_to_num.get(word, word)
+                if val.isdigit():
+                    num = int(val)
+                    # ONLY accept as an explicit index if it's within array bounds.
+                    # Otherwise, leave parsed_idx as None so the semantic engine can use it (e.g., IP tail '88')
+                    if 0 <= num < len(self.last_discovered_devices):
+                        parsed_idx = num
+                    break  # Break on the first number found
+
+        # 2. Index Routing
+        if parsed_idx is not None:
+            selected_device = self.last_discovered_devices[parsed_idx]
+            
+        # 3. Semantic Routing (Fallback)
+        else:
+            scored_matches = []
+            for dev in self.last_discovered_devices:
+                score = 0
+                if dev.get('type', '').lower() in clean_str: score += 1
+                if dev.get('model', '').lower() in clean_str: score += 1
+                if dev.get('ip', '') in clean_str: score += 5
+                
+                # Check for IP tail (e.g., '88' for '192.168.1.88')
+                ip_tail = dev.get('ip', '').split('.')[-1]
+                if ip_tail in clean_str.split(): score += 5
+
+                if score > 0:
+                    scored_matches.append((score, dev))
+
+            if scored_matches:
+                scored_matches.sort(key=lambda x: x[0], reverse=True)
+                top_score = scored_matches[0][0]
+                top_devices = [dev for s, dev in scored_matches if s == top_score]
+                
+                if len(top_devices) == 1:
+                    selected_device = top_devices[0]
+                else:
+                    return {
+                        "status": "error",
+                        "action": "awaiting_selection",
+                        "message": f"I found multiple matching devices for '{raw_target}'. Please specify the exact IP address or device index."
+                    }
+            else:
+                return {
+                    "status": "error",
+                    "message": f"Could not find a valid device matching '{raw_target}'. Number out of bounds or unrecognised name."
+                }
+
+        # 4. Success Execution
+        self.update_env_credentials(selected_device['ip'], selected_device['mac'], selected_device['type'].lower())
+        return {
+            "status": "success",
+            "message": f"Successfully connected to {selected_device['type']} at {selected_device['ip']}"
+        }
 
 # --- MQTT SERVICE LISTENER ---
 async def mqtt_service_listener(manager: LightManager) -> None:
@@ -300,15 +387,13 @@ async def mqtt_service_listener(manager: LightManager) -> None:
                         action = payload.get("action")
                         
                         if action == "discover":
-                            asyncio.create_task(manager.discovery_mode(voice_mode=True))
+                            await manager.discovery_mode(voice_mode=True)
                             continue
                             
                         if action == "save_discovery":
-                            idx = payload.get("index")
-                            if idx is not None and 0 <= idx < len(manager.last_discovered_devices):
-                                sel = manager.last_discovered_devices[idx]
-                                manager.update_env_credentials(sel["ip"], sel["mac"], sel["type"])
-                                logging.info(f"SUCCESS: System tracking modified to drive {sel['type'].upper()} profile.")
+                            result = manager._handle_discovery_selection(payload.get("index"))
+                            feedback_payload = {"device": "smart_lights", **result}
+                            await mqtt_client.publish("jarvis/feedback", json.dumps(feedback_payload))
                             continue
 
                         # --- ISOLATED HARDWARE TASK ---
@@ -337,29 +422,40 @@ async def mqtt_service_listener(manager: LightManager) -> None:
             logging.info("Light Control service shutting down.")
             break
 
-# --- UTILITIES ---
 def print_color_list(color_matrix: Dict[str, Any]) -> None:
     if not color_matrix:
-        print("\nError: No colors found in colors.json matrix.\n")
+        print("\nError: No colors found in entities.json matrix.\n")
         return
 
-    print("\n{:^68}".format("--- AVAILABLE COLOR PRESETS ---"))
-    print("-" * 68)
-    
-    temps = sorted(set([k.title() for k, v in color_matrix.items() if v.get("type") == "temp"]))
-    colors = sorted(set([k.title() for k, v in color_matrix.items() if v.get("type") == "rgb"]))
-    
-    print("\nWhites & Temperatures:\n")
-    for i in range(0, len(temps), 4):
-        row = temps[i:i+4]
-        print("{:<17} {:<17} {:<17} {:<17}".format(*(row + [""] * (4 - len(row)))))
+    temps_grouped = {}
+    colors_grouped = {}
+
+    for name, data in color_matrix.items():
+        c_type = data.get("type")
+        if c_type == "temp":
+            key = data.get("val")
+            temps_grouped.setdefault(key, []).append(name.title())
+        elif c_type == "rgb":
+            key = (data.get("r"), data.get("g"), data.get("b"))
+            colors_grouped.setdefault(key, []).append(name.title())
+
+    print("\n" + "=" * 70)
+    print("{:^70}".format("AVAILABLE COLOR PRESETS & ALIASES"))
+    print("=" * 70)
+
+    print("\n[ WHITES & TEMPERATURES ]\n")
+    # Sort by temperature value to group logically
+    for val, names in sorted(temps_grouped.items(), key=lambda x: x[0]):
+        aliases = ", ".join(sorted(names))
+        print(f"  • {aliases}")
+
+    print("\n[ COLORS (RGB) ]\n")
+    # Sort alphabetically by the primary alias
+    for rgb, names in sorted(colors_grouped.items(), key=lambda x: sorted(x[1])[0]):
+        aliases = ", ".join(sorted(names))
+        print(f"  • {aliases}")
         
-    print("\nColors (RGB Matrix):\n")
-    for i in range(0, len(colors), 4):
-        row = colors[i:i+4]
-        print("{:<17} {:<17} {:<17} {:<17}".format(*(row + [""] * (4 - len(row)))))
-        
-    print("\n" + "-" * 68 + "\n")
+    print("\n" + "=" * 70 + "\n")
 
 # --- MAIN ---
 def main():

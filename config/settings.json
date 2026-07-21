@@ -1,6 +1,0 @@
-{
-    "language": "en",
-    "hardware": "cpu",
-    "stt_model": "small",
-    "debug_mqtt": true
-}
