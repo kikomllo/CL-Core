@@ -2,38 +2,42 @@
   "light_on": {
     "target_topic": "home/room/desk_light/set",
     "action_override": "on",
+    "priority_words": ["on", "activate", "power on"],
     "templates": [
       "turn on the light",
       "turn the light on",
-      "lights on",
-      "power on the lights",
-      "activate the lights"
+      "light on",
+      "power on the light",
+      "activate the light"
     ]
   },
   "light_off": {
     "target_topic": "home/room/desk_light/set",
     "action_override": "off",
+    "priority_words": ["off", "deactivate", "kill", "power off"],
     "templates": [
       "turn off the light",
       "turn the light off",
-      "lights off",
-      "kill the lights",
-      "power off the lights",
-      "deactivate the lights"
+      "light off",
+      "kill the light",
+      "power off the light",
+      "deactivate the light"
     ]
   },
   "light_toggle": {
     "target_topic": "home/room/desk_light/set",
     "action_override": "toggle",
+    "priority_words": ["toggle", "switch"],
     "templates": [
       "toggle the light",
-      "toggle lights",
+      "toggle light",
       "switch the light"
     ]
   },
   "light_color": {
     "target_topic": "home/room/desk_light/set",
     "action_override": "on",
+    "priority_words": ["color", "change"],
     "templates": [
       "set the light to {color}",
       "change the light to {color}",
@@ -45,6 +49,7 @@
   "light_dim": {
     "target_topic": "home/room/desk_light/set",
     "action_override": "on",
+    "priority_words": ["brightness", "dim", "percent"],
     "templates": [
       "set light to {lum} percent",
       "set brightness to {lum} percent",
@@ -56,30 +61,32 @@
   "spotify_play_generic": {
     "target_topic": "pc/spotify/control",
     "action_override": "play",
+    "priority_words": ["resume", "start", "play"],
     "templates": [
       "resume music",
       "resume the music",
       "play music",
       "start playing",
-      "continue playback"
+      "continue playback",
+      "play spotify"
     ]
   },
   "spotify_play_playlist": {
     "target_topic": "pc/spotify/control",
     "action_override": "play",
+    "priority_words": ["playlist"],
     "templates": [
       "play the playlist {playlist_name}",
       "play playlist {playlist_name}",
       "put on my {playlist_name} playlist",
       "play my playlist {playlist_name}",
-      "play playlist {playlist_name}",
-      "play the playlist {playlist_name}",
       "my playlist {playlist_name}"
     ]
   },
   "spotify_play_specific": {
     "target_topic": "pc/spotify/control",
     "action_override": "play",
+    "priority_words": ["play", "song", "track", "artist"],
     "templates": [
       "play {track_name} by {artist_name}",
       "play {track_name}",
@@ -92,16 +99,19 @@
   "spotify_pause": {
     "target_topic": "pc/spotify/control",
     "action_override": "pause",
+    "priority_words": ["pause", "stop"],
     "templates": [
       "pause the music",
       "pause music",
       "pause playback",
-      "stop the music"
+      "stop the music",
+      "pause spotify"
     ]
   },
   "spotify_next": {
     "target_topic": "pc/spotify/control",
     "action_override": "next",
+    "priority_words": ["skip", "next"],
     "templates": [
       "skip this song",
       "skip song",
@@ -114,16 +124,19 @@
   "spotify_prev": {
     "target_topic": "pc/spotify/control",
     "action_override": "prev",
+    "priority_words": ["previous", "back"],
     "templates": [
       "previous song",
       "go back a song",
       "play the previous song",
-      "go back"
+      "go back",
+      "last song"
     ]
   },
   "spotify_volume": {
     "target_topic": "pc/spotify/control",
     "action_override": "volume",
+    "priority_words": ["volume"],
     "templates": [
       "set volume to {volume} percent",
       "change volume to {volume} percent",
@@ -131,11 +144,65 @@
       "music volume {volume} percent"
     ]
   },
+  "spotify_status_track": {
+    "target_topic": "pc/spotify/control",
+    "action_override": "status_track",
+    "priority_words": ["playing", "song", "sings", "track"],
+    "templates": [
+      "what is playing",
+      "what song is this",
+      "what's playing right now",
+      "who sings this",
+      "what track is this",
+      "track name",
+      "song name",
+      "artist's name",
+      "artist name",
+      "give me the track name"
+    ]
+  },
+  "spotify_status_playlist": {
+    "target_topic": "pc/spotify/control",
+    "action_override": "status_playlist",
+    "priority_words": ["playlist", "context", "radio"],
+    "templates": [
+      "what playlist is this",
+      "what playlist is playing",
+      "what playlist are we on",
+      "what is this playlist",
+      "what radio is this",
+      "what is the context"
+    ]
+  },
+  "spotify_status_queue": {
+    "target_topic": "pc/spotify/control",
+    "action_override": "status_queue",
+    "priority_words": ["queue", "up next"],
+    "templates": [
+      "what is next",
+      "what's next",
+      "what's next in the queue",
+      "what is playing next",
+      "up next",
+      "what's the next song"
+    ]
+  },
+  "spotify_status_full": {
+    "target_topic": "pc/spotify/control",
+    "action_override": "status_full",
+    "priority_words": ["status"],
+    "templates": [
+      "spotify status",
+      "music status"
+    ]
+  },
   "system_discovery": {
     "target_topic": "system/discovery",
     "action_override": "discover",
+    "priority_words": ["discovery", "scan", "hardware", "devices"],
     "templates": [
       "start discovery mode",
+      "search light bulbs",
       "run device discovery",
       "search for new devices",
       "scan the network",
@@ -146,27 +213,37 @@
   "system_restart_all": {
     "target_topic": "jarvis/sys/manager",
     "action_override": "restart_all_modules",
+    "priority_words": ["restart all", "reboot all", "everything"],
     "templates": [
       "restart all modules",
+      "reboot all modules",
       "reboot the system",
+      "restart the system",
       "restart the framework",
-      "restart everything"
+      "reboot the framework",
+      "restart everything",
+      "reboot everything",
+      "restart all services",
+      "reboot all services"
     ]
   },
   "system_restart_module": {
     "target_topic": "jarvis/sys/manager",
     "action_override": "restart_module",
+    "priority_words": ["module", "service"],
     "templates": [
       "restart module {target}",
+      "reboot module {target}",
       "reboot the {target} service",
+      "restart the {target} service",
       "restart {target}",
       "reboot {target}"
     ]
   },
-  
   "system_attention_on": {
     "target_topic": "jarvis/sys/mic_control",
     "action_override": "attention_on",
+    "priority_words": ["attention", "focus"],
     "templates": [
       "attention mode",
       "enter attention mode",
@@ -180,15 +257,20 @@
   "system_attention_off": {
     "target_topic": "jarvis/sys/mic_control",
     "action_override": "attention_off",
+    "priority_words": ["rest", "chill", "exit", "leave"],
     "templates": [
       "exit attention mode",
       "time to rest",
       "go to rest",
+      "you can rest",
       "work's done",
+      "you can chill",
+      "leave work mode",
       "exit work mode",
       "stop focusing",
       "im done working",
-      "normal mode"
+      "normal mode",
+      "chill mode"
     ]
   }
 }

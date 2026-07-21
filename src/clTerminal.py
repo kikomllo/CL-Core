@@ -35,16 +35,16 @@ class TerminalManager:
         self._load_shortcuts()
 
     def _load_shortcuts(self) -> None:
-        """Loads shortcuts.json into isolated class memory."""
-        shortcuts_path = os.path.abspath(os.path.join(self.base_dir, "..", "config", "shortcuts.json"))
+        """Loads system.json into isolated class memory."""
+        shortcuts_path = os.path.abspath(os.path.join(self.base_dir, "..", "config", "system.json"))
         try:
             with open(shortcuts_path, 'r', encoding='utf-8') as f:
                 self.shortcuts = json.load(f)
             logging.info(f"Loaded {len(self.shortcuts.get('apps', {}))} apps and {len(self.shortcuts.get('folders', {}))} folders.")
         except FileNotFoundError:
-            logging.warning("shortcuts.json not found. Operating with empty dictionaries.")
+            logging.warning("system.json not found. Operating with empty dictionaries.")
         except json.JSONDecodeError as e:
-            logging.critical(f"Syntax error in shortcuts.json: {e}")
+            logging.critical(f"Syntax error in system.json: {e}")
 
     # --- PID LIFECYCLE MANAGEMENT ---
     def _clear_pids(self) -> bool:
@@ -59,7 +59,6 @@ class TerminalManager:
                 return False
             
             for p in pids:
-                if not p.strip(): continue
                 if not p.strip(): continue
                 try:
                     target_pid = int(p.strip())
@@ -198,7 +197,6 @@ class TerminalManager:
         """Handles web navigation and direct browser searches natively."""
         try:
             if action == "search":
-                # Convert "python tutorials" into "python+tutorials"
                 encoded_query = urllib.parse.quote_plus(target)
                 target_url = f"https://www.google.com/search?q={encoded_query}"
                 webbrowser.open(target_url, new=2)

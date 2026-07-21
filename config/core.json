@@ -1,0 +1,33 @@
+{
+  "settings": {
+    "language": "en",
+    "hardware": "cpu",
+    "stt_model": "small",
+    "debug_mqtt": true
+  },
+  "vad_settings": {
+    "energy_threshold_normal": 300,
+    "attention_mode_multiplier": 2.5, 
+    "silence_timeout_seconds": 1.5
+  },
+  "nlp_rules": {
+    "autocorrect": {
+      " dot ": ".",
+      " ponto ": ".",
+      " dotcom": ".com",
+      " pontocom": ".com",
+      "dot com": ".com",
+      "ponto com": ".com"
+    },
+    "abort_keywords": [
+      "cancel", "nevermind", "forget it", "abort"
+    ],
+    "word_to_number": {
+      "max": "100", "hundred": "100", "ninety": "90", "eighty": "80", 
+      "seventy": "70", "sixty": "60", "fifty": "50", "forty": "40", 
+      "thirty": "30", "twenty": "20", "ten": "10",
+      "nine": "9", "eight": "8", "seven": "7", "six": "6", "five": "5",
+      "four": "4", "three": "3", "two": "2", "one": "1", "zero": "0"
+    }
+  }
+}

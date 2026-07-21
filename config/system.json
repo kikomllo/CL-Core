@@ -1,0 +1,35 @@
+{
+  "apps": {
+    "browser": { "linux": "firefox", "windows": "firefox.exe" },
+    "vs": { "linux": "code", "linux_kill": "code", "windows": "code.cmd", "windows_kill": "Code.exe" },
+    "terminal": { "linux": "gnome-terminal", "windows": "wt.exe", "windows_kill": "WindowsTerminal.exe" },
+    "discord": { "linux": "/usr/bin/flatpak run --branch=stable --arch=x86_64 com.discordapp.Discord", "linux_kill": "Discord", "windows": "Update.exe --processStart Discord.exe", "windows_kill": "Discord.exe" },
+    "spotify": { "linux": "spotify", "windows": "spotify.exe" }
+  },
+  "folders": {
+    "downloads": "~/Downloads",
+    "documents": "~/Documents",
+    "desktop": "~/Desktop",
+    "github": "~/Desktop/Stuff/Programming/GitHub",
+    "project folder": "~/OneDrive/Programming/GitHub/CL-Core"
+  },
+  "terminal_commands": {
+    "open terminal": { "type": "system", "action": "spawn" },
+    "close terminal": { "type": "system", "action": "close" },
+    "go back": { "type": "system", "action": "back" },
+    "run with venv": { "type": "shell", "exec": "./venv/bin/python", "arg_mode": "all" }
+  },
+  "system_keywords": {
+    "default_terminal": "gnome-terminal",
+    "terminal_aliases": ["terminal", "console", "shell", "cmd"],
+    "go_back": ["back", "up", "..", "previous", "return", "voltar", "trás"]
+  },
+  "microservices": {
+    "src/clVoice.py": ["voice", "microphone", "sensor", "ears", "stt"],
+    "src/clTTS.py": ["tts", "voice box", "mouth", "speaker"],
+    "src/clSpotify.py": ["spotify", "music", "audio module"],
+    "src/clControl.py": ["control", "lights", "light actuator"],
+    "src/clDaemon.py": ["daemon", "brain", "core"],
+    "src/clTerminal.py": ["terminal"]
+  }
+}

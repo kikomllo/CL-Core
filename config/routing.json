@@ -1,7 +1,0 @@
-{
-    "home/room/desk_light/set": ["on", "off", "toggle", "color"],
-    "pc/spotify/control": ["play", "pause", "next", "prev", "volume"],
-    "system/discovery": ["discover", "save_discovery"],
-    "pc/system/control": ["open", "close", "shutdown", "restart", "volume", "search", "open_site"],
-    "jarvis/sys/mic_control": ["attention_on", "attention_off"]
-}

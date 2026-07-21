@@ -8,11 +8,14 @@ import asyncio
 import json
 import jellyfish
 import threading
+import time
 from typing import Tuple, Optional, Dict, Any, List
-from dotenv import load_dotenv
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 import aiomqtt
+
+# NEW: Import your centralized env loader
+from utils.clEnvLoader import EnvLoader
 
 # --- LOGGING SETUP ---
 logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [SPOTIFY] %(message)s", datefmt="%H:%M:%S")
@@ -25,12 +28,11 @@ class SpotifyManager:
     
     def __init__(self, debug_math: bool = True):
         self.base_dir: str = os.path.dirname(os.path.abspath(__file__))
-        self.env_path: str = os.path.abspath(os.path.join(self.base_dir, "..", ".env"))
-        load_dotenv(self.env_path)
+        self.env = EnvLoader()
 
-        self.client_id: str = os.getenv("SPOTIPY_CLIENT_ID", "")
-        self.client_secret: str = os.getenv("SPOTIPY_CLIENT_SECRET", "")
-        self.redirect_uri: str = os.getenv("SPOTIPY_REDIRECT_URI", "")
+        self.client_id: str = self.env.get("SPOTIPY_CLIENT_ID", "")
+        self.client_secret: str = self.env.get("SPOTIPY_CLIENT_SECRET", "")
+        self.redirect_uri: str = self.env.get("SPOTIPY_REDIRECT_URI", "")
         
         if not all([self.client_id, self.client_secret, self.redirect_uri]):
             logging.critical("Spotify credentials missing in .env file!")
@@ -44,40 +46,120 @@ class SpotifyManager:
             scope=self.scope
         ))
 
-        # Isolated State Memory
         self.search_cache: Dict[int, str] = {}
         self.cache_lock = threading.Lock()
         self.pre_duck_volume: Optional[int] = None
         
-        # Configuration
         self.confidence_threshold: float = 0.60
         self.perfect_match_threshold: float = 0.85
         self.debug_math: bool = debug_math
 
+    # --- DEVICE WAKEUP ENGINE ---
+    def _wake_up_spotify(self) -> None:
+        """Simulate a media 'play' command on the host computer to wake up Spotify."""
+        logging.info("No active device found. Attempting to wake up local client...")
+        try:
+            if sys.platform.startswith('linux'):
+                # Native Linux headless D-Bus command for Spotify (MPRIS)
+                import subprocess
+                subprocess.run([
+                    "dbus-send", "--print-reply", "--dest=org.mpris.MediaPlayer2.spotify", 
+                    "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player.PlayPause"
+                ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                # Windows / Mac fallback
+                import pyautogui
+                pyautogui.press('playpause')
+                
+            time.sleep(2)  # Wait for the OS and Spotify app to connect to the Spotify network
+        except ImportError:
+            logging.error("Failed to wake up Spotify: pyautogui is not installed on Windows/Mac.")
+        except Exception as e:
+            logging.error(f"Failed to wake up Spotify: {e}")
+
+    def _get_active_device(self) -> Optional[str]:
+        """Retrieve the active device ID."""
+        try:
+            devices = self.sp.devices()
+            for device in devices.get('devices', []):
+                if device.get('is_active'):
+                    return device.get('id')
+            return None
+        except Exception as e:
+            logging.error(f"Failed to get Spotify devices: {e}")
+            return None
+
+    def _ensure_active_device(self) -> Optional[str]:
+        """Ensure we have an active device before executing a command."""
+        device = self._get_active_device()
+        if not device:
+            self._wake_up_spotify()
+            device = self._get_active_device()
+        return device
+
     # --- STATUS ENGINE ---
-    def get_status(self) -> None:
-        """Reads the API and prints the currently playing track."""
+    def status(self) -> Dict[str, Any]:
+        """
+        Retrieve comprehensive status of the current playback, 
+        including volume, current track, playlist context, and next in queue.
+        """
+        if not self._get_active_device():
+             return {"status": "error", "message": "No active Spotify session found."}
+             
         try:
             playback = self.sp.current_playback()
-            if not playback or not playback.get('is_playing'):
-                print("\n--- Spotify Status ---\nStatus:\t\tPaused / Inactive\n" + "-" * 22 + "\n")
-                return
-
-            item = playback.get('item', {})
-            track_name = item.get('name', 'Unknown')
-            artists = ", ".join([artist['name'] for artist in item.get('artists', [])])
-            device_name = playback.get('device', {}).get('name', 'Unknown')
-            volume = playback.get('device', {}).get('volume_percent', 'N/A')
+            if not playback or not playback.get('item'):
+                return {"status": "idle", "message": "Nothing is currently playing."}
+                
+            track_name = playback['item'].get('name', 'Unknown Track')
+            artists = ", ".join([artist['name'] for artist in playback['item'].get('artists', [])])
+            volume = playback.get('device', {}).get('volume_percent', 'Unknown')
+            is_playing = playback.get('is_playing', False)
             
-            print("\n--- Spotify Status ---")
-            print(f"Status:\t\tPlaying")
-            print(f"Track:\t\t{track_name}")
-            print(f"Artist(s):\t{artists}")
-            print(f"Device:\t\t{device_name}")
-            print(f"Volume:\t\t{volume}%")
-            print("-" * 22 + "\n")
+            context_name = "None"
+            context = playback.get('context')
+            if context and context.get('type') == 'playlist':
+                playlist_id = context['uri'].split(":")[-1]
+                playlist_data = self.sp.playlist(playlist_id, fields="name")
+                context_name = playlist_data.get('name', 'Unknown Playlist')
+            elif context and context.get('type') == 'album':
+                context_name = playback['item'].get('album', {}).get('name', 'Unknown Album')
+
+            next_in_queue = "None"
+            queue_data = self.sp.queue()
+            if queue_data and queue_data.get('queue') and len(queue_data['queue']) > 0:
+                next_track = queue_data['queue'][0]
+                next_in_queue = next_track.get('name', 'Unknown Track')
+
+            return {
+                "status": "success",
+                "is_playing": is_playing,
+                "volume": volume,
+                "track": track_name,
+                "artist": artists,
+                "context": context_name,
+                "next_in_queue": next_in_queue
+            }
+
+        except spotipy.SpotifyException as e:
+            return {"status": "error", "message": f"API Error: {str(e)}"}
         except Exception as e:
-            logging.error(f"Error getting Spotify status: {e}")
+             return {"status": "error", "message": f"Parsing Error: {str(e)}"}
+
+    def get_status(self) -> None:
+        """Reads the API and prints the currently playing track and queue information."""
+        status_data = self.status()
+        print("\n--- Spotify Status ---")
+        if status_data.get("status") == "success":
+            print(f"Status:\t\t{'Playing' if status_data.get('is_playing') else 'Paused'}")
+            print(f"Track:\t\t{status_data.get('track')}")
+            print(f"Artist(s):\t{status_data.get('artist')}")
+            print(f"Context:\t{status_data.get('context')}")
+            print(f"Volume:\t\t{status_data.get('volume')}%")
+            print(f"Next in Queue:\t{status_data.get('next_in_queue')}")
+        else:
+            print(f"Status:\t\t{status_data.get('message', 'Inactive')}")
+        print("-" * 22 + "\n")
 
     # --- MATHEMATICS & LOGIC ENGINES ---
     def _calculate_confidence(self, track_query: str, artist_query: str, actual_name: str, actual_artist: str, popularity: int) -> float:
@@ -126,6 +208,9 @@ class SpotifyManager:
 
     # --- PLAYBACK ROUTERS ---
     def _play_playlist(self, playlist_name: str) -> Tuple[bool, str]:
+        device = self._ensure_active_device()
+        if not device: return False, "Spotify is not active on any device."
+
         compressed_query = re.sub(r'\W+', '', playlist_name).lower()
         query_tokens = [re.sub(r'\W+', '', t) for t in playlist_name.lower().replace('-', ' ').split() if t]
         
@@ -151,18 +236,21 @@ class SpotifyManager:
                     target_uri, target_actual_name = item['uri'], item['name']
                     
         if target_uri:
-            self.sp.start_playback(context_uri=target_uri)
+            self.sp.start_playback(device_id=device, context_uri=target_uri)
             return True, f"Playing your personal playlist: {target_actual_name}"
         
         # 3: Global Fallback
         results = self.sp.search(q=playlist_name, type='playlist', limit=1)
         if results['playlists']['items']:
-            self.sp.start_playback(context_uri=results['playlists']['items'][0]['uri'])
+            self.sp.start_playback(device_id=device, context_uri=results['playlists']['items'][0]['uri'])
             return True, f"Playing global playlist: {playlist_name}"
             
         return False, f"Playlist '{playlist_name}' not found anywhere."
 
     def _play_track_fuzzy(self, track_name: Optional[str] = None, artist_name: Optional[str] = None, search_query: Optional[str] = None) -> Tuple[bool, str]:
+        device = self._ensure_active_device()
+        if not device: return False, "Spotify is not active on any device."
+
         self.search_cache.clear()
         
         queries_to_try = []
@@ -204,7 +292,7 @@ class SpotifyManager:
         logging.info(f"-> Math Engine Selected: '{top_actual_name} by {top_actual_artist}' | Score: {best_confidence:.0%}")
         
         if best_confidence >= self.confidence_threshold:
-            self.sp.start_playback(uris=[top_item_uri])
+            self.sp.start_playback(device_id=device, uris=[top_item_uri])
             return True, f"Playing: {top_actual_name} by {top_actual_artist}"
         
         # Low confidence fallback cache
@@ -216,18 +304,26 @@ class SpotifyManager:
                 msg += f"\n[{choice_num}] {item['name']} by {item['artists'][0]['name']}"
             
         return True, msg
+
     def _play_artist_fuzzy(self, artist_name: str) -> Tuple[bool, str]:
+        device = self._ensure_active_device()
+        if not device: return False, "Spotify is not active on any device."
+
         logging.info(f"Fuzzy searching Spotify for artist: '{artist_name}'")
         results = self.sp.search(q=artist_name, type='artist', limit=1)
         
         if results['artists']['items']:
             item = results['artists']['items'][0]
-            self.sp.start_playback(context_uri=item['uri'])
+            self.sp.start_playback(device_id=device, context_uri=item['uri'])
             return True, f"Playing artist radio: {item['name']}"
             
         return False, f"Artist '{artist_name}' not found."
 
     def _handle_ducking(self, action: str) -> Tuple[bool, str]:
+        # We purposely use _get_active_device for ducking because we don't want to wake Spotify just to lower the volume
+        device = self._get_active_device()
+        if not device: return False, "Nothing is playing."
+
         if action == "duck":
             if self.pre_duck_volume is not None:
                 return True, "Volume is already ducked."
@@ -236,13 +332,13 @@ class SpotifyManager:
             if playback and playback.get('is_playing') and playback.get('device'):
                 self.pre_duck_volume = playback['device']['volume_percent']
                 new_vol = max(0, self.pre_duck_volume - 20)
-                self.sp.volume(new_vol)
+                self.sp.volume(new_vol, device_id=device)
                 return True, f"Listening... Volume dipped to {new_vol}%."
             return False, "Nothing is playing, no need to duck."
 
         elif action == "unduck":
             if self.pre_duck_volume is not None:
-                self.sp.volume(self.pre_duck_volume)
+                self.sp.volume(self.pre_duck_volume, device_id=device)
                 restored = self.pre_duck_volume
                 self.pre_duck_volume = None
                 return True, f"Done listening. Restored volume to {restored}%."
@@ -253,46 +349,82 @@ class SpotifyManager:
     # --- MAIN EXECUTION ENGINE ---
     def execute_command(self, action: str, volume: Optional[int] = None, track_name: Optional[str] = None, 
                         artist_name: Optional[str] = None, playlist_name: Optional[str] = None, 
-                        search_query: Optional[str] = None, choice_index: Optional[int] = None) -> Tuple[bool, str]:
+                        search_query: Optional[str] = None, choice_index: Optional[int] = None) -> Tuple[bool, Any]:
         """Clean router that delegates actions to the appropriate class helper methods."""
         try:
             if action in ["duck", "unduck"]:
                 return self._handle_ducking(action)
             
+            if action and action.startswith("status"):
+                s = self.status()
+                s["query_action"] = action
+                if s.get("status") == "idle":
+                    return False, s
+                return (s.get("status") == "success"), s
+
             if action == "play_choice" and choice_index is not None:
+                device = self._ensure_active_device()
+                if not device: return False, "Spotify is not active on any device."
+
                 with self.cache_lock:
                     uri = self.search_cache.get(choice_index)
                     if uri:
                         self.search_cache.clear()
                         
                 if uri:
-                    self.sp.start_playback(uris=[uri])
+                    self.sp.start_playback(device_id=device, uris=[uri])
                     return True, f"Playing option {choice_index}."
                 return False, f"Option {choice_index} is invalid or expired."
                 
             if action == "play":
+                # If specific content is requested, let the helper methods handle the wake-up and API call
                 if playlist_name: return self._play_playlist(playlist_name)
                 elif track_name or search_query: return self._play_track_fuzzy(track_name, artist_name, search_query)
                 elif artist_name: return self._play_artist_fuzzy(artist_name)
                 else:
-                    self.sp.start_playback()
-                    return True, "Resuming playback."
+                    # Pure Resume Command
+                    device = self._get_active_device()
+                    if not device:
+                        logging.info("API indicates no active device. Triggering hardware wakeup...")
+                        self._wake_up_spotify()
+                        
+                        # Check if the hardware key press successfully resumed playback
+                        status_data = self.status()
+                        if status_data.get("status") == "success" and status_data.get("is_playing"):
+                            return True, "Resumed playback via host hardware controls."
+                            
+                        # If we have a device registered now but it didn't auto-start
+                        device = self._get_active_device()
+                        if not device: 
+                            return False, "Spotify is not active on any device. Open it manually."
+                            
+                    # If the device was already awake, or if it woke up but didn't start playing
+                    self.sp.start_playback(device_id=device)
+                    return True, "Resuming playback via API."
                 
             if action == "pause":
-                self.sp.pause_playback()
+                device = self._get_active_device()
+                if not device: return False, "Spotify is not active."
+                self.sp.pause_playback(device_id=device)
                 return True, "Music paused."
                 
             if action == "next":
-                self.sp.next_track()
+                device = self._ensure_active_device()
+                if not device: return False, "Spotify is not active."
+                self.sp.next_track(device_id=device)
                 return True, "Skipped to next track."
                 
             if action == "prev":
-                self.sp.previous_track()
+                device = self._ensure_active_device()
+                if not device: return False, "Spotify is not active."
+                self.sp.previous_track(device_id=device)
                 return True, "Returned to previous track."
                 
             if action == "volume" and volume is not None:
+                device = self._ensure_active_device()
+                if not device: return False, "Spotify is not active."
                 clean_vol = max(0, min(100, volume))
-                self.sp.volume(clean_vol)
+                self.sp.volume(clean_vol, device_id=device)
                 return True, f"Volume changed to {clean_vol}%."
             
             return False, f"Action '{action}' is not recognized."
@@ -307,7 +439,6 @@ class SpotifyManager:
             return False, f"Spotify API Error: {e}"
         except Exception as e:
             return False, f"Internal Error: {str(e)}"
-
 
 # --- MQTT SERVICE LISTENER ---
 async def mqtt_service_listener(manager: SpotifyManager) -> None:
@@ -348,7 +479,6 @@ async def mqtt_service_listener(manager: SpotifyManager) -> None:
         except asyncio.CancelledError:
             logging.info("Spotify service shutting down.")
             break
-
 
 # --- MAIN ---
 def main():
