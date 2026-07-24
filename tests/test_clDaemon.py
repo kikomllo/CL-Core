@@ -1,11 +1,15 @@
 import pytest
 import os
 import sys
+import json
+import asyncio
+import time
+from unittest.mock import AsyncMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 from clDaemon import CentralDaemon
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def daemon():
     return CentralDaemon()
 
@@ -61,28 +65,98 @@ class TestDaemonCoreLogic:
             assert payload[variable_key] == variable_value, f"Value mismatch for '{variable_key}'"
 
 class TestDaemonStateTraps:
-    """Tests context-aware locks that override standard NLP routing."""
+    """Tests context-aware locks that override standard NLP routing using the new Unified State Machine."""
 
     def test_global_abort_trap(self, daemon):
         intents = daemon.route_voice_command("abort sequence")
         assert len(intents) == 1
         assert intents[0][0]["action"] == "abort"
         assert intents[0][1] == "jarvis/sys/control"
+        assert daemon.active_context["type"] is None
 
     def test_spotify_choice_trap(self, daemon):
-        daemon.awaiting_spotify_choice = True
+        daemon.active_context = {"type": "spotify_choice", "expires_at": time.time() + 20.0}
         intents = daemon.route_voice_command("3")
         
         assert len(intents) == 1
         assert intents[0][1] == "pc/spotify/control"
         assert intents[0][0] == {"action": "play_choice", "choice_index": 3}
-        assert daemon.awaiting_spotify_choice is False
+        assert daemon.active_context["type"] is None
 
     def test_discovery_choice_trap(self, daemon):
-        daemon.awaiting_discovery_choice = True
+        daemon.active_context = {"type": "discovery_choice", "expires_at": time.time() + 20.0}
         intents = daemon.route_voice_command("1")
         
         assert len(intents) == 1
         assert intents[0][1] == "system/discovery"
         assert intents[0][0] == {"action": "save_discovery", "index": 1}
-        assert daemon.awaiting_discovery_choice is False
+        assert daemon.active_context["type"] is None
+
+
+class TestDaemonMQTTIntegration:
+    """Tests the decoupled boundaries using pytest-mock async streams."""
+    
+    @pytest.mark.asyncio
+    async def test_intent_shadowing_and_merging(self, daemon, mock_mqtt, message_stream):
+        """Tests that multiple conflicting instructions merge into a single payload."""
+        
+        voice_payload = "set the desk light to 50 percent and actually make it red"
+        
+        mock_mqtt.messages = message_stream([
+            ("jarvis/sensor/voice", voice_payload)
+        ])
+        
+        await daemon.run()
+        
+        publish_calls = mock_mqtt.publish.call_args_list
+        light_calls = [call for call in publish_calls if call[0][0] == "home/room/desk_light/set"]
+        
+        assert len(light_calls) == 1, "Daemon failed to shadow/merge intents; published multiple times."
+        
+        sent_payload = json.loads(light_calls[0][0][1])
+        assert sent_payload["action"] == "on"
+        assert sent_payload["lum"] == 50
+        assert sent_payload["color"] == "red"
+
+    @pytest.mark.asyncio
+    async def test_network_drop_recovery(self, daemon, mock_mqtt, mocker):
+        """Tests that an aiomqtt.MqttError triggers a 5-second sleep and keeps the service alive."""
+        import aiomqtt
+        
+        # 1. Simulate a network drop immediately when listening for messages
+        async def failing_stream():
+            raise aiomqtt.MqttError("Broker connection lost mid-stream")
+            yield
+            
+        mock_mqtt.messages = failing_stream()
+        
+        # 2. Patch sleep so we don't actually wait 5 seconds, and use it to break the infinite loop
+        mock_sleep = mocker.patch("asyncio.sleep", new_callable=AsyncMock)
+        mock_sleep.side_effect = asyncio.CancelledError() 
+        
+        # 3. Act & Assert
+        with pytest.raises(asyncio.CancelledError):
+            await daemon.run()
+            
+        mock_sleep.assert_awaited_once_with(5)
+
+    @pytest.mark.asyncio
+    async def test_state_ttl_expiration(self, daemon, mock_mqtt, message_stream, mocker):
+        """Tests that the unified state machine drops active context after the TTL expires."""
+        future_time = time.time() + 25.0
+        mocker.patch("time.time", return_value=future_time)
+        
+        # Simulate a context that was set 25 seconds ago (so it should be expired now)
+        daemon.active_context = {"type": "spotify_choice", "expires_at": future_time - 5.0}
+        
+        mock_mqtt.messages = message_stream([
+            ("jarvis/sensor/voice", "1")
+        ])
+        
+        await daemon.run()
+        
+        assert daemon.active_context["type"] is None
+        
+        publish_calls = mock_mqtt.publish.call_args_list
+        spotify_calls = [c for c in publish_calls if c[0][0] == "pc/spotify/control"]
+        assert len(spotify_calls) == 0, "Daemon executed expired state logic."

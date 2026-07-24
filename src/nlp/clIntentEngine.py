@@ -78,7 +78,12 @@ class IntentEngine:
                 else: 
                     expanded_template_words.add(w + 's')
                 
-            stop_words = {"please", "it", "a", "some", "my", "the", "can", "you", "could", "to", "for", "track", "song"}
+            # Enhanced stop_words with conversational fillers
+            stop_words = {
+                "please", "it", "a", "some", "my", "the", "can", "you", 
+                "could", "to", "for", "track", "song", "actually", 
+                "just", "kindly", "literally", "now", "hey"
+            }
             words_to_remove = expanded_template_words.union(stop_words)
             
             def should_strip(word: str) -> bool:
