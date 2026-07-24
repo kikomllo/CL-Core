@@ -13,7 +13,7 @@ def create_ai_bundle(specific_files=None):
         target_files = ["clJarvis.py"] + glob.glob("src/*.py") + glob.glob("src/utils/*.py") + glob.glob("src/nlp/*.py")
         
     with open(output_file, "w", encoding="utf-8") as outfile:
-        outfile.write("# JARVIS SMART HOME OS - CODEBASE BUNDLE\n\n")
+        outfile.write("# JARVIS SMART HOME OS - FILE BUNDLE\n\n")
         
         for filepath in target_files:
             if os.path.exists(filepath):

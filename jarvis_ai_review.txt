@@ -1,4 +1,4 @@
-# JARVIS SMART HOME OS - CODEBASE BUNDLE
+# JARVIS SMART HOME OS - FILE BUNDLE
 
 ## File: `clJarvis.py`
 ```python
@@ -2244,6 +2244,7 @@ import asyncio
 import os
 import json
 import logging
+import time
 import aiomqtt
 from typing import Dict, List, Tuple, Any
 
@@ -2270,28 +2271,54 @@ class CentralDaemon:
         word_to_number = nlp_rules.get("word_to_number", {})
         abort_keywords = nlp_rules.get("abort_keywords", ["abort", "cancel", "nevermind"])
         
-        self.awaiting_discovery_choice = False
-        self.awaiting_spotify_choice = False
+        # --- UNIFIED STATE MACHINE ---
+        # Replaces isolated boolean flags with a scalable, time-aware context tracker
+        self.active_context = {
+            "type": None, 
+            "expires_at": 0.0
+        }
         
         self.nlp = IntentEngine(intents_data, word_to_number, abort_keywords)
+
+    def _optimize_intent_queue(self, intents: List[Tuple[Dict[str, Any], str]]) -> List[Tuple[Dict[str, Any], str]]:
+        """
+        INTENT SHADOWING: Resolves temporal conflicts (self-corrections) 
+        by accumulating unique attributes and overwriting conflicting ones.
+        """
+        optimized_map = {}
+        for command, target_topic in intents:
+            if target_topic in optimized_map:
+                optimized_map[target_topic].update(command)
+            else:
+                optimized_map[target_topic] = command.copy()
+            
+        return [(cmd, topic) for topic, cmd in optimized_map.items()]
 
     def route_voice_command(self, payload_data: str) -> List[Tuple[Dict[str, Any], str]]:
         clean_text = self.nlp.normalize_text(payload_data)
 
+        # 1. Global Abort Check
         if self.nlp.is_abort_command(clean_text):
-            self.awaiting_spotify_choice = False
-            self.awaiting_discovery_choice = False
+            self.active_context["type"] = None  # Purge active state
             return [({"action": "abort"}, "jarvis/sys/control")]
 
-        if self.awaiting_spotify_choice and clean_text.isdigit():
-            self.awaiting_spotify_choice = False
+        # 2. State Timeout Check
+        if self.active_context["type"] and time.time() > self.active_context["expires_at"]:
+            logging.info(f"[STATE] Active context '{self.active_context['type']}' expired.")
+            self.active_context["type"] = None
+
+        # 3. Contextual Routing
+        if self.active_context["type"] == "spotify_choice" and clean_text.isdigit():
+            self.active_context["type"] = None
             return [({"action": "play_choice", "choice_index": int(clean_text)}, "pc/spotify/control")]
 
-        if self.awaiting_discovery_choice and clean_text.isdigit():
-            self.awaiting_discovery_choice = False
+        if self.active_context["type"] == "discovery_choice" and clean_text.isdigit():
+            self.active_context["type"] = None
             return [({"action": "save_discovery", "index": int(clean_text)}, "system/discovery")]
 
-        return self.nlp.parse(clean_text)
+        # 4. Standard NLP Parsing & Shadowing Execution
+        raw_intents = self.nlp.parse(clean_text)
+        return self._optimize_intent_queue(raw_intents)
 
     async def run(self) -> None:
         logging.info("Central Daemon Online. Connecting to MQTT broker...")
@@ -2331,7 +2358,7 @@ class CentralDaemon:
                                                 "command": command
                                             }))
                                         
-                                        if self.awaiting_discovery_choice or self.awaiting_spotify_choice:
+                                        if self.active_context["type"] is not None:
                                             final_mic_state = "request_reply"
                                             
                                 if final_mic_state:
@@ -2362,12 +2389,12 @@ class CentralDaemon:
                                     }))
                                 
                                 elif isinstance(msg, str) and "CONFIDENCE_LOW|" in msg:
-                                    self.awaiting_spotify_choice = True
+                                    self.active_context = {"type": "spotify_choice", "expires_at": time.time() + 20.0}
                                     await client.publish("jarvis/sys/speak", json.dumps({"text": "Please select an option from the terminal.", "request_reply": True}))
                                     await client.publish("jarvis/sys/mic_control", json.dumps({"action": "request_reply"}))
 
                                 elif device == 'smart_lights' and fb.get('action') == 'awaiting_selection':
-                                    self.awaiting_discovery_choice = True
+                                    self.active_context = {"type": "discovery_choice", "expires_at": time.time() + 30.0}
                                     devices = fb.get('devices', [])
                                     
                                     print("\n" + "=" * 60)

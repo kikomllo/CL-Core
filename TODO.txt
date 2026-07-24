@@ -1,9 +1,3 @@
-Let's build the JSON Schema Validation for intents.json to make the system fail-fast on boot. Start by explaining the theory of schema validation in Python, outline the roadmap to integrate it directly into the daemon's startup sequence, and provide a robust, future-proof method that will scale as our configuration file grows in complexity.
-
-Let's implement the Intent Shadowing and Negation handling for clDaemon.py. Before we write the code, please explain the theory behind how we will intercept these edge cases and give me a roadmap for the implementation. Ensure the solution is future-proof so we can easily add new state constraints or rules down the line.
-
-I am ready to write the MQTT integration tests using `pytest-mock`. Walk me through the theory of mocking network calls in a decoupled architecture, provide a roadmap of the specific edge cases we need to test (like network drops), and give me a future-proof test setup that can expand as we add more microservices.
-
 Phase 5: Docker Containerization
 I want to package the JARVIS ecosystem into isolated containers to ensure the infrastructure is hardware-agnostic and resilient. Explain the theory of migrating away from our Python subprocess supervisor to a Docker Compose architecture, and provide the deployment roadmap. Following that, generate the necessary `Dockerfile` configurations, the `docker-compose.yml`, and the refactored `clJarvis.py` script.
 
