@@ -59,7 +59,7 @@ class VoiceSensor:
     INITIAL_SILENCE_SECONDS: float = 3.0
     SILENCE_LIMIT_SECONDS: float = 1
 
-    MIN_BASELINE: int = 2000              
+    MIN_BASELINE: int = 700              
     VOICE_ACT_BUFFER: float = 1.40  
     SILENCE_CUT_BUFFER: float = 1.15    
     MAX_CEILING_BUFFER: float = 3.00        
@@ -352,18 +352,21 @@ class VoiceSensor:
             elif self.awaiting_reply: status_tag = "REPLY"
             elif time.time() < self.active_window_end: status_tag = "ACTIVE_WIN"
             
+            b_noise, a_thresh, s_thresh = self._calculate_thresholds()
+
             # Publish volume data to MQTT so the host supervisor can display it
             # (docker logs doesn't support carriage-return overwriting)
             self._publish("jarvis/sys/volume", {
                 "rms": int(current_rms),
                 "bar": meter,
-                "status": status_tag
+                "status": status_tag,
+                "b_noise": int(b_noise),
+                "a_thresh": int(a_thresh),
+                "s_thresh": int(s_thresh)
             })
             
             is_active_window = time.time() < self.active_window_end
             bypass_wakeword = self.attention_mode or self.awaiting_reply or is_active_window
-            
-            b_noise, a_thresh, s_thresh = self._calculate_thresholds()
             
             voice_triggered = (self.attention_mode and (current_rms > a_thresh)) or self.awaiting_reply or is_active_window
             wakeword_triggered = False

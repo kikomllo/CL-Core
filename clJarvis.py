@@ -74,7 +74,13 @@ def on_message(client, userdata, msg):
             rms = vol.get("rms", 0)
             bar = vol.get("bar", "-" * 40)
             status = vol.get("status", "STANDARD")
-            print(f"\r\033[K[{status}] Vol: {rms:5d} ||{bar}||", end='', flush=True)
+            b_noise = vol.get("b_noise")
+            if b_noise is not None:
+                a_thresh = vol.get("a_thresh", 0)
+                s_thresh = vol.get("s_thresh", 0)
+                print(f"\r\033[K[{status}] Vol: {rms:5d} ||{bar}|| ACT: {a_thresh} SIL: {s_thresh} AVG: {b_noise}", end='', flush=True)
+            else:
+                print(f"\r\033[K[{status}] Vol: {rms:5d} ||{bar}||", end='', flush=True)
         except Exception:
             pass
         return

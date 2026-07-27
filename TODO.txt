@@ -1,8 +1,0 @@
-Phase 5: Docker Containerization
-I want to package the JARVIS ecosystem into isolated containers to ensure the infrastructure is hardware-agnostic and resilient. Explain the theory of migrating away from our Python subprocess supervisor to a Docker Compose architecture, and provide the deployment roadmap. Following that, generate the necessary `Dockerfile` configurations, the `docker-compose.yml`, and the refactored `clJarvis.py` script.
-
-Phase 5: Centralized State Management
-Let's make the microservices completely ephemeral by decoupling their state memory. Please explain the theoretical architecture of utilizing Redis as an in-memory datastore alongside Mosquitto's retained messages, and outline the roadmap for this transition. Then, provide the exact code changes needed for `clSpotify.py` (search cache), `clControl.py` (discovery variables), and `clDaemon.py` (conversational state) to support this highly available architecture.
-
-Phase 5: NLP Evolution
-Let's transition `clDaemon.py` from Regex to a modern Intent Engine to future-proof the Natural Language Understanding. Please explain the theoretical architecture of integrating a local Small Language Model (via Ollama) or a lightweight NLU (like Rhasspy) for intent extraction, and provide a step-by-step roadmap. Once the theory is laid out, provide the updated code required for the Central Brain.

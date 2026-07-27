@@ -558,7 +558,7 @@ class JarvisVisualizer(QWidget):
             self.target_opacity = 1.0
             self.target_amplitude = 25
             self.frequency = 0.08
-            self.speed = 0.4
+            self.speed = 0.15
             self.target_scale = 0.5
 
     def set_options(self, options):
@@ -974,7 +974,7 @@ class JarvisUI(QWidget):
                     w.title_bar.hide()
                 w.adjustSize()
                 cx = (self.width() - w.width()) // 2
-                cy = (self.height() - w.height()) // 2
+                cy = (self.height() // 2) - w.height() - 120
                 w.move(cx, cy)
 
     def spawn_widget(self, widget_id, title, content_widget):
@@ -1003,6 +1003,10 @@ class JarvisUI(QWidget):
             if widget_id.startswith("list_"):
                 if hasattr(wrapper, "title_bar"):
                     wrapper.title_bar.hide()
+                wrapper.adjustSize()
+                new_cx = (self.width() - wrapper.width()) // 2
+                new_cy = (self.height() // 2) - wrapper.height() - 120
+                wrapper.move(new_cx, new_cy)
                 wrapper.show()
                 wrapper.raise_()
             else:
