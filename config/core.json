@@ -4,7 +4,7 @@
         "hardware": "cpu",
         "stt_model": "small",
         "debug_mqtt": true,
-        "enable_followup": true
+        "enable_followup": false
     },
     "vad_settings": {
         "energy_threshold_normal": 300,
@@ -21,10 +21,15 @@
             "ponto com": ".com"
         },
         "abort_keywords": [
-            "cancel",
             "nevermind",
-            "forget it",
-            "abort"
+            "no thanks",
+            "nah",
+            "nothing",
+            "nope",
+            "abort",
+            "cancel",
+            "no",
+            "forget it"
         ],
         "word_to_number": {
             "max": "100",
