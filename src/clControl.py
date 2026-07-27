@@ -595,19 +595,25 @@ async def mqtt_service_listener(manager: LightManager) -> None:
                             continue
                         # --- ISOLATED HARDWARE TASK ---
                         async def execute_hardware(payload_data, action_cmd):
+                            is_silent = payload_data.get("silent", False)
+                            light_target = payload_data.get("light_target", "all")
                             try:
                                 await manager.control_bulb(
                                     on=(action_cmd == "on"), off=(action_cmd == "off"), toggle=(action_cmd == "toggle"),
                                     color=payload_data.get("color"), lum=payload_data.get("lum"), temp=payload_data.get("temp"),
-                                    target_name=payload_data.get("light_target", "all")
+                                    target_name=light_target
                                 )
                                 await mqtt_client.publish("jarvis/feedback", json.dumps({
-                                    "device": "smart_lights", "status": "success", "message": f"Successfully shifted hardware targets to '{action_cmd}' state."
+                                    "device": "smart_lights", "status": "success",
+                                    "message": f"Successfully shifted hardware targets to '{action_cmd}' state.",
+                                    "action_cmd": action_cmd,
+                                    "target": light_target,
+                                    "silent": is_silent
                                 }))
                                 manager.poll_trigger.set()
                             except Exception as e:
                                 await mqtt_client.publish("jarvis/feedback", json.dumps({
-                                    "device": "smart_lights", "status": "error", "message": str(e)
+                                    "device": "smart_lights", "status": "error", "message": str(e), "silent": is_silent
                                 }))
 
                         asyncio.create_task(execute_hardware(payload, action))

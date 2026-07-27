@@ -57,11 +57,11 @@ class VoiceSensor:
     CHUNK: int = 1280
     MAX_RECORD_SECONDS: int = 10
     INITIAL_SILENCE_SECONDS: float = 3.0
-    SILENCE_LIMIT_SECONDS: float = 1
+    SILENCE_LIMIT_SECONDS: float = 0.8
 
     MIN_BASELINE: int = 700              
     VOICE_ACT_BUFFER: float = 1.40  
-    SILENCE_CUT_BUFFER: float = 1.15    
+    SILENCE_CUT_BUFFER: float = 1.25    
     MAX_CEILING_BUFFER: float = 3.00        
 
     def __init__(self, target_word: str = "hey_jarvis"):

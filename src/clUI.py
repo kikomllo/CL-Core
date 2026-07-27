@@ -174,6 +174,10 @@ class MqttThread(QThread):
                 self.mic_active = "IDLE"
             elif state == "idle":
                 self.processing_active = False
+                # Reset mic_active too — prevents stuck-in-LISTENING when a
+                # request_reply was pending but the audio pipeline has finished
+                if self.mic_active == "LISTENING" and not self.attention_active:
+                    self.mic_active = "IDLE"
         else:
             self.processing_active = True
             self.mic_active = "IDLE"
@@ -307,17 +311,17 @@ class MediaWidget(QWidget):
         self.prev_btn = QPushButton("⏮")
         self.prev_btn.setFixedSize(30, 30)
         self.prev_btn.setStyleSheet(btn_style)
-        self.prev_btn.clicked.connect(lambda: self.send_cmd("media_prev"))
+        self.prev_btn.clicked.connect(lambda: self.send_cmd("prev", silent=True))
         
         self.play_btn = QPushButton("⏯")
         self.play_btn.setFixedSize(30, 30)
         self.play_btn.setStyleSheet(btn_style)
-        self.play_btn.clicked.connect(lambda: self.send_cmd("media_play")) # Acts as toggle in playerctl usually
+        self.play_btn.clicked.connect(lambda: self.send_cmd("toggle", silent=True))
         
         self.next_btn = QPushButton("⏭")
         self.next_btn.setFixedSize(30, 30)
         self.next_btn.setStyleSheet(btn_style)
-        self.next_btn.clicked.connect(lambda: self.send_cmd("media_next"))
+        self.next_btn.clicked.connect(lambda: self.send_cmd("next", silent=True))
         
         controls_layout.addStretch()
         controls_layout.addWidget(self.prev_btn)
@@ -349,10 +353,11 @@ class MediaWidget(QWidget):
             return f"{m}:{s:02d}"
         self.time_lbl.setText(f"{fmt_time(self.position)} / {fmt_time(self.duration)}")
         
-    def send_cmd(self, action):
+    def send_cmd(self, action, silent=False):
+        import json
         import paho.mqtt.publish as publish
         try:
-            publish.single("pc/system/control", json.dumps({"action": action}), hostname="localhost", qos=0)
+            publish.single("pc/spotify/control", json.dumps({"action": action, "silent": silent}), hostname="localhost", qos=0)
         except Exception as e:
             print(f"Failed to publish media control: {e}")
 
@@ -375,7 +380,7 @@ class LightControlWidget(QWidget):
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(15, 15, 15, 15)
         self.layout.setSpacing(8)
-        self.setMinimumWidth(320)
+        self.setMinimumWidth(340)
         
         # Title and Refresh
         top_layout = QHBoxLayout()
@@ -392,34 +397,51 @@ class LightControlWidget(QWidget):
         top_layout.addWidget(refresh_btn)
         self.layout.addLayout(top_layout)
         
-        # We will dynamically populate this with lights
+        # Lights container
         self.lights_container = QWidget()
         self.lights_layout = QVBoxLayout(self.lights_container)
         self.lights_layout.setContentsMargins(0, 0, 0, 0)
         self.lights_layout.setSpacing(5)
         
+        # Loading placeholder shown until first real data arrives
+        self._loading_lbl = QLabel("⏳ Loading lights...")
+        self._loading_lbl.setStyleSheet("color: rgba(255, 170, 0, 140); font-style: italic; font-size: 10pt;")
+        self.lights_layout.addWidget(self._loading_lbl)
+        
         self.layout.addWidget(self.lights_container)
         
-        # Add all off button
+        # All off button
         btn = QPushButton("Toggle All Off")
         btn.setStyleSheet("QPushButton { background-color: rgba(255, 50, 0, 40); color: #ffaa00; border-radius: 5px; padding: 5px; border: 1px solid rgba(255,100,0,80); } QPushButton:hover { background-color: rgba(255, 50, 0, 80); }")
-        btn.clicked.connect(lambda: self.send_cmd("off", "all"))
+        btn.clicked.connect(lambda: self.send_cmd("off", "all", silent=True))
         self.layout.addWidget(btn)
         
         self.light_rows = {}
 
-    def send_cmd(self, action, target):
+    def send_cmd(self, action, target, silent=False):
         import paho.mqtt.publish as publish
         try:
-            publish.single("home/room/all/set", json.dumps({"action": action, "light_target": target}), hostname="localhost", qos=0)
+            publish.single("home/room/all/set", json.dumps({"action": action, "light_target": target, "silent": silent}), hostname="localhost", qos=0)
         except Exception as e:
             print(f"Failed to publish light control: {e}")
+
+    def _delete_light(self, target_name):
+        import paho.mqtt.publish as publish
+        try:
+            publish.single("home/room/all/set", json.dumps({"action": "intent_remove_light", "target_str": target_name}), hostname="localhost", qos=0)
+        except Exception as e:
+            print(f"Failed to publish delete: {e}")
+        # Remove from UI immediately
+        if target_name in self.light_rows:
+            row_data = self.light_rows.pop(target_name)
+            row_data["widget"].deleteLater()
+            self.lights_container.adjustSize()
+            self.adjustSize()
 
     def handle_feedback(self, data):
         if data.get("status") == "success" and data.get("action_cmd") == "toggle":
             target = data.get("target", "")
             if target in self.light_rows:
-                # Optimistically invert state
                 row_data = self.light_rows[target]
                 current_is_on = row_data["is_on"]
                 new_state = not current_is_on
@@ -428,7 +450,7 @@ class LightControlWidget(QWidget):
 
     def _update_indicator(self, indicator, is_on, is_offline):
         if is_offline:
-            color = "rgba(100, 100, 100, 255)"
+            color = "rgba(120, 120, 120, 255)"
         elif is_on:
             color = "rgba(50, 255, 50, 255)"
         else:
@@ -437,6 +459,11 @@ class LightControlWidget(QWidget):
 
     def update_status(self, data):
         lights = data.get("lights", [])
+        
+        # Remove loading placeholder once real data arrives
+        if self._loading_lbl is not None:
+            self._loading_lbl.deleteLater()
+            self._loading_lbl = None
         
         if not lights:
             if not self.light_rows:
@@ -458,23 +485,35 @@ class LightControlWidget(QWidget):
             else:
                 row = QWidget()
                 row_layout = QHBoxLayout(row)
-                row_layout.setContentsMargins(0,0,0,0)
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                row_layout.setSpacing(6)
                 
                 indicator = QLabel("●")
+                indicator.setStyleSheet("color: rgba(100, 100, 100, 255); font-size: 16pt;")
+                indicator.setFixedWidth(22)
                 self._update_indicator(indicator, is_on, is_offline)
                 
                 name_lbl = QLabel(l.get("name", "Unknown"))
                 name_lbl.setStyleSheet("color: #ffaa00; font-weight: bold; font-size: 11pt;")
                 
+                btn_style = "QPushButton { background-color: rgba(255, 150, 0, 20); color: #ffaa00; border-radius: 5px; padding: 2px 8px; font-size: 10pt; border: 1px solid rgba(255,150,0,50); } QPushButton:hover { background-color: rgba(255, 150, 0, 60); }"
+                
                 toggle_btn = QPushButton("Toggle")
                 toggle_btn.setMinimumHeight(24)
-                toggle_btn.setStyleSheet("QPushButton { background-color: rgba(255, 150, 0, 20); color: #ffaa00; border-radius: 5px; padding: 4px 10px; font-size: 10pt; border: 1px solid rgba(255,150,0,50); } QPushButton:hover { background-color: rgba(255, 150, 0, 60); }")
-                toggle_btn.clicked.connect(lambda checked, t=target_name: self.send_cmd("toggle", t))
+                toggle_btn.setStyleSheet(btn_style)
+                toggle_btn.clicked.connect(lambda checked, t=target_name: self.send_cmd("toggle", t, silent=True))
+                
+                delete_btn = QPushButton("✕")
+                delete_btn.setFixedSize(26, 24)
+                delete_btn.setToolTip("Remove light")
+                delete_btn.setStyleSheet("QPushButton { background-color: rgba(200, 50, 0, 30); color: rgba(255, 80, 60, 255); border-radius: 5px; border: 1px solid rgba(200,80,50,80); font-size: 11pt; font-weight: bold; font-family: monospace; } QPushButton:hover { background-color: rgba(200, 50, 0, 90); color: #ff4030; }")
+                delete_btn.clicked.connect(lambda checked, t=target_name: self._delete_light(t))
                 
                 row_layout.addWidget(indicator)
                 row_layout.addWidget(name_lbl)
                 row_layout.addStretch()
                 row_layout.addWidget(toggle_btn)
+                row_layout.addWidget(delete_btn)
                 
                 self.lights_layout.addWidget(row)
                 self.light_rows[target_name] = {
@@ -486,6 +525,10 @@ class LightControlWidget(QWidget):
             
         self.lights_container.adjustSize()
         self.adjustSize()
+        # Deferred resize ensures the parent wrapper picks up the new layout geometry
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, self.adjustSize)
+        QTimer.singleShot(50, self.adjustSize)
 
 class JarvisVisualizer(QWidget):
     def __init__(self, parent=None):
@@ -711,7 +754,7 @@ class JarvisUI(QWidget):
         )
         
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         
         primary_screen = QApplication.primaryScreen()
@@ -841,18 +884,15 @@ class JarvisUI(QWidget):
 
     def _handle_light_status(self, data):
         widget_id = "widget_light_controls"
-        if widget_id not in self.active_widgets:
-            light_widget = LightControlWidget()
-            # Wrap and spawn it
-            self.spawn_widget(widget_id, "Smart Lights", light_widget)
-        else:
-            if self.is_fullscreen:
-                self.active_widgets[widget_id].show()
-                self.active_widgets[widget_id].raise_()
-        # Update the widget contents
-        wrapper = self.active_widgets[widget_id]
-        if isinstance(wrapper.content_widget, LightControlWidget):
-            wrapper.content_widget.update_status(data)
+        if widget_id in self.active_widgets:
+            wrapper = self.active_widgets[widget_id]
+            if isinstance(wrapper.content_widget, LightControlWidget):
+                wrapper.content_widget.update_status(data)
+                # Immediate + deferred resize so wrapper tracks new content height
+                wrapper.adjustSize()
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(0, wrapper.adjustSize)
+                QTimer.singleShot(60, wrapper.adjustSize)
 
     def _handle_media_status(self, data):
         widget_id = "widget_media_controls"
@@ -868,6 +908,7 @@ class JarvisUI(QWidget):
         wrapper = self.active_widgets[widget_id]
         if isinstance(wrapper.content_widget, MediaWidget):
             wrapper.content_widget.update_status(data)
+            wrapper.adjustSize()
 
     def _on_app_state_changed(self, state):
         if not getattr(self, 'is_fullscreen', False) or getattr(self, 'text_input', None) is None:
@@ -1065,7 +1106,10 @@ class JarvisUI(QWidget):
             
             self.setGeometry(geom)
             
-            self.visualizer.set_state(self.state, True)
+            # Reset visualizer to IDLE before transitioning — prevents stale RECORDING state
+            # from a previous TTS+mic cycle being inherited by the fullscreen view
+            self.state = "IDLE"
+            self.visualizer.set_state("IDLE", True)
             
             self.btn_media.setGeometry(30, geom.height() - 80, 50, 50)
             self.btn_lights.setGeometry(90, geom.height() - 80, 50, 50)
@@ -1101,7 +1145,9 @@ class JarvisUI(QWidget):
             if getattr(self, 'text_input', None) is not None:
                 self.text_input.hide()
                 
-            self.visualizer.set_state(self.state, False)
+            # Reset visualizer to IDLE on overlay transition
+            self.state = "IDLE"
+            self.visualizer.set_state("IDLE", False)
             
             self.btn_media.hide()
             self.btn_lights.hide()
@@ -1125,7 +1171,7 @@ class JarvisUI(QWidget):
                 Qt.WindowType.Tool
             )
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
             
             primary_screen = QApplication.primaryScreen()

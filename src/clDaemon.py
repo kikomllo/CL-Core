@@ -86,23 +86,23 @@ class CentralDaemon:
         if self.active_context["type"] == "discovery_name":
             temp_name = self.active_context.get("temp_name", "unknown")
             self.active_context["type"] = None
-            if clean_text.lower() == "skip":
+            if clean_text.lower() == "skip" or self.nlp.is_abort_command(clean_text):
                 return []
             return [({"action": "intent_rename_light", "target_str": f"{temp_name} to {clean_text}"}, "home/room/all/set")]
 
         if self.active_context["type"] == "light_remove_target":
             self.active_context["type"] = None
-            if clean_text.lower() == "cancel": return []
+            if self.nlp.is_abort_command(clean_text): return []
             return [({"action": "intent_remove_light", "target_str": clean_text}, "home/room/all/set")]
 
         if self.active_context["type"] == "light_default_target":
             self.active_context["type"] = None
-            if clean_text.lower() == "cancel": return []
+            if self.nlp.is_abort_command(clean_text): return []
             return [({"action": "intent_set_default_light", "target_str": clean_text}, "home/room/all/set")]
 
         if self.active_context["type"] == "light_rename_target":
             self.active_context["type"] = None
-            if clean_text.lower() == "cancel": return []
+            if self.nlp.is_abort_command(clean_text): return []
             return [({"action": "intent_rename_light", "target_str": clean_text}, "home/room/all/set")]
 
         # 4. Standard NLP Parsing & Shadowing Execution
@@ -195,9 +195,10 @@ class CentralDaemon:
                                         await client.publish(target_topic, json.dumps(command))
                                         
                                         action = command.get("action", "")
+                                        is_silent = command.get("silent", False)
                                         is_spotify_status = (target_topic == "pc/spotify/control" and action.startswith("status_"))
                                         
-                                        if not is_spotify_status:
+                                        if not is_spotify_status and not is_silent:
                                             # Send a blind TTS request to the dedicated TTS service
                                             await client.publish("jarvis/sys/tts_request", json.dumps({
                                                 "target_topic": target_topic,
@@ -234,10 +235,11 @@ class CentralDaemon:
                                     else:
                                         pseudo_cmd = {"action": "status_idle"}
                                         
-                                    await client.publish("jarvis/sys/tts_request", json.dumps({
-                                        "target_topic": "pc/spotify/control", 
-                                        "command": pseudo_cmd
-                                    }))
+                                    if not fb.get('silent', False):
+                                        await client.publish("jarvis/sys/tts_request", json.dumps({
+                                            "target_topic": "pc/spotify/control", 
+                                            "command": pseudo_cmd
+                                        }))
                                 
                                 elif isinstance(msg, str) and "CONFIDENCE_LOW|" in msg:
                                     self.active_context = {"type": "spotify_choice", "expires_at": time.time() + 20.0}
@@ -296,7 +298,7 @@ class CentralDaemon:
                                     await client.publish("jarvis/sys/speak", json.dumps({"text": msg, "request_reply": True}))
 
                                 else:
-                                    if msg:
+                                    if msg and not fb.get('silent', False):
                                         await client.publish("jarvis/sys/speak", json.dumps({"text": msg}))
                                         
                             except json.JSONDecodeError:

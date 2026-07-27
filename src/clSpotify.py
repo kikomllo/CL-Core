@@ -412,6 +412,21 @@ class SpotifyManager:
                 if not device: return False, "Spotify is not active."
                 self.sp.pause_playback(device_id=device)
                 return True, "Music paused."
+            
+            if action == "toggle":
+                # Read current playback state and flip it
+                playback = self.sp.current_playback()
+                if playback and playback.get("is_playing"):
+                    device = self._get_active_device()
+                    if device:
+                        self.sp.pause_playback(device_id=device)
+                        return True, "Music paused."
+                else:
+                    device = self._ensure_active_device()
+                    if device:
+                        self.sp.start_playback(device_id=device)
+                        return True, "Resuming playback."
+                return False, "Spotify is not active."
                 
             if action == "next":
                 device = self._ensure_active_device()
@@ -492,8 +507,26 @@ async def mqtt_service_listener(manager: SpotifyManager) -> None:
                         await mqtt_client.publish("jarvis/feedback", json.dumps({
                             "device": "spotify",
                             "status": "success" if success else "error",
-                            "message": msg
+                            "message": msg,
+                            "silent": payload.get("silent", False)
                         }))
+                        
+                        # Trigger an immediate re-poll after any successful command so widgets refresh
+                        if success:
+                            await asyncio.sleep(1.0)
+                            try:
+                                status_data = await asyncio.to_thread(manager.status)
+                                if status_data and status_data.get("status") == "success":
+                                    refresh_payload = {
+                                        "title": status_data.get("track", "Unknown"),
+                                        "artist": status_data.get("artist", "Unknown"),
+                                        "position": status_data.get("progress_ms", 0) / 1000.0,
+                                        "duration": status_data.get("duration_ms", 0) / 1000.0,
+                                        "status": "Playing" if status_data.get("is_playing") else "Paused"
+                                    }
+                                    await mqtt_client.publish("jarvis/sys/media_status", json.dumps(refresh_payload))
+                            except Exception:
+                                pass
                         
                     except json.JSONDecodeError:
                         logging.error("Received malformed JSON data.")

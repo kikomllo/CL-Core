@@ -58,8 +58,8 @@ class IntentEngine:
         return " ".join(words)
 
     def is_abort_command(self, text: str) -> bool:
-        """Checks if the payload contains any abort keywords."""
-        return any(abort_word in text for abort_word in self.abort_keywords)
+        """Checks if the payload is purely an abort command."""
+        return text in self.abort_keywords
 
     def extract_variables(self, chunk: str, intent_match: Dict[str, Any]) -> Dict[str, Any]:
         """Fuzzy-friendly slot extraction using Typo-Forgiving Edge-Stripping."""
