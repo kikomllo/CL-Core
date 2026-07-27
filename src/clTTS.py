@@ -5,6 +5,8 @@ import os
 import uuid
 import random
 import edge_tts
+import av
+import numpy as np
 from pygame import mixer
 import aiomqtt
 from typing import Dict, Any
@@ -15,7 +17,10 @@ from utils.clConfigLoader import ConfigLoader
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [TTS] %(message)s", datefmt="%H:%M:%S")
+import sys, os
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..' if 'src' in __file__ else 'src'))
+from utils.clLogging import setup_logging
+setup_logging('TTS')
 
 class TTSManager:
     def __init__(self):
@@ -31,6 +36,21 @@ class TTSManager:
         mixer.init()
         logging.info("Audio mixer initialized.")
 
+    def get_audio_rms(self, file_path):
+        try:
+            container = av.open(file_path)
+            rms_list = []
+            for frame in container.decode(audio=0):
+                arr = frame.to_ndarray()
+                if arr.size > 0:
+                    rms_list.append(float(np.sqrt(np.mean(arr**2))))
+                else:
+                    rms_list.append(0.0)
+            return rms_list
+        except Exception as e:
+            logging.error(f"Failed to extract RMS: {e}")
+            return []
+
     async def generate_and_play(self, client, text, voice="en-GB-RyanNeural", duck_audio=True, request_reply=False) -> None:
         temp_file = os.path.join(self.assets_dir, f"tts_{uuid.uuid4().hex}.mp3")
         
@@ -43,6 +63,9 @@ class TTSManager:
                     await client.publish("pc/spotify/control", json.dumps({"action": "duck"}))
                     await asyncio.sleep(0.3)
 
+                if client:
+                    await client.publish("jarvis/sys/tts_state", json.dumps({"state": "active"}))
+
                 if os.path.exists(self.blip_path):
                     mixer.music.load(self.blip_path)
                     mixer.music.play()
@@ -54,8 +77,20 @@ class TTSManager:
                         break
                     except Exception: await asyncio.sleep(0.2)
                 
+                rms_list = self.get_audio_rms(temp_file)
                 mixer.music.play()
-                while mixer.music.get_busy(): await asyncio.sleep(0.05)
+                
+                start_time = asyncio.get_event_loop().time()
+                frame_duration = 0.024
+                
+                while mixer.music.get_busy():
+                    elapsed = asyncio.get_event_loop().time() - start_time
+                    frame_idx = int(elapsed / frame_duration)
+                    if frame_idx < len(rms_list):
+                        val = min(100, int(rms_list[frame_idx] * 500))
+                        if client:
+                            await client.publish("jarvis/sys/audio_vol", json.dumps({"rms": val}))
+                    await asyncio.sleep(0.04)
                 
             finally:
                 mixer.music.unload()
@@ -68,6 +103,7 @@ class TTSManager:
                 
                 if client:
                     await client.publish("jarvis/sys/tts_done", "1")
+                    await client.publish("jarvis/sys/tts_state", json.dumps({"state": "idle"}))
 
     async def handle_tts_request(self, client, payload: dict) -> None:
         """Formats dynamic text from templates and sends it to the voice generator."""
@@ -98,13 +134,18 @@ class TTSManager:
             except KeyError:
                 phrase = raw_phrase 
                 
+            if payload.get("append_followup"):
+                phrase += " Anything else, sir?"
+
             await self.generate_and_play(client, phrase, duck_audio=True)
 
 async def run_tts_service():
     manager = TTSManager()
+    attempt = 0
     while True:
         try:
             async with aiomqtt.Client("localhost") as client:
+                attempt = 0
                 await client.subscribe("jarvis/sys/speak")
                 await client.subscribe("jarvis/sys/tts_stop")
                 await client.subscribe("jarvis/sys/tts_request") # NEW SUB
@@ -138,8 +179,10 @@ async def run_tts_service():
                             logging.error("Malformed TTS request JSON.")
 
         except aiomqtt.MqttError as e:
-            logging.error(f"MQTT Connection Error: {e}. Retrying in 5 seconds...")
-            await asyncio.sleep(5)
+            delay = min(60, 2 ** attempt)
+            logging.error(f"MQTT Connection Error: {e}. Retrying in {delay} seconds...")
+            await asyncio.sleep(delay)
+            attempt += 1
         except asyncio.CancelledError:
             logging.info("TTS service shutting down.")
             break

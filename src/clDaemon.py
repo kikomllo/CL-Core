@@ -5,6 +5,7 @@ import os
 import json
 import logging
 import time
+import datetime
 import aiomqtt
 from typing import Dict, List, Tuple, Any
 
@@ -13,7 +14,10 @@ from utils.clConfigLoader import ConfigLoader
 from nlp.clIntentEngine import IntentEngine
 
 # --- LOGGING SETUP ---
-logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [DAEMON] %(message)s", datefmt="%H:%M:%S")
+import sys, os
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..' if 'src' in __file__ else 'src'))
+from utils.clLogging import setup_logging
+setup_logging('DAEMON')
 
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -39,6 +43,9 @@ class CentralDaemon:
         }
         
         self.nlp = IntentEngine(intents_data, word_to_number, abort_keywords)
+        self.intents_file_path = os.path.join(os.path.dirname(__file__), "..", "config", "intents.json")
+        self.last_intents_mtime = os.stat(self.intents_file_path).st_mtime if os.path.exists(self.intents_file_path) else 0
+        self.followups_enabled = core_data.get("settings", {}).get("enable_followup", True)
 
     def _optimize_intent_queue(self, intents: List[Tuple[Dict[str, Any], str]]) -> List[Tuple[Dict[str, Any], str]]:
         """
@@ -80,19 +87,50 @@ class CentralDaemon:
         raw_intents = self.nlp.parse(clean_text)
         return self._optimize_intent_queue(raw_intents)
 
+    async def monitor_timeouts(self, client: aiomqtt.Client):
+        while True:
+            await asyncio.sleep(1)
+            if self.active_context["type"] and time.time() > self.active_context["expires_at"]:
+                logging.info(f"[STATE] Active context '{self.active_context['type']}' expired passively.")
+                self.active_context = {"type": None, "expires_at": 0.0}
+                await client.publish("jarvis/sys/ui_options", json.dumps({"options": []}))
+                await client.publish("jarvis/sys/mic_control", json.dumps({"action": "cancel"}))
+
+    async def monitor_config(self):
+        while True:
+            await asyncio.sleep(5)
+            try:
+                if os.path.exists(self.intents_file_path):
+                    current_mtime = os.stat(self.intents_file_path).st_mtime
+                    if current_mtime > self.last_intents_mtime:
+                        logging.info("[CONFIG] intents.json modified. Reloading...")
+                        new_data = self.loader.load_and_validate("intents.json", "intents_schema.json")
+                        self.nlp.reload_intents(new_data)
+                        self.last_intents_mtime = current_mtime
+            except Exception as e:
+                logging.error(f"[CONFIG] Error reloading intents: {e}")
+
     async def run(self) -> None:
         logging.info("Central Daemon Online. Connecting to MQTT broker...")
+        
+        attempt = 0
         while True:
             try:
                 async with aiomqtt.Client("localhost") as client:
+                    attempt = 0
+                    logging.info("MQTT broker connected. Subscribing to topics...")
+                    monitor_task = asyncio.create_task(self.monitor_timeouts(client))
+                    config_task = asyncio.create_task(self.monitor_config())
                     await client.subscribe("jarvis/sensor/voice")
                     await client.subscribe("jarvis/feedback")
+                    logging.info("--- DAEMON READY: Listening for commands ---")
                     
                     async for message in client.messages:
                         topic = message.topic.value
                         payload_data = message.payload.decode('utf-8')
                         
                         if topic == "jarvis/sensor/voice":
+                            logging.info(f"Voice command received: '{payload_data}'")
                             intents = self.route_voice_command(payload_data)
                             
                             if intents:
@@ -105,7 +143,27 @@ class CentralDaemon:
                                         final_mic_state = None  
                                         break
                                         
+                                    elif target_topic == "jarvis/sys/daemon_control" and command.get("action") == "toggle_followup":
+                                        self.followups_enabled = not self.followups_enabled
+                                        
+                                        # Save to core.json
+                                        try:
+                                            with open(os.path.join(os.path.dirname(__file__), "..", "config", "core.json"), "r") as f:
+                                                core = json.load(f)
+                                            if "settings" not in core: core["settings"] = {}
+                                            core["settings"]["enable_followup"] = self.followups_enabled
+                                            with open(os.path.join(os.path.dirname(__file__), "..", "config", "core.json"), "w") as f:
+                                                json.dump(core, f, indent=4)
+                                        except Exception as e:
+                                            logging.error(f"Failed to persist followup setting: {e}")
+                                            
+                                        state_str = "enabled" if self.followups_enabled else "disabled"
+                                        await client.publish("jarvis/sys/speak", json.dumps({"text": f"Follow ups are now {state_str}."}))
+                                        final_mic_state = None
+                                        continue
+
                                     elif target_topic:
+                                        logging.info(f"Routing intent -> {target_topic}: {command}")
                                         await client.publish(target_topic, json.dumps(command))
                                         
                                         action = command.get("action", "")
@@ -114,8 +172,9 @@ class CentralDaemon:
                                         if not is_spotify_status:
                                             # Send a blind TTS request to the dedicated TTS service
                                             await client.publish("jarvis/sys/tts_request", json.dumps({
-                                                "target_topic": target_topic, 
-                                                "command": command
+                                                "target_topic": target_topic,
+                                                "command": command,
+                                                "append_followup": self.followups_enabled and action != "discover"
                                             }))
                                         
                                         if self.active_context["type"] is not None:
@@ -123,6 +182,10 @@ class CentralDaemon:
                                             
                                 if final_mic_state:
                                     await client.publish("jarvis/sys/mic_control", json.dumps({"action": final_mic_state}))
+                            else:
+                                logging.warning(f"No intent matched for: '{payload_data}'")
+                            
+                            await client.publish("jarvis/sys/audio_process", json.dumps({"state": "idle"}))
                         
                         elif topic == "jarvis/feedback":
                             try:
@@ -167,6 +230,12 @@ class CentralDaemon:
                                     print(table_str)
                                     print("=" * 60 + "\n")
                                     
+                                    ui_options = [f"[{i}] {dev['type'].upper()} - {dev['ip']}" for i, dev in enumerate(devices)]
+                                    await client.publish("jarvis/sys/ui_options", json.dumps({
+                                        "title": "Discovered Devices",
+                                        "options": ui_options if ui_options else ["No devices found"]
+                                    }))
+
                                     if msg:
                                         await client.publish("jarvis/sys/speak", json.dumps({"text": msg, "request_reply": True}))
                                         await client.publish("jarvis/sys/mic_control", json.dumps({"action": "request_reply"}))
@@ -174,11 +243,26 @@ class CentralDaemon:
                             except json.JSONDecodeError:
                                 pass
                                 
-            except aiomqtt.MqttError as e:
-                logging.error(f"MQTT Error: {e}. Retrying in 5s...")
-                await asyncio.sleep(5)
+            except (aiomqtt.MqttError, OSError, ConnectionRefusedError) as e:
+                delay = min(30, 2 ** attempt)
+                logging.error(f"MQTT Connection Error: {e}. Retrying in {delay}s...")
+                if 'monitor_task' in locals() and not monitor_task.done():
+                    monitor_task.cancel()
+                if 'config_task' in locals() and not config_task.done():
+                    config_task.cancel()
+                attempt += 1
+                await asyncio.sleep(delay)
             except asyncio.CancelledError:
+                if 'monitor_task' in locals() and not monitor_task.done():
+                    monitor_task.cancel()
+                if 'config_task' in locals() and not config_task.done():
+                    config_task.cancel()
                 break
+            except Exception as e:
+                delay = min(30, 2 ** attempt)
+                logging.error(f"Unexpected daemon error: {type(e).__name__}: {e}. Retrying in {delay}s...")
+                attempt += 1
+                await asyncio.sleep(delay)
 
 if __name__ == "__main__":
     daemon = CentralDaemon()

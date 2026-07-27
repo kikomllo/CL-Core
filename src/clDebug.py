@@ -4,7 +4,10 @@ import logging
 import paho.mqtt.client as mqtt_client
 
 # --- LOGGING SETUP ---
-logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [DEBUG] %(message)s", datefmt="%H:%M:%S")
+import sys, os
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..' if 'src' in __file__ else 'src'))
+from utils.clLogging import setup_logging
+setup_logging('DEBUG')
 
 def main():
     # Setup persistent MQTT connection

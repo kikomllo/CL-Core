@@ -9,7 +9,10 @@ from faster_whisper import WhisperModel
 
 from utils.clConfigLoader import ConfigLoader
 
-logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [WHISPER] %(message)s", datefmt="%H:%M:%S")
+import sys, os
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..' if 'src' in __file__ else 'src'))
+from utils.clLogging import setup_logging
+setup_logging('WHISPER')
 
 class InferenceEngine:
     def __init__(self):
@@ -63,9 +66,11 @@ class InferenceEngine:
 async def main():
     engine = InferenceEngine()
     
+    attempt = 0
     while True:
         try:
             async with aiomqtt.Client("localhost") as client:
+                attempt = 0
                 await client.subscribe("jarvis/sys/audio_process")
                 
                 async for message in client.messages:
@@ -81,10 +86,14 @@ async def main():
                     if text:
                         logging.info(f"Transcription: '{text}'")
                         await client.publish("jarvis/sensor/voice", text)
+                    else:
+                        await client.publish("jarvis/sys/audio_process", json.dumps({"state": "idle"}))
                         
         except Exception as e:
-            logging.error(f"Inference Engine Error: {e}")
-            await asyncio.sleep(5)
+            delay = min(60, 2 ** attempt)
+            logging.error(f"Inference Engine Error: {e}. Retrying in {delay}s...")
+            await asyncio.sleep(delay)
+            attempt += 1
 
 if __name__ == "__main__":
     if sys.platform == 'win32': asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())

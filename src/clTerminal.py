@@ -12,10 +12,14 @@ import time
 import re
 import webbrowser
 import urllib.parse
+import shutil
 from typing import Tuple, Optional, Dict, Any, List
 
 # --- LOGGING SETUP ---
-logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [TERMINAL] %(message)s", datefmt="%H:%M:%S")
+import sys, os
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..' if 'src' in __file__ else 'src'))
+from utils.clLogging import setup_logging
+setup_logging('TERMINAL')
 
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -31,6 +35,7 @@ class TerminalManager:
         self.last_opened_dir: str = os.path.expanduser("~")
         self.terminal_is_open: bool = False
         self.pid_file: str = os.path.join(os.path.expanduser("~"), ".jarvis_nav_pid")
+        self.media_trigger = asyncio.Event()
         
         self._load_shortcuts()
 
@@ -191,7 +196,42 @@ class TerminalManager:
         elif action == "restart":
             subprocess.Popen(["reboot"] if CURRENT_OS == "linux" else ["shutdown", "/r", "/t", "0"])
             return True, "Initiating system reboot."
+        elif action == "eco_mode_on":
+            if CURRENT_OS == "linux":
+                # Pause media before turning off monitors
+                if shutil.which("playerctl"):
+                    subprocess.Popen(["playerctl", "pause"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                # Turn off monitors
+                if shutil.which("xset"):
+                    subprocess.Popen(["xset", "dpms", "force", "off"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return True, "Eco mode activated. Monitors powered down."
+            return False, "Eco mode only supported on Linux."
+        elif action == "eco_mode_off":
+            if CURRENT_OS == "linux" and shutil.which("xset"):
+                subprocess.Popen(["xset", "dpms", "force", "on"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return True, "Monitors powered up."
+            return False, "Eco mode off only supported on Linux."
         return False, "Invalid power command."
+
+    def _handle_media(self, action: str) -> Tuple[bool, str]:
+        if CURRENT_OS != "linux":
+            return False, "Media control is currently only supported on Linux."
+            
+        if not shutil.which("playerctl"):
+            return False, "playerctl is not installed. Please run 'sudo apt install playerctl'."
+            
+        cmd_map = {
+            "media_play": "play",
+            "media_pause": "pause",
+            "media_next": "next",
+            "media_prev": "previous"
+        }
+        
+        player_action = cmd_map.get(action)
+        if player_action:
+            subprocess.Popen(["playerctl", player_action], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True, f"Media {player_action} executed."
+        return False, "Invalid media action."
 
     def _handle_web(self, action: str, target: str) -> Tuple[bool, str]:
         """Handles web navigation and direct browser searches natively."""
@@ -224,17 +264,101 @@ class TerminalManager:
                 return self._handle_close(target)
             elif action in ["search", "open_site"] and target:
                 return self._handle_web(action, target)
-            elif action in ["shutdown", "restart"]:
+            elif action in ["shutdown", "restart", "eco_mode_on", "eco_mode_off"]:
                 return self._handle_power(action)
+            elif action in ["media_play", "media_pause", "media_next", "media_prev"]:
+                return self._handle_media(action)
             elif action == "volume" and level is not None:
                 clean_level = max(0, min(100, level))
                 if CURRENT_OS == "linux":
-                    subprocess.Popen(["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{clean_level}%"])
-                    return True, f"Linux master volume set to {clean_level}%."
+                    if shutil.which("wpctl"):
+                        # PipeWire
+                        subprocess.Popen(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{clean_level}%"])
+                        return True, f"Volume set to {clean_level}% via PipeWire."
+                    elif shutil.which("pactl"):
+                        # PulseAudio
+                        subprocess.Popen(["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{clean_level}%"])
+                        return True, f"Volume set to {clean_level}% via PulseAudio."
+                    elif shutil.which("amixer"):
+                        # ALSA Fallback
+                        subprocess.Popen(["amixer", "sset", "Master", f"{clean_level}%"])
+                        return True, f"Volume set to {clean_level}% via ALSA."
+                    else:
+                        return False, "No audio subsystem found (wpctl, pactl, or amixer)."
                 return False, "Windows volume control requires the 'pycaw' library."
             return False, f"Action '{action}' is not recognized."
         except Exception as e:
             return False, f"OS Execution Error: {str(e)}"
+
+async def poll_media_status(manager: TerminalManager) -> None:
+    """Background task to poll playerctl for media state and publish via MQTT."""
+    if CURRENT_OS != "linux" or not shutil.which("playerctl"):
+        return
+        
+    last_state = {}
+    while True:
+        try:
+            async with aiomqtt.Client("localhost") as mqtt_client:
+                while True:
+                    try:
+                        # Get Title
+                        title_proc = await asyncio.create_subprocess_exec("playerctl", "metadata", "title", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                        title_stdout, _ = await title_proc.communicate()
+                        title = title_stdout.decode().strip()
+                        
+                        # Get Artist
+                        artist_proc = await asyncio.create_subprocess_exec("playerctl", "metadata", "artist", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                        artist_stdout, _ = await artist_proc.communicate()
+                        artist = artist_stdout.decode().strip()
+                        
+                        # Get Status
+                        status_proc = await asyncio.create_subprocess_exec("playerctl", "status", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                        status_stdout, _ = await status_proc.communicate()
+                        status = status_stdout.decode().strip()
+                        
+                        # Get Position
+                        pos_proc = await asyncio.create_subprocess_exec("playerctl", "position", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                        pos_stdout, _ = await pos_proc.communicate()
+                        try:
+                            position = float(pos_stdout.decode().strip())
+                        except ValueError:
+                            position = 0.0
+                            
+                        # Get Duration (mpris:length is in microseconds)
+                        len_proc = await asyncio.create_subprocess_exec("playerctl", "metadata", "mpris:length", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                        len_stdout, _ = await len_proc.communicate()
+                        try:
+                            duration = float(len_stdout.decode().strip()) / 1_000_000.0
+                        except ValueError:
+                            duration = 0.0
+                            
+                        current_state = {
+                            "title": title,
+                            "artist": artist,
+                            "status": status,
+                            "position": position,
+                            "duration": duration
+                        }
+                        
+                        if status in ["Playing", "Paused"]:
+                            if current_state != last_state:
+                                await mqtt_client.publish("jarvis/sys/media_status", json.dumps(current_state))
+                                last_state = current_state
+                            
+                        try:
+                            await asyncio.wait_for(manager.media_trigger.wait(), timeout=10.0)
+                            manager.media_trigger.clear()
+                        except asyncio.TimeoutError:
+                            pass
+                    except asyncio.CancelledError:
+                        break
+                    except Exception as e:
+                        logging.error(f"Media polling error: {e}")
+                        await asyncio.sleep(2)
+        except aiomqtt.MqttError:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            break
 
 # --- MQTT SERVICE LISTENER ---
 async def mqtt_service_listener(manager: TerminalManager) -> None:
@@ -248,12 +372,25 @@ async def mqtt_service_listener(manager: TerminalManager) -> None:
                         payload = json.loads(message.payload.decode('utf-8'))
                         logging.info(f"Command Received: {payload}")
                         
+                        action = payload.get("action")
+                        
+                        if action == "media_refresh":
+                            manager.media_trigger.set()
+                            continue
+                            
                         success, msg = await asyncio.to_thread(
                             manager.execute_command, 
-                            payload.get("action"), 
+                            action, 
                             payload.get("target"), 
                             payload.get("level")
                         )
+                        
+                        action = payload.get("action")
+                        if action in ["media_play", "media_pause", "media_next", "media_prev"]:
+                            manager.media_trigger.set()
+                            # Short delay to allow playerctl to apply the change before polling
+                            await asyncio.sleep(0.5)
+                            manager.media_trigger.set()
                         
                         await mqtt_client.publish("jarvis/feedback", json.dumps({
                             "device": "terminal",
@@ -293,8 +430,25 @@ def main():
         success, msg = manager.execute_command("shutdown")
         logging.info(msg)
     else:
+        async def main_loop():
+            task1 = asyncio.create_task(mqtt_service_listener(manager))
+            task2 = asyncio.create_task(poll_media_status(manager))
+            await asyncio.gather(task1, task2)
+
         try:
-            asyncio.run(mqtt_service_listener(manager))
+            asyncio.run(main_loop())
+        except KeyboardInterrupt:
+            logging.info("Exiting Service Mode.")
+
+if __name__ == "__main__":
+    main()ync def run_services():
+            await asyncio.gather(
+                mqtt_service_listener(manager),
+                poll_media_status(manager)
+            )
+            
+        try:
+            asyncio.run(run_services())
         except KeyboardInterrupt:
             logging.info("Exiting Service Mode.")
 

@@ -2,7 +2,11 @@
   "light_on": {
     "target_topic": "home/room/desk_light/set",
     "action_override": "on",
-    "priority_words": ["on", "activate", "power on"],
+    "priority_words": [
+      "on",
+      "activate",
+      "power on"
+    ],
     "templates": [
       "turn on the light",
       "turn the light on",
@@ -14,7 +18,12 @@
   "light_off": {
     "target_topic": "home/room/desk_light/set",
     "action_override": "off",
-    "priority_words": ["off", "deactivate", "kill", "power off"],
+    "priority_words": [
+      "off",
+      "deactivate",
+      "kill",
+      "power off"
+    ],
     "templates": [
       "turn off the light",
       "turn the light off",
@@ -27,7 +36,10 @@
   "light_toggle": {
     "target_topic": "home/room/desk_light/set",
     "action_override": "toggle",
-    "priority_words": ["toggle", "switch"],
+    "priority_words": [
+      "toggle",
+      "switch"
+    ],
     "templates": [
       "toggle the light",
       "toggle light",
@@ -37,7 +49,10 @@
   "light_color": {
     "target_topic": "home/room/desk_light/set",
     "action_override": "on",
-    "priority_words": ["color", "change"],
+    "priority_words": [
+      "color",
+      "change"
+    ],
     "templates": [
       "set the light to {color}",
       "change the light to {color}",
@@ -49,7 +64,11 @@
   "light_dim": {
     "target_topic": "home/room/desk_light/set",
     "action_override": "on",
-    "priority_words": ["brightness", "dim", "percent"],
+    "priority_words": [
+      "brightness",
+      "dim",
+      "percent"
+    ],
     "templates": [
       "set light to {lum} percent",
       "set brightness to {lum} percent",
@@ -61,7 +80,11 @@
   "spotify_play_generic": {
     "target_topic": "pc/spotify/control",
     "action_override": "play",
-    "priority_words": ["resume", "start", "play"],
+    "priority_words": [
+      "resume",
+      "start",
+      "play"
+    ],
     "templates": [
       "resume music",
       "resume the music",
@@ -74,7 +97,9 @@
   "spotify_play_playlist": {
     "target_topic": "pc/spotify/control",
     "action_override": "play",
-    "priority_words": ["playlist"],
+    "priority_words": [
+      "playlist"
+    ],
     "templates": [
       "play the playlist {playlist_name}",
       "play playlist {playlist_name}",
@@ -86,7 +111,12 @@
   "spotify_play_specific": {
     "target_topic": "pc/spotify/control",
     "action_override": "play",
-    "priority_words": ["play", "song", "track", "artist"],
+    "priority_words": [
+      "play",
+      "song",
+      "track",
+      "artist"
+    ],
     "templates": [
       "play {track_name} by {artist_name}",
       "play {track_name}",
@@ -99,7 +129,10 @@
   "spotify_pause": {
     "target_topic": "pc/spotify/control",
     "action_override": "pause",
-    "priority_words": ["pause", "stop"],
+    "priority_words": [
+      "pause",
+      "stop"
+    ],
     "templates": [
       "pause the music",
       "pause music",
@@ -111,7 +144,10 @@
   "spotify_next": {
     "target_topic": "pc/spotify/control",
     "action_override": "next",
-    "priority_words": ["skip", "next"],
+    "priority_words": [
+      "skip",
+      "next"
+    ],
     "templates": [
       "skip this song",
       "skip song",
@@ -124,7 +160,10 @@
   "spotify_prev": {
     "target_topic": "pc/spotify/control",
     "action_override": "prev",
-    "priority_words": ["previous", "back"],
+    "priority_words": [
+      "previous",
+      "back"
+    ],
     "templates": [
       "previous song",
       "go back a song",
@@ -136,7 +175,9 @@
   "spotify_volume": {
     "target_topic": "pc/spotify/control",
     "action_override": "volume",
-    "priority_words": ["volume"],
+    "priority_words": [
+      "volume"
+    ],
     "templates": [
       "set volume to {volume} percent",
       "change volume to {volume} percent",
@@ -147,7 +188,12 @@
   "spotify_status_track": {
     "target_topic": "pc/spotify/control",
     "action_override": "status_track",
-    "priority_words": ["playing", "song", "sings", "track"],
+    "priority_words": [
+      "playing",
+      "song",
+      "sings",
+      "track"
+    ],
     "templates": [
       "what is playing",
       "what song is this",
@@ -164,7 +210,11 @@
   "spotify_status_playlist": {
     "target_topic": "pc/spotify/control",
     "action_override": "status_playlist",
-    "priority_words": ["playlist", "context", "radio"],
+    "priority_words": [
+      "playlist",
+      "context",
+      "radio"
+    ],
     "templates": [
       "what playlist is this",
       "what playlist is playing",
@@ -177,7 +227,10 @@
   "spotify_status_queue": {
     "target_topic": "pc/spotify/control",
     "action_override": "status_queue",
-    "priority_words": ["queue", "up next"],
+    "priority_words": [
+      "queue",
+      "up next"
+    ],
     "templates": [
       "what is next",
       "what's next",
@@ -190,7 +243,9 @@
   "spotify_status_full": {
     "target_topic": "pc/spotify/control",
     "action_override": "status_full",
-    "priority_words": ["status"],
+    "priority_words": [
+      "status"
+    ],
     "templates": [
       "spotify status",
       "music status"
@@ -199,7 +254,12 @@
   "system_discovery": {
     "target_topic": "system/discovery",
     "action_override": "discover",
-    "priority_words": ["discovery", "scan", "hardware", "devices"],
+    "priority_words": [
+      "discovery",
+      "scan",
+      "hardware",
+      "devices"
+    ],
     "templates": [
       "start discovery mode",
       "search light bulbs",
@@ -213,7 +273,11 @@
   "system_restart_all": {
     "target_topic": "jarvis/sys/manager",
     "action_override": "restart_all_modules",
-    "priority_words": ["restart all", "reboot all", "everything"],
+    "priority_words": [
+      "restart all",
+      "reboot all",
+      "everything"
+    ],
     "templates": [
       "restart all modules",
       "reboot all modules",
@@ -230,7 +294,10 @@
   "system_restart_module": {
     "target_topic": "jarvis/sys/manager",
     "action_override": "restart_module",
-    "priority_words": ["module", "service"],
+    "priority_words": [
+      "module",
+      "service"
+    ],
     "templates": [
       "restart module {target}",
       "reboot module {target}",
@@ -243,7 +310,10 @@
   "system_attention_on": {
     "target_topic": "jarvis/sys/mic_control",
     "action_override": "attention_on",
-    "priority_words": ["attention", "focus"],
+    "priority_words": [
+      "attention",
+      "focus"
+    ],
     "templates": [
       "attention mode",
       "enter attention mode",
@@ -257,7 +327,12 @@
   "system_attention_off": {
     "target_topic": "jarvis/sys/mic_control",
     "action_override": "attention_off",
-    "priority_words": ["rest", "chill", "exit", "leave"],
+    "priority_words": [
+      "rest",
+      "chill",
+      "exit",
+      "leave"
+    ],
     "templates": [
       "exit attention mode",
       "time to rest",
@@ -271,6 +346,258 @@
       "im done working",
       "normal mode",
       "chill mode"
+    ]
+  },
+  "system_mode_debug": {
+    "target_topic": "jarvis/sys/state_change",
+    "action_override": "debug",
+    "priority_words": [
+      "debug",
+      "mode"
+    ],
+    "templates": [
+      "change to debug mode",
+      "set mode to debug",
+      "debug mode"
+    ]
+  },
+  "system_mode_normal": {
+    "target_topic": "jarvis/sys/state_change",
+    "action_override": "normal",
+    "priority_words": [
+      "normal",
+      "mode",
+      "standard"
+    ],
+    "templates": [
+      "change to normal mode",
+      "set mode to normal",
+      "normal mode"
+    ]
+  },
+  "system_mode_background": {
+    "target_topic": "jarvis/sys/state_change",
+    "action_override": "background",
+    "priority_words": [
+      "background",
+      "mode",
+      "stealth",
+      "silent"
+    ],
+    "templates": [
+      "change to background mode",
+      "set mode to background",
+      "background mode",
+      "stealth mode",
+      "silent mode"
+    ]
+  },
+  "jarvis_reminder_set": {
+    "target_topic": "jarvis/sys/reminder/create",
+    "action_override": "create",
+    "priority_words": [
+      "remind",
+      "reminder",
+      "timer",
+      "schedule"
+    ],
+    "templates": [
+      "remind me to {task} in {time}",
+      "remind me in {time} to {task}",
+      "set a reminder to {task} in {time}",
+      "set a reminder for {time} to {task}",
+      "remind me {time} to {task}",
+      "remind me {time}",
+      "set a timer for {time}",
+      "schedule a reminder for {time}",
+      "schedule a reminder for {time} to {task}"
+    ]
+  },
+  "system_followup_on": {
+    "target_topic": "jarvis/sys/control",
+    "action_override": "followup_on",
+    "priority_words": [
+      "enable",
+      "followup",
+      "conversational",
+      "mode"
+    ],
+    "templates": [
+      "enable conversational mode",
+      "enable followup mode",
+      "turn on followup mode",
+      "enable followups",
+      "conversational mode on",
+      "start followups"
+    ]
+  },
+  "system_followup_off": {
+    "target_topic": "jarvis/sys/control",
+    "action_override": "followup_off",
+    "priority_words": [
+      "disable",
+      "followup",
+      "conversational",
+      "mode",
+      "off"
+    ],
+    "templates": [
+      "disable conversational mode",
+      "disable followup mode",
+      "follow up disabled",
+      "follow up off",
+      "follow ups off",
+      "turn off followup mode",
+      "disable followups",
+      "conversational mode off",
+      "stop followups"
+    ]
+  },
+  "system_light_list": {
+    "target_topic": "system/discovery",
+    "action_override": "list_saved",
+    "priority_words": [
+      "list",
+      "saved",
+      "lights",
+      "default",
+      "devices"
+    ],
+    "templates": [
+      "list saved devices",
+      "list saved lights",
+      "what lights are saved",
+      "show me saved lights",
+      "list the lights",
+      "list lights",
+      "what are the saved lights"
+    ]
+  },
+  "system_light_rename": {
+    "target_topic": "system/discovery",
+    "action_override": "intent_rename_light",
+    "priority_words": [
+      "rename",
+      "change"
+    ],
+    "templates": [
+      "rename {target_str}",
+      "rename light {target_str}",
+      "change {target_str}",
+      "change light {target_str}"
+    ]
+  },
+  "system_light_delete": {
+    "target_topic": "system/discovery",
+    "action_override": "intent_remove_light",
+    "priority_words": [
+      "delete",
+      "remove",
+      "forget"
+    ],
+    "templates": [
+      "delete {target_str}",
+      "delete light {target_str}",
+      "remove {target_str}",
+      "remove light {target_str}",
+      "forget {target_str}",
+      "forget light {target_str}"
+    ]
+  },
+  "system_light_default": {
+    "target_topic": "system/discovery",
+    "action_override": "intent_set_default_light",
+    "priority_words": [
+      "set",
+      "default"
+    ],
+    "templates": [
+      "set default {target_str}",
+      "set default light {target_str}",
+      "make default {target_str}",
+      "make default light {target_str}",
+      "set default light to {target_str}"
+    ]
+  },
+  "system_reminder_list": {
+    "target_topic": "jarvis/sys/reminder/control",
+    "action_override": "list",
+    "priority_words": [
+      "list",
+      "show",
+      "what"
+    ],
+    "templates": [
+      "list my reminders",
+      "show my reminders",
+      "what are my reminders",
+      "do i have any reminders"
+    ]
+  },
+  "system_reminder_delete": {
+    "target_topic": "jarvis/sys/reminder/control",
+    "action_override": "intent_delete_reminder",
+    "priority_words": [
+      "delete",
+      "remove",
+      "cancel"
+    ],
+    "templates": [
+      "delete reminder",
+      "cancel reminder",
+      "remove reminder"
+    ]
+  },
+  "system_followup_toggle": {
+    "target_topic": "jarvis/sys/daemon_control",
+    "action_override": "toggle_followup",
+    "priority_words": [
+      "follow",
+      "followup",
+      "follow-up"
+    ],
+    "templates": [
+      "enable followup",
+      "disable follow up",
+      "turn on followups",
+      "turn off follow up",
+      "enable follow ups",
+      "disable followups"
+    ]
+  },
+  "ui_fullscreen": {
+    "target_topic": "jarvis/sys/ui_control",
+    "action_override": "set_fullscreen",
+    "priority_words": [
+      "fullscreen",
+      "maximize"
+    ],
+    "templates": [
+      "full screen mode",
+      "go to fullscreen mode",
+      "go to full screen",
+      "enter fullscreen mode",
+      "fullscreen mode",
+      "maximize the ui",
+      "switch to fullscreen",
+      "maximize"
+    ]
+  },
+  "ui_overlay": {
+    "target_topic": "jarvis/sys/ui_control",
+    "action_override": "set_overlay",
+    "priority_words": [
+      "overlay",
+      "minimize"
+    ],
+    "templates": [
+      "go to overlay mode",
+      "exit fullscreen",
+      "overlay mode",
+      "minimize the ui",
+      "return to overlay",
+      "switch to overlay",
+      "switch to overlay mode"
     ]
   }
 }
