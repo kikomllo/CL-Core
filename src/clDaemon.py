@@ -179,8 +179,8 @@ class CentralDaemon:
                                         
                                         if self.active_context["type"] is not None:
                                             final_mic_state = "request_reply"
-                                            
-                                if final_mic_state:
+
+                                if final_mic_state and final_mic_state != "request_reply":
                                     await client.publish("jarvis/sys/mic_control", json.dumps({"action": final_mic_state}))
                             else:
                                 logging.warning(f"No intent matched for: '{payload_data}'")
@@ -214,7 +214,6 @@ class CentralDaemon:
                                 elif isinstance(msg, str) and "CONFIDENCE_LOW|" in msg:
                                     self.active_context = {"type": "spotify_choice", "expires_at": time.time() + 20.0}
                                     await client.publish("jarvis/sys/speak", json.dumps({"text": "Please select an option from the terminal.", "request_reply": True}))
-                                    await client.publish("jarvis/sys/mic_control", json.dumps({"action": "request_reply"}))
 
                                 elif device == 'smart_lights' and fb.get('action') == 'awaiting_selection':
                                     self.active_context = {"type": "discovery_choice", "expires_at": time.time() + 30.0}
@@ -238,7 +237,6 @@ class CentralDaemon:
 
                                     if msg:
                                         await client.publish("jarvis/sys/speak", json.dumps({"text": msg, "request_reply": True}))
-                                        await client.publish("jarvis/sys/mic_control", json.dumps({"action": "request_reply"}))
                                         
                             except json.JSONDecodeError:
                                 pass

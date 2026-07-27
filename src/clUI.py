@@ -897,8 +897,12 @@ class JarvisUI(QWidget):
     def set_state(self, state):
         self.state = state
         self.visualizer.set_state(state, self.is_fullscreen)
-        if self.is_fullscreen and state == "IDLE":
-            pass # Keep logic consistent
+        if state == "IDLE":
+            if not self.is_fullscreen:
+                for w_id in list(self.active_widgets.keys()):
+                    self.close_draggable_widget(w_id)
+            else:
+                pass # Keep logic consistent
 
     def set_options(self, options, title="Options"):
         self.pending_options = (options, title)
@@ -912,7 +916,7 @@ class JarvisUI(QWidget):
         
         self.visualizer.set_options(options)
         
-        widget_id = f"widget_{title.replace(' ', '_').lower()}"
+        widget_id = f"list_{title.replace(' ', '_').lower()}"
         
         content = QWidget()
         layout = QVBoxLayout(content)
@@ -996,7 +1000,7 @@ class JarvisUI(QWidget):
             wrapper.show()
             wrapper.raise_()
         else:
-            if widget_id.startswith("widget_"):
+            if widget_id.startswith("list_"):
                 if hasattr(wrapper, "title_bar"):
                     wrapper.title_bar.hide()
                 wrapper.show()
