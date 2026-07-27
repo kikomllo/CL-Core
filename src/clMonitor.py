@@ -6,7 +6,10 @@ from bleak import BleakScanner
 from typing import Dict, Any
 import paho.mqtt.client as mqtt_client
 
-logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [MONITOR] %(message)s", datefmt="%H:%M:%S")
+import sys, os
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..' if 'src' in __file__ else 'src'))
+from utils.clLogging import setup_logging
+setup_logging('MONITOR')
 
 class PresenceMonitor:
     def __init__(self):

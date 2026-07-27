@@ -41,6 +41,13 @@ class IntentEngine:
                         
         logging.info(f"NLP Engine initialized with {len(self.flat_templates)} fuzzy targets.")
 
+    def reload_intents(self, new_intents_data: Dict[str, Any]) -> None:
+        """Hot-reloads the intents data and rebuilds the fuzzy corpus."""
+        self.intents_data = new_intents_data
+        self.flat_templates.clear()
+        self.template_to_intent.clear()
+        self._build_fuzzy_corpus()
+
     def normalize_text(self, text: str) -> str:
         """Strips punctuation and applies word-to-number mappings."""
         text = text.lower().strip()

@@ -4,7 +4,7 @@ import sys
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
-from clControl import LightManager
+from clControl import LightManager, poll_light_status
 
 @pytest.fixture
 def manager():
@@ -60,7 +60,7 @@ class TestLightManagerResolution:
         result = manager._handle_discovery_selection(spoken_text)
         assert result["status"] == expected_status, f"Status mismatch for '{spoken_text}'"
         if expected_status == "success":
-            manager.update_env_credentials.assert_called_with(expected_ip, expected_mac, expected_type)
+            manager.update_env_credentials.assert_called_with(expected_ip, expected_mac, expected_type, "main")
 
     def test_octet_collision_prevention(self, manager):
         """Ensures '11' targets .11 and not .111 when evaluating octets."""

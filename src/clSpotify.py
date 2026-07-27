@@ -18,7 +18,10 @@ import aiomqtt
 from utils.clEnvLoader import EnvLoader
 
 # --- LOGGING SETUP ---
-logging.basicConfig(level=logging.INFO, format="\r\033[K[%(asctime)s] [SPOTIFY] %(message)s", datefmt="%H:%M:%S")
+import sys, os
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..' if 'src' in __file__ else 'src'))
+from utils.clLogging import setup_logging
+setup_logging('SPOTIFY')
 
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -138,7 +141,9 @@ class SpotifyManager:
                 "track": track_name,
                 "artist": artists,
                 "context": context_name,
-                "next_in_queue": next_in_queue
+                "next_in_queue": next_in_queue,
+                "progress_ms": playback.get("progress_ms", 0),
+                "duration_ms": playback['item'].get("duration_ms", 0)
             }
 
         except spotipy.SpotifyException as e:
@@ -448,6 +453,25 @@ async def mqtt_service_listener(manager: SpotifyManager) -> None:
             async with aiomqtt.Client("localhost") as mqtt_client:
                 await mqtt_client.subscribe("pc/spotify/control")
                 
+                async def poll_status():
+                    while True:
+                        try:
+                            status_data = await asyncio.to_thread(manager.status)
+                            if status_data and status_data.get("status") == "success":
+                                payload = {
+                                    "title": status_data.get("track", "Unknown"),
+                                    "artist": status_data.get("artist", "Unknown"),
+                                    "position": status_data.get("progress_ms", 0) / 1000.0,
+                                    "duration": status_data.get("duration_ms", 0) / 1000.0,
+                                    "status": "Playing" if status_data.get("is_playing") else "Paused"
+                                }
+                                await mqtt_client.publish("jarvis/sys/media_status", json.dumps(payload))
+                        except Exception:
+                            pass
+                        await asyncio.sleep(5)
+                
+                poller_task = asyncio.create_task(poll_status())
+
                 async for message in mqtt_client.messages:
                     try:
                         payload = json.loads(message.payload.decode('utf-8'))

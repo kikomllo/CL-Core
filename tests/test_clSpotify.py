@@ -1,0 +1,43 @@
+import pytest, os, sys, json
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
+from unittest.mock import patch
+
+@pytest.fixture
+def spotify_manager(mock_redis):
+    with patch.dict(os.environ, {"SPOTIPY_CLIENT_ID": "dummy", "SPOTIPY_CLIENT_SECRET": "dummy", "SPOTIPY_REDIRECT_URI": "dummy"}):
+        with patch('spotipy.SpotifyOAuth'), patch('spotipy.Spotify'):
+            from clSpotify import SpotifyManager
+            m = SpotifyManager()
+            m.redis = mock_redis
+            return m
+
+class TestSpotify:
+    def test_duck(self, spotify_manager, mocker):
+        mock_vol = mocker.patch.object(spotify_manager.sp, 'volume')
+        mocker.patch.object(spotify_manager, '_get_active_device', return_value="device")
+        mocker.patch.object(spotify_manager.sp, 'current_playback', return_value={"device": {"volume_percent": 80}, "is_playing": True})
+        spotify_manager.execute_command("duck")
+        mock_vol.assert_called_once_with(60, device_id="device")
+
+    def test_track_search_and_cache(self, spotify_manager, mocker):
+        mock_search = mocker.patch.object(spotify_manager.sp, 'search')
+        mock_search.return_value = {
+            "tracks": {
+                "items": [
+                    {"name": "Song A", "artists": [{"name": "Artist 1"}], "uri": "spotify:track:1", "popularity": 50},
+                ]
+            }
+        }
+        
+        # Override the logic directly on the object to bypass real redis calls since we just want to verify logic flow
+        mocker.patch.object(spotify_manager, '_ensure_active_device', return_value="device_123")
+        mocker.patch.object(spotify_manager, '_calculate_confidence', return_value=0.5)
+        spotify_manager.perfect_match_threshold = 2.0  # Force it to fall through to cache
+        spotify_manager.confidence_threshold = 2.0
+        
+        mock_hset = mocker.patch.object(spotify_manager.redis, 'hset')
+        success, feedback = spotify_manager.execute_command("play", track_name="Song A")
+        
+        # Verify it dropped into the cache logic
+        assert success is True, f"Failed: {feedback}"
+        assert "CONFIDENCE_LOW|" in feedback
