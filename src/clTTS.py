@@ -3,6 +3,7 @@ import logging
 import json
 import os
 import uuid
+import hashlib
 import random
 import edge_tts
 import av
@@ -52,10 +53,12 @@ class TTSManager:
             return []
 
     async def generate_and_play(self, client, text, voice="en-GB-RyanNeural", duck_audio=True, request_reply=False) -> None:
-        temp_file = os.path.join(self.assets_dir, f"tts_{uuid.uuid4().hex}.mp3")
-        
-        communicate = edge_tts.Communicate(text, voice, rate="+27%", pitch="-5Hz")
-        await communicate.save(temp_file)
+        file_hash = hashlib.md5(f"{text}_{voice}".encode()).hexdigest()
+        temp_file = os.path.join(self.assets_dir, f"tts_{file_hash}.mp3")
+
+        if not os.path.exists(temp_file):
+            communicate = edge_tts.Communicate(text, voice, rate="+27%", pitch="-5Hz")
+            await communicate.save(temp_file)
 
         async with self.semaphore:
             try:
@@ -94,16 +97,15 @@ class TTSManager:
                 
             finally:
                 mixer.music.unload()
-                if os.path.exists(temp_file):
-                    try: os.remove(temp_file)
-                    except Exception: pass
-                
+
                 if client and duck_audio:
                     await client.publish("pc/spotify/control", json.dumps({"action": "unduck"}))
                 
                 if client:
                     await client.publish("jarvis/sys/tts_done", "1")
                     await client.publish("jarvis/sys/tts_state", json.dumps({"state": "idle"}))
+                    if request_reply:
+                        await client.publish("jarvis/sys/mic_control", json.dumps({"action": "request_reply"}))
 
     async def handle_tts_request(self, client, payload: dict) -> None:
         """Formats dynamic text from templates and sends it to the voice generator."""
@@ -134,10 +136,12 @@ class TTSManager:
             except KeyError:
                 phrase = raw_phrase 
                 
+            request_reply = False
             if payload.get("append_followup"):
                 phrase += " Anything else, sir?"
+                request_reply = True
 
-            await self.generate_and_play(client, phrase, duck_audio=True)
+            await self.generate_and_play(client, phrase, duck_audio=True, request_reply=request_reply)
 
 async def run_tts_service():
     manager = TTSManager()
