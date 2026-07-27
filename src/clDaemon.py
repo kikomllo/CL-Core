@@ -83,6 +83,28 @@ class CentralDaemon:
             self.active_context["type"] = None
             return [({"action": "save_discovery", "index": int(clean_text)}, "system/discovery")]
 
+        if self.active_context["type"] == "discovery_name":
+            temp_name = self.active_context.get("temp_name", "unknown")
+            self.active_context["type"] = None
+            if clean_text.lower() == "skip":
+                return []
+            return [({"action": "intent_rename_light", "target_str": f"{temp_name} to {clean_text}"}, "home/room/all/set")]
+
+        if self.active_context["type"] == "light_remove_target":
+            self.active_context["type"] = None
+            if clean_text.lower() == "cancel": return []
+            return [({"action": "intent_remove_light", "target_str": clean_text}, "home/room/all/set")]
+
+        if self.active_context["type"] == "light_default_target":
+            self.active_context["type"] = None
+            if clean_text.lower() == "cancel": return []
+            return [({"action": "intent_set_default_light", "target_str": clean_text}, "home/room/all/set")]
+
+        if self.active_context["type"] == "light_rename_target":
+            self.active_context["type"] = None
+            if clean_text.lower() == "cancel": return []
+            return [({"action": "intent_rename_light", "target_str": clean_text}, "home/room/all/set")]
+
         # 4. Standard NLP Parsing & Shadowing Execution
         raw_intents = self.nlp.parse(clean_text)
         return self._optimize_intent_queue(raw_intents)
@@ -143,8 +165,14 @@ class CentralDaemon:
                                         final_mic_state = None  
                                         break
                                         
-                                    elif target_topic == "jarvis/sys/daemon_control" and command.get("action") == "toggle_followup":
-                                        self.followups_enabled = not self.followups_enabled
+                                    elif target_topic in ["jarvis/sys/daemon_control", "jarvis/sys/control"] and command.get("action") in ["toggle_followup", "followup_on", "followup_off"]:
+                                        action_cmd = command.get("action")
+                                        if action_cmd == "followup_on":
+                                            self.followups_enabled = True
+                                        elif action_cmd == "followup_off":
+                                            self.followups_enabled = False
+                                        else:
+                                            self.followups_enabled = not self.followups_enabled
                                         
                                         # Save to core.json
                                         try:
@@ -229,7 +257,12 @@ class CentralDaemon:
                                     print(table_str)
                                     print("=" * 60 + "\n")
                                     
-                                    ui_options = [f"[{i}] {dev['type'].upper()} - {dev['ip']}" for i, dev in enumerate(devices)]
+                                    ui_options = []
+                                    for i, dev in enumerate(devices):
+                                        if dev.get('saved_name'):
+                                            ui_options.append(f"[{i}] {dev['saved_name'].replace('_', ' ').title()}")
+                                        else:
+                                            ui_options.append(f"[{i}] {dev['type'].upper()} {dev['model']}")
                                     await client.publish("jarvis/sys/ui_options", json.dumps({
                                         "title": "Discovered Devices",
                                         "options": ui_options if ui_options else ["No devices found"]
@@ -237,6 +270,34 @@ class CentralDaemon:
 
                                     if msg:
                                         await client.publish("jarvis/sys/speak", json.dumps({"text": msg, "request_reply": True}))
+
+                                elif device == 'smart_lights' and fb.get('action') == 'request_naming':
+                                    self.active_context = {"type": "discovery_name", "expires_at": time.time() + 30.0, "temp_name": fb.get('temp_name')}
+                                    msg = fb.get('message', '') + " What would you like to call this light?"
+                                    await client.publish("jarvis/sys/speak", json.dumps({"text": msg, "request_reply": True}))
+
+                                elif device == 'smart_lights' and fb.get('action') == 'request_light_action':
+                                    msg = fb.get('message', '')
+                                    await client.publish("jarvis/sys/speak", json.dumps({"text": msg, "request_reply": True}))
+
+                                elif device == 'smart_lights' and fb.get('action') == 'request_light_remove':
+                                    self.active_context = {"type": "light_remove_target", "expires_at": time.time() + 30.0}
+                                    msg = fb.get('message', '')
+                                    await client.publish("jarvis/sys/speak", json.dumps({"text": msg, "request_reply": True}))
+
+                                elif device == 'smart_lights' and fb.get('action') == 'request_light_default':
+                                    self.active_context = {"type": "light_default_target", "expires_at": time.time() + 30.0}
+                                    msg = fb.get('message', '')
+                                    await client.publish("jarvis/sys/speak", json.dumps({"text": msg, "request_reply": True}))
+
+                                elif device == 'smart_lights' and fb.get('action') == 'request_light_rename':
+                                    self.active_context = {"type": "light_rename_target", "expires_at": time.time() + 30.0}
+                                    msg = fb.get('message', '')
+                                    await client.publish("jarvis/sys/speak", json.dumps({"text": msg, "request_reply": True}))
+
+                                else:
+                                    if msg:
+                                        await client.publish("jarvis/sys/speak", json.dumps({"text": msg}))
                                         
                             except json.JSONDecodeError:
                                 pass

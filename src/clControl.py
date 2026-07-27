@@ -291,6 +291,11 @@ class LightManager:
                     }))
             return
 
+        for p_dev in parsed_devices:
+            for saved_name, saved_dev in self.lights.items():
+                if p_dev['mac'] == saved_dev['mac'] or p_dev['ip'] == saved_dev['ip']:
+                    p_dev['saved_name'] = saved_name
+                    break
         self.last_discovered_devices = parsed_devices
 
         if voice_mode:
@@ -323,7 +328,7 @@ class LightManager:
         if choice.isdigit() and int(choice) < len(devices):
             selected = devices[int(choice)]
             if input(f"Confirm save for {selected['ip']} to local workspace configurations? (y/n): ").lower() == 'y':
-                name = f"Light_{len(self.lights)+1}"
+                name = f"LIGHT_{len(self.lights)+1}"
                 self.lights[name] = {
                     "ip": selected["ip"],
                     "mac": selected["mac"],
@@ -404,17 +409,22 @@ class LightManager:
                     "message": f"Could not find a valid device matching '{raw_target}'. Number out of bounds or unrecognised name."
                 }
 
-        # 4. Success Execution
-        name = f"Light_{len(self.lights)+1}"
-        self.lights[name] = {
-            "ip": selected_device['ip'],
-            "mac": selected_device['mac'],
-            "type": selected_device['type'].lower()
-        }
-        self._save_devices()
+        # 4. Success Execution - Request Naming
+        name = selected_device.get('saved_name')
+        if not name:
+            name = f"LIGHT_{len(self.lights)+1}"
+            self.lights[name] = {
+                "ip": selected_device['ip'],
+                "mac": selected_device['mac'],
+                "type": selected_device['type'].lower()
+            }
+            self._save_devices()
+        
         return {
             "status": "success",
-            "message": f"Successfully connected to {selected_device['type']} at {selected_device['ip']} and saved as {name}"
+            "action": "request_naming",
+            "temp_name": name,
+            "message": f"Selected {name.replace('_', ' ')}." if selected_device.get('saved_name') else f"Successfully connected to {selected_device['type']} at {selected_device['ip']}."
         }
 
 async def poll_light_status(manager: LightManager) -> None:
@@ -501,24 +511,43 @@ async def mqtt_service_listener(manager: LightManager) -> None:
                             continue
                             
                         if action == "list_saved":
-                            devices = [f"{v['type'].upper()} ({v['ip']}) named {k.replace('_', ' ')}" for k, v in manager.lights.items()]
-                            msg = f"You have {len(devices)} saved lights: " + ", ".join(devices) if devices else "You have no saved lights."
-                            await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "message": msg}))
+                            if not manager.lights:
+                                await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "message": "You have no saved lights."}))
+                                continue
+                            devices = [f"[{i}] {k.replace('_', ' ').title()}" for i, k in enumerate(manager.lights.keys())]
+                            await mqtt_client.publish("jarvis/sys/ui_options", json.dumps({"options": devices, "title": "Saved Lights"}))
+                            msg = "They are displayed. What would you like to do? The options are remove, set as default, or rename."
+                            await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "message": msg, "action": "request_light_action"}))
                             continue
-                            
+
+                        def _match_light(target, lights_dict):
+                            keys = list(lights_dict.keys())
+                            # Try stripping common conversational prefixes for indices
+                            clean_target = target.replace("NUMBER_", "").replace("INDEX_", "").replace("OPTION_", "")
+                            if clean_target.isdigit():
+                                target = clean_target # For fallthrough
+                                idx = int(clean_target)
+                                if 0 <= idx < len(keys):
+                                    return keys[idx]
+                            elif target.isdigit():
+                                idx = int(target)
+                                if 0 <= idx < len(keys):
+                                    return keys[idx]
+                            for k in keys:
+                                if target in k.upper() or k.upper() in target:
+                                    return k
+                            return None
+
                         if action == "intent_rename_light":
                             target_str = payload.get("target_str", "").strip()
+                            if not target_str:
+                                await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "action": "request_light_rename", "message": "Which light would you like to rename, and to what?"}))
+                                continue
                             words = target_str.split(" to ")
                             if len(words) >= 2:
-                                old_name = words[0].strip().lower().replace(" ", "_")
-                                new_name = words[-1].strip().lower().replace(" ", "_")
-                                
-                                # Find best match
-                                match = None
-                                for k in manager.lights.keys():
-                                    if old_name in k.lower() or k.lower() in old_name:
-                                        match = k
-                                        break
+                                old_name = words[0].strip().upper().replace(" ", "_")
+                                new_name = words[-1].strip().upper().replace(" ", "_")
+                                match = _match_light(old_name, manager.lights)
                                 if match:
                                     manager.lights[new_name] = manager.lights.pop(match)
                                     manager._save_devices()
@@ -529,35 +558,33 @@ async def mqtt_service_listener(manager: LightManager) -> None:
                                 msg = "Please specify the current name and the new name, like 'rename desk light to ceiling light'."
                             await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "message": msg}))
                             continue
-                            
+
                         if action == "intent_remove_light":
-                            target_str = payload.get("target_str", "").strip().lower().replace(" ", "_")
-                            match = None
-                            for k in list(manager.lights.keys()):
-                                if target_str in k.lower() or k.lower() in target_str:
-                                    match = k
-                                    break
-                            if match:
-                                del manager.lights[match]
-                                manager._save_devices()
-                                msg = f"Removed {match.replace('_', ' ')}."
-                            elif target_str == "all":
+                            target_str = payload.get("target_str", "").strip().upper().replace(" ", "_")
+                            if not target_str:
+                                await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "action": "request_light_remove", "message": "Which light would you like to remove?"}))
+                                continue
+                            if target_str == "all":
                                 manager.lights.clear()
                                 manager._save_devices()
                                 msg = "Removed all saved lights."
                             else:
-                                msg = f"Could not find a light matching {target_str}."
+                                match = _match_light(target_str, manager.lights)
+                                if match:
+                                    del manager.lights[match]
+                                    manager._save_devices()
+                                    msg = f"Removed {match.replace('_', ' ')}."
+                                else:
+                                    msg = f"Could not find a light matching {target_str}."
                             await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "message": msg}))
                             continue
-                            
+
                         if action == "intent_set_default_light":
-                            # We don't have default light concept explicitly yet, just update env
-                            target_str = payload.get("target_str", "").strip().lower().replace(" ", "_")
-                            match = None
-                            for k in list(manager.lights.keys()):
-                                if target_str in k.lower() or k.lower() in target_str:
-                                    match = k
-                                    break
+                            target_str = payload.get("target_str", "").strip().upper().replace(" ", "_")
+                            if not target_str:
+                                await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "action": "request_light_default", "message": "Which light would you like to set as default?"}))
+                                continue
+                            match = _match_light(target_str, manager.lights)
                             if match:
                                 dev = manager.lights[match]
                                 manager.update_env_credentials(dev['ip'], dev['mac'], dev['type'])
@@ -566,7 +593,6 @@ async def mqtt_service_listener(manager: LightManager) -> None:
                                 msg = f"Could not find a light matching {target_str}."
                             await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "message": msg}))
                             continue
-
                         # --- ISOLATED HARDWARE TASK ---
                         async def execute_hardware(payload_data, action_cmd):
                             try:

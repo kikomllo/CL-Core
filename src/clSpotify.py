@@ -327,29 +327,29 @@ class SpotifyManager:
     def _handle_ducking(self, action: str) -> Tuple[bool, str]:
         # We purposely use _get_active_device for ducking because we don't want to wake Spotify just to lower the volume
         device = self._get_active_device()
-        if not device: return False, "Nothing is playing."
+        if not device: return False, ""
 
         if action == "duck":
-            if self.pre_duck_volume is not None:
-                return True, "Volume is already ducked."
+            if self.pre_duck_volume is None:
+                current_playback = self.sp.current_playback()
+                if not current_playback or not current_playback.get('is_playing'):
+                    return False, ""
                 
-            playback = self.sp.current_playback()
-            if playback and playback.get('is_playing') and playback.get('device'):
-                self.pre_duck_volume = playback['device']['volume_percent']
-                new_vol = max(0, self.pre_duck_volume - 20)
+                current_vol = current_playback.get('device', {}).get('volume_percent', 50)
+                self.pre_duck_volume = current_vol
+                new_vol = max(0, int(current_vol * 0.3))
                 self.sp.volume(new_vol, device_id=device)
-                return True, f"Listening... Volume dipped to {new_vol}%."
-            return False, "Nothing is playing, no need to duck."
+                return True, ""
+            return False, ""
 
         elif action == "unduck":
             if self.pre_duck_volume is not None:
                 self.sp.volume(self.pre_duck_volume, device_id=device)
-                restored = self.pre_duck_volume
                 self.pre_duck_volume = None
-                return True, f"Done listening. Restored volume to {restored}%."
-            return False, "No original volume to restore."
-        
-        return False, "Invalid ducking command."
+                return True, ""
+            return False, ""
+
+        return False, ""
 
     # --- MAIN EXECUTION ENGINE ---
     def execute_command(self, action: str, volume: Optional[int] = None, track_name: Optional[str] = None, 

@@ -12,7 +12,11 @@
       "turn the light on",
       "light on",
       "power on the light",
-      "activate the light"
+      "activate the light",
+      "turn on the {light_target}",
+      "turn the {light_target} on",
+      "power on the {light_target}",
+      "turn on {light_target}"
     ]
   },
   "light_off": {
@@ -30,7 +34,12 @@
       "light off",
       "kill the light",
       "power off the light",
-      "deactivate the light"
+      "deactivate the light",
+      "turn off the {light_target}",
+      "turn the {light_target} off",
+      "kill the {light_target}",
+      "power off the {light_target}",
+      "turn off {light_target}"
     ]
   },
   "light_toggle": {
@@ -43,7 +52,10 @@
     "templates": [
       "toggle the light",
       "toggle light",
-      "switch the light"
+      "switch the light",
+      "toggle the {light_target}",
+      "toggle {light_target}",
+      "switch the {light_target}"
     ]
   },
   "light_color": {
@@ -58,7 +70,10 @@
       "change the light to {color}",
       "change light color to {color}",
       "make it {color} in here",
-      "set lights to {color}"
+      "set lights to {color}",
+      "set the {light_target} to {color}",
+      "change the {light_target} to {color}",
+      "set {light_target} to {color}"
     ]
   },
   "light_dim": {
@@ -74,7 +89,10 @@
       "set brightness to {lum} percent",
       "dim the light to {lum} percent",
       "make the light {lum} percent",
-      "lights {lum} percent"
+      "lights {lum} percent",
+      "set {light_target} to {lum} percent",
+      "dim the {light_target} to {lum} percent",
+      "make the {light_target} {lum} percent"
     ]
   },
   "spotify_play_generic": {

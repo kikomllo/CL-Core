@@ -1,22 +1,55 @@
 {
   "mqtt": {
     "home/room/desk_light/set": {
-      "on": ["At your service sir. Lights on.", "Powering them up.", "Let there be light!"],
-      "off": ["Bravo going dark!", "Preparing to power down.", "Going dark sir."],
-      "toggle": ["Reconfiguring the ambient illumination sir.", "Changing light state."],
-      "color": ["Changing color to {color}."],
-      "lum": ["Calibrating brightness levels to {lum} percent."],
-      "temp": ["Calibrating temperature spectrum."]
+      "on": [
+        "At your service sir. Lights on.",
+        "Powering them up.",
+        "Let there be light!"
+      ],
+      "off": [
+        "Bravo going dark!",
+        "Preparing to power down.",
+        "Going dark sir."
+      ],
+      "toggle": [
+        "Reconfiguring the ambient illumination sir.",
+        "Changing light state."
+      ],
+      "color": [
+        "Changing color to {color}."
+      ],
+      "lum": [
+        "Calibrating brightness levels to {lum} percent."
+      ],
+      "temp": [
+        "Calibrating temperature spectrum."
+      ]
     },
     "pc/spotify/control": {
-      "play_track_artist": ["Playing {track_name} by {artist_name}."],
-      "play_track": ["Sourcing the track {track_name}. Enjoy."],
-      "play_artist": ["Playing artist: {artist_name}."],
-      "play_playlist": ["Retrieving your playlist: {playlist_name}."],
-      "pause": ["Halting the media streams."],
-      "next": ["Skipping to the subsequent track."],
-      "prev": ["Reverting to the previous track."],
-      "volume": ["Adjusting audio to {volume} percent."],
+      "play_track_artist": [
+        "Playing {track_name} by {artist_name}."
+      ],
+      "play_track": [
+        "Sourcing the track {track_name}. Enjoy."
+      ],
+      "play_artist": [
+        "Playing artist: {artist_name}."
+      ],
+      "play_playlist": [
+        "Retrieving your playlist: {playlist_name}."
+      ],
+      "pause": [
+        "Halting the media streams."
+      ],
+      "next": [
+        "Skipping to the subsequent track."
+      ],
+      "prev": [
+        "Reverting to the previous track."
+      ],
+      "volume": [
+        "Adjusting audio to {volume} percent."
+      ],
       "status_full": [
         "Currently playing {track} by {artist} from the {context} playlist. Up next is {next_in_queue}.",
         "We are listening to {track} by {artist}. The context is {context}, and the next track is {next_in_queue}."
@@ -33,24 +66,60 @@
         "Up next is {next_in_queue}.",
         "The next track in the queue is {next_in_queue}."
       ],
-      "status_idle": ["Nothing is currently playing sir."]
+      "status_idle": [
+        "Nothing is currently playing sir."
+      ]
     },
     "system/discovery": {
-      "discover": ["Running diagnostics and scanning local networks for hardware."],
-      "save_discovery": ["Query complete, sir. Committing device hardware addresses."]
+      "discover": [
+        "Running diagnostics and scanning local networks for hardware."
+      ],
+      "save_discovery": [
+        "Query complete, sir. Committing device hardware addresses."
+      ]
     },
     "pc/system/control": {
-      "restart_all_modules": ["Cycling power to the entire microservice ecosystem sir."],
-      "restart_module": ["Cycling power to the {target} microservice sir."],
-      "open": ["Launching {target}."],
-      "close": ["Shutting down the {target} application."],
-      "shutdown": ["Initiating critical system shutdown. Goodbye sir."],
-      "restart": ["Rebooting the master operating system."],
-      "volume": ["Adjusting master system volume to {level} percent."]
+      "restart_all_modules": [
+        "Cycling power to the entire microservice ecosystem sir."
+      ],
+      "restart_module": [
+        "Cycling power to the {target} microservice sir."
+      ],
+      "open": [
+        "Launching {target}."
+      ],
+      "close": [
+        "Shutting down the {target} application."
+      ],
+      "shutdown": [
+        "Initiating critical system shutdown. Goodbye sir."
+      ],
+      "restart": [
+        "Rebooting the master operating system."
+      ],
+      "volume": [
+        "Adjusting master system volume to {level} percent."
+      ]
     },
     "jarvis/sys/mic_control": {
-      "attention_on": ["I am listening sir.", "Continuous attention mode activated."],
-      "attention_off": ["Going to sleep sir.", "Powering down active listening."]
+      "attention_on": [
+        "I am listening sir.",
+        "Continuous attention mode activated."
+      ],
+      "attention_off": [
+        "Going to sleep sir.",
+        "Powering down active listening."
+      ]
+    },
+    "jarvis/sys/ui_control": {
+      "set_fullscreen": [
+        "Entering fullscreen mode, sir.",
+        "Maximizing the graphical interface."
+      ],
+      "set_overlay": [
+        "Switching to overlay mode.",
+        "Minimizing the interface, sir."
+      ]
     }
   },
   "conversational": {
