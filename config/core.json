@@ -12,6 +12,13 @@
         "silence_timeout_seconds": 1.5
     },
     "nlp_rules": {
+        "stt_corrections": {
+            "poz miezyk": "pause music",
+            "boss music": "pause music",
+            "paws music": "pause music",
+            "play missing": "play music",
+            "stop the using": "stop the music"
+        },
         "autocorrect": {
             " dot ": ".",
             " ponto ": ".",

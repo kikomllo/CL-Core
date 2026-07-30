@@ -63,7 +63,7 @@ class TTSManager:
         async with self.semaphore:
             try:
                 if client and duck_audio:
-                    await client.publish("pc/spotify/control", json.dumps({"action": "duck"}))
+                    await client.publish("pc/spotify/control", json.dumps({"action": "duck", "silent": True}))
                     await asyncio.sleep(0.3)
 
                 if client:
@@ -81,25 +81,46 @@ class TTSManager:
                     except Exception: await asyncio.sleep(0.2)
                 
                 rms_list = self.get_audio_rms(temp_file)
-                mixer.music.play()
-                
-                start_time = asyncio.get_event_loop().time()
                 frame_duration = 0.024
+                
+                # --- SILENCE TRUNCATION ALGORITHM ---
+                # Pre-calculate scaled RMS values
+                scaled_rms = [min(100, int(r * 500)) for r in rms_list]
+                # Scan backwards to find the last frame that actually contains sound
+                last_valid_idx = 0
+                for i in range(len(scaled_rms) - 1, -1, -1):
+                    if scaled_rms[i] > 0:
+                        last_valid_idx = i
+                        break
+                
+                cutoff_time = (last_valid_idx + 4) * frame_duration
+                # ------------------------------------
+
+                mixer.music.play()
+                start_time = asyncio.get_event_loop().time()
                 
                 while mixer.music.get_busy():
                     elapsed = asyncio.get_event_loop().time() - start_time
+                    
+                    # Kill the playback instantly when we hit the trailing silence
+                    if elapsed >= cutoff_time:
+                        mixer.music.stop()
+                        break
+                        
                     frame_idx = int(elapsed / frame_duration)
-                    if frame_idx < len(rms_list):
-                        val = min(100, int(rms_list[frame_idx] * 500))
+                    if frame_idx < len(scaled_rms):
+                        val = scaled_rms[frame_idx]
                         if client:
                             await client.publish("jarvis/sys/audio_vol", json.dumps({"rms": val}))
+                            
                     await asyncio.sleep(0.04)
                 
             finally:
                 mixer.music.unload()
 
-                if client and duck_audio:
-                    await client.publish("pc/spotify/control", json.dumps({"action": "unduck"}))
+                # --- NEW: DO NOT UNDUCK IF THE MIC IS ABOUT TO OPEN ---
+                if client and duck_audio and not request_reply:
+                    await client.publish("pc/spotify/control", json.dumps({"action": "unduck", "silent": True}))
                 
                 if client:
                     await client.publish("jarvis/sys/tts_done", "1")
@@ -138,7 +159,7 @@ class TTSManager:
                 
             request_reply = False
             if payload.get("append_followup"):
-                phrase += " Anything else, sir?"
+                phrase += " Anything else sir?"
                 request_reply = True
 
             await self.generate_and_play(client, phrase, duck_audio=True, request_reply=request_reply)
@@ -152,7 +173,7 @@ async def run_tts_service():
                 attempt = 0
                 await client.subscribe("jarvis/sys/speak")
                 await client.subscribe("jarvis/sys/tts_stop")
-                await client.subscribe("jarvis/sys/tts_request") # NEW SUB
+                await client.subscribe("jarvis/sys/tts_request")
                 
                 logging.info("TTS Microservice initialized. Listening on MQTT topics...")
                 

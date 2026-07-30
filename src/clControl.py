@@ -364,11 +364,9 @@ class LightManager:
                 val = word_to_num.get(word, word)
                 if val.isdigit():
                     num = int(val)
-                    # ONLY accept as an explicit index if it's within array bounds.
-                    # Otherwise, leave parsed_idx as None so the semantic engine can use it (e.g., IP tail '88')
                     if 0 <= num < len(self.last_discovered_devices):
                         parsed_idx = num
-                    break  # Break on the first number found
+                    break
 
         # 2. Index Routing
         if parsed_idx is not None:
@@ -424,7 +422,7 @@ class LightManager:
             "status": "success",
             "action": "request_naming",
             "temp_name": name,
-            "message": f"Selected {name.replace('_', ' ')}." if selected_device.get('saved_name') else f"Successfully connected to {selected_device['type']} at {selected_device['ip']}."
+            "message": f"Selected {name.replace('_', ' ')}." if selected_device.get('saved_name') else f"Successfully connected to {selected_device['type']}."
         }
 
 async def poll_light_status(manager: LightManager) -> None:
