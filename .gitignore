@@ -7,3 +7,4 @@ clControl.bat
 clControl.vbs
 clMonitor.log
 __pycache__/clControl.cpython-312.pyc
+models/
