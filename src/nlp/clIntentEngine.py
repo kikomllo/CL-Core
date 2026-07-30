@@ -160,5 +160,13 @@ class IntentEngine:
                 intent_info = self.template_to_intent[best_match[0]][0]
                 payload = self.extract_variables(chunk, intent_info)
                 executed_intents.append((payload, intent_info["target_topic"]))
+            else:
+                # --- DEBUG LOGGING FOR FAILED INTENTS ---
+                if scored_matches:
+                    scored_matches.sort(key=lambda x: x[1], reverse=True)
+                    top_template, top_score = scored_matches[0]
+                    logging.info(f"[NLP NO MATCH] Chunk: '{chunk}' | Best Candidate: '{top_template}' | Score: {top_score:.1f}/100 (Threshold: 85)")
+                else:
+                    logging.info(f"[NLP NO MATCH] Chunk: '{chunk}' | No candidates found.")
                 
         return executed_intents

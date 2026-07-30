@@ -598,7 +598,9 @@
       "fullscreen mode",
       "maximize the ui",
       "switch to fullscreen",
-      "maximize"
+      "maximize",
+      "turn on full screen mode",
+      "turn on fullscreen mode"
     ]
   },
   "ui_overlay": {

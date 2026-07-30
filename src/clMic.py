@@ -59,7 +59,7 @@ class VoiceSensor:
     INITIAL_SILENCE_SECONDS: float = 3.0
     SILENCE_LIMIT_SECONDS: float = 0.8
 
-    MIN_BASELINE: int = 700              
+    MIN_BASELINE: int = 850              
     VOICE_ACT_BUFFER: float = 1.40  
     SILENCE_CUT_BUFFER: float = 1.25    
     MAX_CEILING_BUFFER: float = 3.00        
@@ -80,6 +80,11 @@ class VoiceSensor:
         self.pending_active_window: bool = False
         self.awaiting_reply: bool = False
         self.attention_mode: bool = False
+        
+        self.is_processing: bool = False
+        self.processing_timer: float = 0.0
+        
+        self.system_ready: bool = False
         
         self.vad_hangtime: int = 0
         self.pre_speech_buffer: Deque[np.ndarray] = collections.deque(maxlen=15)
@@ -127,6 +132,7 @@ class VoiceSensor:
             client.subscribe("jarvis/sys/mic_open")
             client.subscribe("jarvis/sys/mic_control")
             client.subscribe("jarvis/sys/tts_state") 
+            client.subscribe("jarvis/sys/whisper_state")
             client.loop_start()
             return client
         except Exception as e:
@@ -146,6 +152,7 @@ class VoiceSensor:
 
         if msg.topic == "jarvis/sys/tts_state":
             state = payload.get("state")
+            self.is_processing = False
             if state == "active":
                 self.tts_busy = True
                 self.tts_lock_time = time.time()
@@ -161,9 +168,16 @@ class VoiceSensor:
                 except Exception: pass
 
                 logging.info("TTS pipeline clear. Releasing microphone lock.")
-
+        
+        elif msg.topic == "jarvis/sys/whisper_state":
+            if payload.get("state") == "ready":
+                self.system_ready = True
+                logging.info("Whisper Engine handshake received. Unlocking microphone.")
+                
         elif msg.topic == "jarvis/sys/mic_open" or action == "open_window":
             self.pending_active_window = True
+            
+        
             
         elif action == "request_reply":
             self.awaiting_reply = True
@@ -214,7 +228,9 @@ class VoiceSensor:
         return baseline, activation, silence
 
     def _record_command(self, act_thresh: float, sil_thresh: float, bypass_wakeword: bool, pass_pre_frames: list = None, is_already_speaking: bool = False) -> str:
-        if self.tts_busy: return ""
+        if self.tts_busy: 
+            if not self.attention_mode: self._publish("jarvis/sys/mic_state", {"state": "idle"})
+            return ""
 
         wait_limit = 5.0 if bypass_wakeword else self.INITIAL_SILENCE_SECONDS
         
@@ -230,13 +246,20 @@ class VoiceSensor:
         silence_counter, wait_counter = 0, 0
         started_speaking = is_already_speaking
         
+        last_rms = 0
+        flatline_counter = 0
+        FLATLINE_LIMIT_CHUNKS = int(self.RATE / self.CHUNK * 1.5)
+        
         try:
             available = self.mic_stream.get_read_available()
             if available > 0: self.mic_stream.read(available, exception_on_overflow=False)
         except Exception: pass
 
         for _ in range(max_chunks):
-            if self.tts_busy: return ""
+            # --- FIX: Ensure we reset mic_state to idle if interrupted by TTS ---
+            if self.tts_busy: 
+                if not self.attention_mode: self._publish("jarvis/sys/mic_state", {"state": "idle"})
+                return ""
 
             data = self.mic_stream.read(self.CHUNK, exception_on_overflow=False)
             audio_chunk = np.frombuffer(data, dtype=np.int16)
@@ -245,7 +268,6 @@ class VoiceSensor:
             audio_float = audio_chunk.astype(np.float32)
             vad_audio = np.append(audio_float[0], audio_float[1:] - 0.95 * audio_float[:-1])
             raw_rms = np.sqrt(np.mean(np.square(vad_audio)))
-            # Exponential expansion (noise gate)
             rms = ((raw_rms / 500.0) ** 1.5) * 500.0 if raw_rms > 0 else 0
             
             bar_length = int(max(0, min(rms / 100, 40))) 
@@ -264,14 +286,24 @@ class VoiceSensor:
                 else:
                     wait_counter += 1
             else:
+                rms_delta = abs(rms - last_rms)
+                
+                if rms_delta < (act_thresh * 0.15): 
+                    flatline_counter += 1
+                else:
+                    flatline_counter = 0
+                
                 if rms < sil_thresh: 
                     silence_counter += 1
                 else: 
                     silence_counter = 0
                     
-            if started_speaking and silence_counter >= silence_limit_chunks:
+            last_rms = rms
+
+            if started_speaking and (silence_counter >= silence_limit_chunks or flatline_counter >= FLATLINE_LIMIT_CHUNKS):
                 if not self.attention_mode:
-                    logging.info("Silence Detected! Audio captured.")
+                    reason = "Silence" if silence_counter >= silence_limit_chunks else "Volume Flatline"
+                    logging.info(f"{reason} Detected! Audio captured.")
                 break
                 
             if not started_speaking and wait_counter >= wait_limit_chunks:
@@ -279,7 +311,6 @@ class VoiceSensor:
                 self._publish("jarvis/sys/mic_state", {"state": "idle"})
                 return ""
                 
-        # Send audio directly to the dedicated inference microservice
         final_audio = np.concatenate(frames).astype(np.float32) / 32768.0
         audio_b64 = base64.b64encode(final_audio.tobytes()).decode('utf-8')
         
@@ -287,8 +318,12 @@ class VoiceSensor:
             "audio_b64": audio_b64
         })
         logging.info("Audio buffer dispatched to Inference Engine.")
-        self._publish("jarvis/sys/mic_state", {"state": "idle"})
-        return "" # We do not return text here anymore
+        
+        self.is_processing = True
+        self.processing_timer = time.time()
+        self._publish("jarvis/sys/mic_state", {"state": "processing"}) 
+        
+        return ""
 
     def _flush_buffer(self):
         try:
@@ -306,8 +341,12 @@ class VoiceSensor:
             )
             
         import time
-        time.sleep(2.5)
-        self._publish("jarvis/sys/speak", {"text": "System online!", "skip_ducking": False, "request_reply": False})
+        logging.info("Waiting for Ecosystem (Whisper) to come online...")
+        
+        while not self.system_ready:
+            self._flush_buffer() # Keep clearing the mic so we don't build up a massive delay
+            time.sleep(0.2)
+        
         logging.info(f"--- SYSTEM READY: Listening for '{self.target_word}' ---")
 
         while True:
@@ -331,7 +370,12 @@ class VoiceSensor:
             audio_data = np.frombuffer(self.mic_stream.read(self.CHUNK, exception_on_overflow=False), dtype=np.int16)
             audio_float = audio_data.astype(np.float32)
             
-            vad_audio = np.append(audio_float[0], audio_float[1:] - 0.95 * audio_float[:-1])
+            # 1. High-Pass Filter (Removes bass/thumps below ~300Hz)
+            hp_audio = np.append(audio_float[0], audio_float[1:] - 0.95 * audio_float[:-1])
+
+            # 2. Low-Pass Filter (Removes cymbals/high-freq noise above ~3000Hz)
+            vad_audio = np.append(hp_audio[0], 0.6 * hp_audio[1:] + 0.4 * hp_audio[:-1])
+
             raw_rms = np.sqrt(np.mean(np.square(vad_audio)))
             # Exponential expansion (noise gate)
             current_rms = ((raw_rms / 500.0) ** 1.5) * 500.0 if raw_rms > 0 else 0
@@ -354,16 +398,20 @@ class VoiceSensor:
             
             b_noise, a_thresh, s_thresh = self._calculate_thresholds()
 
-            # Publish volume data to MQTT so the host supervisor can display it
-            # (docker logs doesn't support carriage-return overwriting)
-            self._publish("jarvis/sys/volume", {
-                "rms": int(current_rms),
-                "bar": meter,
-                "status": status_tag,
-                "b_noise": int(b_noise),
-                "a_thresh": int(a_thresh),
-                "s_thresh": int(s_thresh)
-            })
+            # Fallback: Unlock if Whisper/Daemon crashes and never responds for 15 seconds
+            if self.is_processing and (time.time() - self.processing_timer > 15.0):
+                self.is_processing = False
+                self._publish("jarvis/sys/mic_state", {"state": "idle"})
+
+            if not self.is_processing:
+                self._publish("jarvis/sys/volume", {
+                    "rms": int(current_rms),
+                    "bar": meter,
+                    "status": status_tag,
+                    "b_noise": int(b_noise),
+                    "a_thresh": int(a_thresh),
+                    "s_thresh": int(s_thresh)
+                })
             
             is_active_window = time.time() < self.active_window_end
             bypass_wakeword = self.attention_mode or self.awaiting_reply or is_active_window
@@ -401,7 +449,7 @@ class VoiceSensor:
                 if wakeword_triggered:
                     print("="*50)
                     logging.info("WAKE WORD DETECTED!")
-                    self._publish("pc/spotify/control", {"action": "duck"})
+                    self._publish("pc/spotify/control", {"action": "duck", "silent": True})
                 
                 if not bypass_wakeword:
                     try:
@@ -438,7 +486,6 @@ class VoiceSensor:
                 if not self.attention_mode:
                     logging.info(f"Room Baseline: {b_noise:.0f} | Activate: {a_thresh:.0f} | Silence: {s_thresh:.0f}")
                     
-                # Note: This will now return empty string "" because the audio array was sent over MQTT instead
                 pass_pre_frames = []
                 is_already_speaking = False
                 if not wakeword_triggered and current_rms > a_thresh:
@@ -448,8 +495,8 @@ class VoiceSensor:
                     
                 command_text = self._record_command(a_thresh, s_thresh, bypass_wakeword, pass_pre_frames, is_already_speaking)
                 
-                if wakeword_triggered:
-                    self._publish("pc/spotify/control", {"action": "unduck"})
+                # --- FIX 1: Removed the premature unduck command entirely. The Daemon will handle restoring the volume. ---
+                
                 if command_text:
                     self._publish("jarvis/sensor/voice", command_text)
                     
@@ -460,10 +507,9 @@ class VoiceSensor:
                 self.pre_speech_buffer.clear()
                 self.vad_hangtime = 0
                 
-                try:
-                    available = self.mic_stream.get_read_available()
-                    if available > 0: self.mic_stream.read(available, exception_on_overflow=False)
-                except Exception: pass
+                # --- FIX 2: Explicit buffer flush with a tiny delay to ignore physical volume bumps ---
+                time.sleep(0.15)
+                self._flush_buffer()
 
     def shutdown(self) -> None:
         if self.mic_stream is not None:

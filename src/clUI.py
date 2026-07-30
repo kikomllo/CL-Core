@@ -198,7 +198,6 @@ class MqttThread(QThread):
             if new_state in ["debug", "normal", "background"]:
                 self.state_change_signal.emit(new_state)
 
-
 class DraggableWidget(QWidget):
     def __init__(self, widget_id, title, content_widget, closable=True, parent=None):
         super().__init__(parent)
@@ -313,10 +312,11 @@ class MediaWidget(QWidget):
         self.prev_btn.setStyleSheet(btn_style)
         self.prev_btn.clicked.connect(lambda: self.send_cmd("prev", silent=True))
         
+        # --- FIX: Re-added the button creation lines ---
         self.play_btn = QPushButton("⏯")
         self.play_btn.setFixedSize(30, 30)
         self.play_btn.setStyleSheet(btn_style)
-        self.play_btn.clicked.connect(lambda: self.send_cmd("toggle", silent=True))
+        self.play_btn.clicked.connect(self.toggle_optimistic)
         
         self.next_btn = QPushButton("⏭")
         self.next_btn.setFixedSize(30, 30)
@@ -335,16 +335,37 @@ class MediaWidget(QWidget):
         self.duration = 0.0
         self.status = "Paused"
         
+        # --- NEW: Tracks seconds for automatic polling ---
+        self.poll_counter = 0  
+        
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.timer.start(1000)
         
+    def toggle_optimistic(self):
+        # Instantly flip the UI state for immediate visual feedback
+        self.status = "Paused" if self.status == "Playing" else "Playing"
+        self.play_btn.setText("⏸" if self.status == "Playing" else "▶")
+        self.send_cmd("toggle", silent=True)
+
     def _tick(self):
         if self.status == "Playing" and self.duration > 0:
             self.position += 1.0
             if self.position > self.duration:
                 self.position = self.duration
             self._update_time_label()
+            
+        # --- NEW: Automatic Polling Loop (Conditional) ---
+        self.poll_counter += 1
+        if self.poll_counter >= 8:  # Fetch fresh data every 8 seconds
+            self.poll_counter = 0
+            
+            # Check if the widget is actually visible on screen
+            if self.isVisible():
+                # Check if the main window (JarvisUI) is in fullscreen mode
+                main_window = self.window()
+                if getattr(main_window, 'is_fullscreen', False):
+                    self.send_cmd("status", silent=True)
 
     def _update_time_label(self):
         def fmt_time(secs):
@@ -854,11 +875,17 @@ class JarvisUI(QWidget):
             if widget_id not in self.active_widgets:
                 media_widget = MediaWidget()
                 self.spawn_widget(widget_id, "Media Controls", media_widget)
+                
+                # Fetch instantly on spawn
+                media_widget.send_cmd("status", silent=True) 
             else:
                 w = self.active_widgets[widget_id]
                 if w.isHidden():
                     w.show()
                     w.raise_()
+                    
+                    # Fetch instantly when brought back from hidden state
+                    w.content_widget.send_cmd("status", silent=True)
                 else:
                     self.close_draggable_widget(widget_id)
 

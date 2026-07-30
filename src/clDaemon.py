@@ -35,6 +35,8 @@ class CentralDaemon:
         word_to_number = nlp_rules.get("word_to_number", {})
         abort_keywords = nlp_rules.get("abort_keywords", ["abort", "cancel", "nevermind"])
         
+        self.stt_corrections = nlp_rules.get("stt_corrections", {})
+        
         # --- UNIFIED STATE MACHINE ---
         # Replaces isolated boolean flags with a scalable, time-aware context tracker
         self.active_context = {
@@ -60,9 +62,26 @@ class CentralDaemon:
                 optimized_map[target_topic] = command.copy()
             
         return [(cmd, topic) for topic, cmd in optimized_map.items()]
+    
+    def sanitize_transcription(self, text: str) -> str:
+        """
+        MIDDLEWARE: Intercepts known STT phonetic hallucinations and corrects them
+        using the mapping defined in core.json before intent processing.
+        """
+        cleaned_text = text.lower().strip()
+        
+        for hallucination, correction in self.stt_corrections.items():
+            if hallucination in cleaned_text:
+                cleaned_text = cleaned_text.replace(hallucination, correction)
+                logging.info(f"[STT INTERCEPTOR] Replaced hallucination '{hallucination}' -> '{correction}'")
+                
+        return cleaned_text
 
     def route_voice_command(self, payload_data: str) -> List[Tuple[Dict[str, Any], str]]:
-        clean_text = self.nlp.normalize_text(payload_data)
+        import re
+        
+        sanitized_payload = self.sanitize_transcription(payload_data)
+        clean_text = self.nlp.normalize_text(sanitized_payload)
 
         # 1. Global Abort Check
         if self.nlp.is_abort_command(clean_text):
@@ -74,35 +93,39 @@ class CentralDaemon:
             logging.info(f"[STATE] Active context '{self.active_context['type']}' expired.")
             self.active_context["type"] = None
 
-        # 3. Contextual Routing
-        if self.active_context["type"] == "spotify_choice" and clean_text.isdigit():
-            self.active_context["type"] = None
-            return [({"action": "play_choice", "choice_index": int(clean_text)}, "pc/spotify/control")]
+        # --- EXTRACT FIRST DIGIT FOR INDEX ROUTING ---
+        extracted_digits = re.findall(r'\d+', clean_text)
+        choice_num = int(extracted_digits[0]) if extracted_digits else None
 
-        if self.active_context["type"] == "discovery_choice" and clean_text.isdigit():
+        # 3. Contextual Routing
+        if self.active_context["type"] == "spotify_choice" and choice_num is not None:
             self.active_context["type"] = None
-            return [({"action": "save_discovery", "index": int(clean_text)}, "system/discovery")]
+            return [({"action": "play_choice", "choice_index": choice_num}, "pc/spotify/control")]
+
+        if self.active_context["type"] == "discovery_choice" and choice_num is not None:
+            self.active_context["type"] = None
+            return [({"action": "save_discovery", "index": choice_num}, "system/discovery")]
 
         if self.active_context["type"] == "discovery_name":
             temp_name = self.active_context.get("temp_name", "unknown")
             self.active_context["type"] = None
             if clean_text.lower() == "skip" or self.nlp.is_abort_command(clean_text):
-                return []
+                return [({"action": "unduck", "silent": True}, "pc/spotify/control")]
             return [({"action": "intent_rename_light", "target_str": f"{temp_name} to {clean_text}"}, "home/room/all/set")]
 
         if self.active_context["type"] == "light_remove_target":
             self.active_context["type"] = None
-            if self.nlp.is_abort_command(clean_text): return []
+            if self.nlp.is_abort_command(clean_text): return [({"action": "unduck", "silent": True}, "pc/spotify/control")]
             return [({"action": "intent_remove_light", "target_str": clean_text}, "home/room/all/set")]
 
         if self.active_context["type"] == "light_default_target":
             self.active_context["type"] = None
-            if self.nlp.is_abort_command(clean_text): return []
+            if self.nlp.is_abort_command(clean_text): return [({"action": "unduck", "silent": True}, "pc/spotify/control")]
             return [({"action": "intent_set_default_light", "target_str": clean_text}, "home/room/all/set")]
 
         if self.active_context["type"] == "light_rename_target":
             self.active_context["type"] = None
-            if self.nlp.is_abort_command(clean_text): return []
+            if self.nlp.is_abort_command(clean_text): return [({"action": "unduck", "silent": True}, "pc/spotify/control")]
             return [({"action": "intent_rename_light", "target_str": clean_text}, "home/room/all/set")]
 
         # 4. Standard NLP Parsing & Shadowing Execution
@@ -117,6 +140,9 @@ class CentralDaemon:
                 self.active_context = {"type": None, "expires_at": 0.0}
                 await client.publish("jarvis/sys/ui_options", json.dumps({"options": []}))
                 await client.publish("jarvis/sys/mic_control", json.dumps({"action": "cancel"}))
+                
+                # --- NEW: Catch-all to restore volume if the user ignores the request_reply state ---
+                await client.publish("pc/spotify/control", json.dumps({"action": "unduck", "silent": True}))
 
     async def monitor_config(self):
         while True:
@@ -152,16 +178,22 @@ class CentralDaemon:
                         payload_data = message.payload.decode('utf-8')
                         
                         if topic == "jarvis/sensor/voice":
-                            logging.info(f"Voice command received: '{payload_data}'")
+                            clean_text = self.nlp.normalize_text(payload_data)
+                            logging.info(f"[VOICE INPUT] Raw: '{payload_data}' | Normalized: '{clean_text}'")
+                            
                             intents = self.route_voice_command(payload_data)
                             
                             if intents:
-                                final_mic_state = "open_window"
+                                final_mic_state = "open_window" if self.followups_enabled else None
                                 
                                 for command, target_topic in intents:
                                     if target_topic == "jarvis/sys/control" and command.get("action") == "abort":
                                         logging.info("[SYSTEM] Abort sequence initiated.")
                                         await client.publish("jarvis/sys/tts_stop", "1")
+                                        
+                                        # --- Restore audio dynamically when globally aborting ---
+                                        await client.publish("pc/spotify/control", json.dumps({"action": "unduck", "silent": True}))
+                                        
                                         final_mic_state = None  
                                         break
                                         
@@ -191,15 +223,16 @@ class CentralDaemon:
                                         continue
 
                                     elif target_topic:
-                                        logging.info(f"Routing intent -> {target_topic}: {command}")
-                                        await client.publish(target_topic, json.dumps(command))
-                                        
                                         action = command.get("action", "")
                                         is_silent = command.get("silent", False)
                                         is_spotify_status = (target_topic == "pc/spotify/control" and action.startswith("status_"))
                                         
+                                        # --- REVERTED: Send the command exactly as the NLP engine mapped it ---
+                                        logging.info(f"Routing intent -> {target_topic}: {command}")
+                                        await client.publish(target_topic, json.dumps(command))
+                                        
                                         if not is_spotify_status and not is_silent:
-                                            # Send a blind TTS request to the dedicated TTS service
+                                            # Send a blind TTS request to the dedicated TTS service using original command
                                             await client.publish("jarvis/sys/tts_request", json.dumps({
                                                 "target_topic": target_topic,
                                                 "command": command,
@@ -212,7 +245,7 @@ class CentralDaemon:
                                 if final_mic_state and final_mic_state != "request_reply":
                                     await client.publish("jarvis/sys/mic_control", json.dumps({"action": final_mic_state}))
                             else:
-                                logging.warning(f"No intent matched for: '{payload_data}'")
+                                logging.warning(f"[UNMATCHED STT] Could not resolve any intent for: '{payload_data}'")
                             
                             await client.publish("jarvis/sys/audio_process", json.dumps({"state": "idle"}))
                         
@@ -298,9 +331,23 @@ class CentralDaemon:
                                     await client.publish("jarvis/sys/speak", json.dumps({"text": msg, "request_reply": True}))
 
                                 else:
-                                    if msg and not fb.get('silent', False):
-                                        await client.publish("jarvis/sys/speak", json.dumps({"text": msg}))
-                                        
+                                    is_spotify = (device == 'spotify')
+                                    is_success = (fb.get('status') == 'success')
+                                    is_silent = fb.get('silent', False)
+                                    
+                                    if msg and not is_silent:
+                                        if is_spotify and is_success:
+                                            pass 
+                                        else:
+                                            text_to_speak = msg if isinstance(msg, str) else str(msg)
+                                            
+                                            await client.publish("jarvis/sys/mic_control", json.dumps({"action": "cancel"}))
+                                            
+                                            await client.publish("jarvis/sys/speak", json.dumps({
+                                                "text": text_to_speak,
+                                                "request_reply": self.followups_enabled
+                                            }))
+                                            
                             except json.JSONDecodeError:
                                 pass
                                 

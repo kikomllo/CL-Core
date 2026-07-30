@@ -18,6 +18,7 @@ def load_settings():
 
 SETTINGS, ECOSYSTEM_MODE = load_settings()
 DEBUG_MQTT = SETTINGS.get("debug_mqtt", False)
+SYSTEM_HAS_ANNOUNCED = False
 
 # --- NATIVE HOST SERVICES (not in Docker) ---
 NATIVE_SERVICES = [
@@ -85,7 +86,7 @@ def on_message(client, userdata, msg):
             pass
         return
 
-    if DEBUG_MQTT and topic != "jarvis/sys/volume":
+    if DEBUG_MQTT and topic != "jarvis/sys/volume" and topic != "jarvis/sys/audio_process":
         print(f"\r\033[K\033[36m[DEBUG-MQTT] [CH: {topic}] {payload_str}\033[0m")
 
     if topic == "jarvis/sys/manager":
@@ -116,6 +117,28 @@ def on_message(client, userdata, msg):
                 pass
         except Exception:
             pass
+    
+    elif topic == "jarvis/sys/whisper_state":
+        global SYSTEM_HAS_ANNOUNCED
+        if SYSTEM_HAS_ANNOUNCED:
+            return
+            
+        try:
+            payload = json.loads(payload_str)
+            if payload.get("state") == "ready":
+                SYSTEM_HAS_ANNOUNCED = True
+                print("\n" + "="*50)
+                print("[SUPERVISOR] WHISPER INFERENCE ENGINE ONLINE.")
+                print("[SUPERVISOR] ALL SYSTEMS GO!")
+                print("="*50 + "\n")
+                
+                client.publish("jarvis/sys/speak", json.dumps({
+                    "text": "System online!", 
+                    "skip_ducking": False, 
+                    "request_reply": False
+                }))
+        except Exception:
+            pass
 
 def main():
     print("="*50)
@@ -123,25 +146,51 @@ def main():
     print(f"Ecosystem State: {ECOSYSTEM_MODE}")
     print("="*50 + "\n")
 
-    # 1. Start Docker ecosystem first
+    # 1. Start Docker ecosystem first (This boots the Mosquitto Broker)
     boot_docker()
 
-    # Attach mic log for boot messages only (Booting/READY) — not the volume meter
-    # Volume meter is now streamed via MQTT directly to avoid Docker log buffering
-    print("[SUPERVISOR] Attaching to jarvis-mic...")
-    time.sleep(2)
-    mic_log = subprocess.Popen(
-        ["docker", "logs", "-f", "--tail", "0", "jarvis-mic"],
-        stdout=sys.stdout, stderr=sys.stdout
-    )
+    # --- THE FIX: Start Native Services BEFORE the Supervisor connects to MQTT ---
+    print("[SUPERVISOR] Starting native host services...")
+    for desc, filename in NATIVE_SERVICES:
+        start_native(desc, filename)
 
-    # 2. Connect global MQTT supervisor
+    print("[SUPERVISOR] Giving UI and services 3 seconds to mount and subscribe...")
+    time.sleep(3)
+    # -------------------------------------------------------------------------
+
+    import threading
+
+    def stream_reader(container_name, pipe):
+        """Continuously reads from a subprocess pipe in the background."""
+        for line in iter(pipe.readline, b''):
+            if ECOSYSTEM_MODE.upper() in ["STANDARD", "NORMAL", "DEBUG"]:
+                sys.stdout.write(line.decode('utf-8', errors='replace'))
+                sys.stdout.flush()
+
+    print("[SUPERVISOR] Attaching to core Docker logs (Mic, Daemon, Whisper)...")
+    
+    docker_log_procs = []
+    for container in ["jarvis-mic", "jarvis-brain", "jarvis-whisper"]:
+        proc = subprocess.Popen(
+            ["docker", "logs", "-f", "--tail", "0", container],
+            stdout=subprocess.PIPE,  
+            stderr=subprocess.STDOUT 
+        )
+        
+        t = threading.Thread(target=stream_reader, args=(container, proc.stdout), daemon=True)
+        t.start()
+        
+        docker_log_procs.append(proc)   
+
+    # 2. Connect global MQTT supervisor (This will now trigger the TTS *after* UI is ready)
     client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION1)
     client.on_message = on_message
     try:
         client.connect("localhost", 1883, 60)
         client.subscribe("jarvis/sys/manager")
         client.subscribe("jarvis/sys/ui_control")
+        client.subscribe("jarvis/sys/volume")
+        client.subscribe("jarvis/sys/whisper_state")
         if DEBUG_MQTT:
             client.subscribe("#")
             print("\033[36m[SUPERVISOR] Global MQTT Packet Sniffer is ONLINE.\033[0m")
@@ -186,11 +235,6 @@ def main():
     except Exception as e:
         print(f"[SUPERVISOR] Warning: Could not register hotkeys: {e}")
 
-    # 4. Start native host services
-    print("[SUPERVISOR] Starting native host services...")
-    for desc, filename in NATIVE_SERVICES:
-        start_native(desc, filename)
-
     print("\n" + "="*50)
     print("HOST SUPERVISOR ONLINE. Press Ctrl+C to shutdown.")
     print("="*50 + "\n")
@@ -214,13 +258,14 @@ def main():
         stop_native(filename)
 
     try:
-        mic_log.terminate()
+        for proc in docker_log_procs:
+            proc.terminate()
     except Exception:
         pass
 
     client.loop_stop()
     tear_down_docker()
     print("[SUPERVISOR] Shutdown complete. Goodbye.")
-
+    
 if __name__ == "__main__":
     main()

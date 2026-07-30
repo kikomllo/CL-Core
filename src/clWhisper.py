@@ -24,8 +24,11 @@ class InferenceEngine:
         device = "cuda" if hw in ["gpu", "cuda"] else "cpu"
         compute = "float16" if device == "cuda" else "int8"
         
+        self.model_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models"))
+        os.makedirs(self.model_dir, exist_ok=True)
+        
         logging.info(f"Loading Whisper '{size}' into {device.upper()} memory...")
-        self.model = WhisperModel(size, device=device, compute_type=compute)
+        self.model = WhisperModel(size, device=device, compute_type=compute, download_root=self.model_dir)
         logging.info("Model loaded. Waiting for audio arrays over MQTT...")
 
     def transcribe(self, audio_array: np.ndarray) -> str:
@@ -71,6 +74,9 @@ async def main():
         try:
             async with aiomqtt.Client("localhost") as client:
                 attempt = 0
+                
+                await client.publish("jarvis/sys/whisper_state", json.dumps({"state": "ready"}), retain=True)
+                
                 await client.subscribe("jarvis/sys/audio_process")
                 
                 async for message in client.messages:
@@ -87,6 +93,7 @@ async def main():
                         logging.info(f"Transcription: '{text}'")
                         await client.publish("jarvis/sensor/voice", text)
                     else:
+                        logging.info(f"Transcription: ''")
                         await client.publish("jarvis/sys/audio_process", json.dumps({"state": "idle"}))
                         
         except Exception as e:
