@@ -4,15 +4,33 @@
         "hardware": "cpu",
         "stt_model": "small",
         "debug_mqtt": true,
-        "enable_followup": false
+        "enable_followup": false,
+        "silent_mode": false,
+        "last_light_target": "living_room"
     },
     "vad_settings": {
         "energy_threshold_normal": 300,
         "attention_mode_multiplier": 2.5,
         "silence_timeout_seconds": 1.5
     },
+    "alarm_settings": {
+        "tts_prompt": "Wake up, sir! Alarm activated. Please speak the deactivation code to dismiss.",
+        "default_challenge": "turn off alarm",
+        "max_ring_duration_seconds": 300
+    },
     "nlp_rules": {
         "stt_corrections": {
+            "lease the alarms": "list the alarms",
+            "lease alarms": "list alarms",
+            "least alarms": "list alarms",
+            "jervis": "jarvis",
+            "garvis": "jarvis",
+            "charvis": "jarvis",
+            "javis": "jarvis",
+            "jarves": "jarvis",
+            "yervis": "jarvis",
+            "travis": "jarvis",
+            "harvest": "jarvis",
             "poz miezyk": "pause music",
             "boss music": "pause music",
             "paws music": "pause music",

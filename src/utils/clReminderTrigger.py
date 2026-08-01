@@ -3,6 +3,7 @@ import sys
 import json
 import subprocess
 import logging
+import time
 
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
 
@@ -23,16 +24,19 @@ def get_volume():
         
     return 100
 
-def boot_ecosystem_if_offline():
+def boot_ecosystem_if_offline() -> bool:
     try:
         ps_out = subprocess.check_output(["ps", "-ef"]).decode()
         if "python3 clJarvis.py" not in ps_out and "python clJarvis.py" not in ps_out:
             logging.info("Jarvis ecosystem is offline. Booting it up!")
             jarvis_path = os.path.abspath(os.path.join(BASE_DIR, "..", "..", "clJarvis.py"))
-            # Launch in a new session so it outlives this script
+            # Launch in a new session so it outlives this script    
             subprocess.Popen(["python3", jarvis_path], cwd=os.path.dirname(jarvis_path), start_new_session=True)
+            time.sleep(3.5)
+            return True
     except Exception as e:
         logging.error(f"Failed to boot ecosystem: {e}")
+    return False
 
 def main():
     if len(sys.argv) < 2:
@@ -52,7 +56,7 @@ def main():
     text = meta.get("text", "You have a reminder!")
     audio_path = meta.get("audio_path", "")
     
-    boot_ecosystem_if_offline()
+    was_offline = boot_ecosystem_if_offline()
     
     vol = get_volume()
     logging.info(f"Triggering reminder {reminder_id}. System volume is {vol}%.")
@@ -70,7 +74,22 @@ def main():
     # 2. Play audio if volume is adequate
     if vol >= 5:
         if audio_path and os.path.exists(audio_path):
-            logging.info("Sending TTS 'Playing Reminder'...")
+            logging.info("Sending TTS and Reminder Audio to centralized queue...")
+            try:
+                import paho.mqtt.client as mqtt
+                c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+                c.connect("localhost")
+                # Route the playback through the centralized TTS queue to serialize audio access
+                msg1 = c.publish("jarvis/sys/speak", json.dumps({"text": "Playing reminder.", "skip_ducking": True}))
+                msg2 = c.publish("jarvis/sys/play_audio", json.dumps({"path": audio_path}))
+                msg1.wait_for_publish()
+                msg2.wait_for_publish()
+                c.disconnect()
+            except Exception as e:
+                logging.error(f"Failed to trigger reminder audio: {e}")
+                
+        else:
+            logging.warning("No audio file found for this reminder. Falling back to live TTS...")
             try:
                 import paho.mqtt.client as mqtt
                 import time
@@ -87,41 +106,41 @@ def main():
                 c.subscribe("jarvis/sys/tts_done")
                 c.loop_start()
                 
-                c.publish("jarvis/sys/speak", json.dumps({"text": "Playing reminder.", "skip_ducking": True}))
+                c.publish("jarvis/sys/speak", json.dumps({"text": f"Sir, reminder: {text}", "skip_ducking": True}))
                 
                 start_time = time.time()
                 while not tts_finished and time.time() - start_time < 5.0:
                     time.sleep(0.1)
-                
-                c.publish("jarvis/sys/mic_control", json.dumps({"action": "mute"}))
-                c.publish("jarvis/sys/tts_state", json.dumps({"state": "active"}))
-                c.publish("pc/spotify/control", json.dumps({"action": "duck"}))
                     
                 c.loop_stop()
-            except Exception as e:
-                logging.error(f"Failed to play TTS: {e}")
-                
-            logging.info("Playing reminder audio...")
-            try:
-                subprocess.run(["ffplay", "-nodisp", "-autoexit", "-volume", "35", audio_path], env=env)
-            except Exception as e:
-                logging.error(f"Failed to play audio with aplay: {e}")
-            
-            try:
-                import paho.mqtt.client as mqtt
-                c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
-                c.connect("localhost")
-                msg1 = c.publish("jarvis/sys/mic_control", json.dumps({"action": "unmute"}))
-                msg2 = c.publish("jarvis/sys/tts_state", json.dumps({"state": "idle"}))
-                msg3 = c.publish("pc/spotify/control", json.dumps({"action": "unduck"}))
-                msg1.wait_for_publish()
-                msg2.wait_for_publish()
-                msg3.wait_for_publish()
                 c.disconnect()
             except Exception as e:
-                pass
-        else:
-            logging.warning("No audio found for this reminder.")
+                logging.error(f"Failed to play fallback TTS: {e}")
+    
+    try:
+        if os.path.exists(meta_path):
+            os.remove(meta_path)
+            logging.info(f"Erased reminder metadata: {meta_path}")
+            
+        if audio_path and os.path.exists(audio_path):
+            os.remove(audio_path)
+            logging.info(f"Erased reminder audio: {audio_path}")
+    except Exception as e:
+        logging.error(f"Failed to clean up reminder files: {e}")
+
+    # 3. If ecosystem was booted solely for this reminder, shut down all processes cleanly
+    if was_offline:
+        logging.info("Ecosystem was launched for this reminder. Shutting down all processes...")
+        time.sleep(1.0)
+        try:
+            import paho.mqtt.client as mqtt
+            c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+            c.connect("localhost")
+            msg = c.publish("jarvis/sys/manager", json.dumps({"action": "shutdown"}))
+            msg.wait_for_publish()
+            c.disconnect()
+        except Exception as e:
+            logging.error(f"Failed to publish ecosystem shutdown command: {e}")
 
 if __name__ == "__main__":
     main()

@@ -320,6 +320,8 @@
       "restart module {target}",
       "reboot module {target}",
       "reboot the {target} service",
+      "reset {target} module",
+      "reset {target} service",
       "restart the {target} service",
       "restart {target}",
       "reboot {target}"
@@ -334,6 +336,7 @@
     ],
     "templates": [
       "attention mode",
+      "on attention mode",
       "enter attention mode",
       "pay attention",
       "work mode",
@@ -346,6 +349,7 @@
     "target_topic": "jarvis/sys/mic_control",
     "action_override": "attention_off",
     "priority_words": [
+      "attention",
       "rest",
       "chill",
       "exit",
@@ -353,6 +357,8 @@
     ],
     "templates": [
       "exit attention mode",
+      "disable attention mode",
+      "off attention mode",
       "time to rest",
       "go to rest",
       "you can rest",
@@ -471,6 +477,76 @@
       "stop followups"
     ]
   },
+  "system_silent_mode_on": {
+    "target_topic": "jarvis/sys/control",
+    "action_override": "silent_mode_on",
+    "priority_words": [
+      "silent",
+      "silence",
+      "quiet",
+      "mute",
+      "disable"
+    ],
+    "templates": [
+      "enable silent mode",
+      "enable silence mode",
+      "turn on silent mode",
+      "turn on silence mode",
+      "disable tts response",
+      "disable tts responses",
+      "disable tts",
+      "disable speech",
+      "full silence mode",
+      "full silence",
+      "mute tts",
+      "mute responses",
+      "silent mode on",
+      "silence mode on"
+    ]
+  },
+  "system_silent_mode_off": {
+    "target_topic": "jarvis/sys/control",
+    "action_override": "silent_mode_off",
+    "priority_words": [
+      "silent",
+      "silence",
+      "off",
+      "enable",
+      "unmute",
+      "speech",
+      "speak",
+      "talk"
+    ],
+    "templates": [
+      "disable silent mode",
+      "disable silence mode",
+      "turn off silent mode",
+      "turn off silence mode",
+      "enable tts response",
+      "enable tts responses",
+      "enable tts",
+      "enable speech",
+      "unmute tts",
+      "unmute responses",
+      "silent mode off",
+      "silence mode off"
+    ]
+  },
+  "system_silent_mode_toggle": {
+    "target_topic": "jarvis/sys/control",
+    "action_override": "toggle_silent_mode",
+    "priority_words": [
+      "toggle",
+      "silent",
+      "silence"
+    ],
+    "templates": [
+      "toggle silent mode",
+      "toggle silence mode",
+      "silent mode",
+      "silence mode"
+    ]
+  },
   "system_light_list": {
     "target_topic": "system/discovery",
     "action_override": "list_saved",
@@ -509,17 +585,16 @@
     "target_topic": "system/discovery",
     "action_override": "intent_remove_light",
     "priority_words": [
-      "delete",
-      "remove",
-      "forget"
+      "delete light",
+      "remove light",
+      "forget light"
     ],
     "templates": [
-      "delete {target_str}",
       "delete light {target_str}",
-      "remove {target_str}",
       "remove light {target_str}",
-      "forget {target_str}",
-      "forget light {target_str}"
+      "forget light {target_str}",
+      "delete device {target_str}",
+      "remove device {target_str}"
     ]
   },
   "system_light_default": {
@@ -618,6 +693,131 @@
       "return to overlay",
       "switch to overlay",
       "switch to overlay mode"
+    ]
+  },
+  "alarm_create": {
+    "target_topic": "jarvis/sys/alarm/create",
+    "action_override": "create",
+    "priority_words": [
+      "alarm",
+      "wake"
+    ],
+    "templates": [
+      "set an alarm for {time_str}",
+      "set alarm for {time_str}",
+      "set an alarm to {time_str}",
+      "set alarm to {time_str}",
+      "set an alarm at {time_str}",
+      "set alarm at {time_str}",
+      "set an alarm in {time_str}",
+      "set alarm in {time_str}",
+      "alarm for {time_str}",
+      "alarm to {time_str}",
+      "alarm at {time_str}",
+      "wake me up at {time_str}",
+      "wake me up in {time_str}"
+    ]
+  },
+  "alarm_cancel": {
+    "target_topic": "jarvis/sys/alarm/control",
+    "action_override": "intent_delete_alarm",
+    "priority_words": [
+      "cancel alarm",
+      "delete alarm"
+    ],
+    "templates": [
+      "cancel the alarm",
+      "cancel my alarm",
+      "cancel alarm",
+      "delete the alarm",
+      "delete my alarm",
+      "delete alarm",
+      "remove alarm"
+    ]
+  },
+  "alarm_list": {
+    "target_topic": "jarvis/sys/alarm/control",
+    "action_override": "list",
+    "priority_words": [
+      "alarms",
+      "show alarms"
+    ],
+    "templates": [
+      "show my alarms",
+      "list my alarms",
+      "what are my alarms",
+      "show alarms",
+      "list alarms"
+    ]
+  },
+  "alarm_delete_all": {
+    "target_topic": "jarvis/sys/alarm/control",
+    "action_override": "delete_all",
+    "priority_words": [
+      "delete all alarms",
+      "cancel all alarms",
+      "clear all alarms"
+    ],
+    "templates": [
+      "delete all alarms",
+      "delete all my alarms",
+      "cancel all alarms",
+      "cancel all my alarms",
+      "clear all alarms",
+      "clear all my alarms",
+      "remove all alarms",
+      "remove all my alarms"
+    ]
+  },
+  "alarm_deactivate": {
+    "target_topic": "jarvis/sys/alarm/deactivate",
+    "action_override": "stop",
+    "priority_words": [
+      "stop alarm",
+      "turn off alarm",
+      "dismiss alarm"
+    ],
+    "templates": [
+      "turn off the alarm",
+      "turn off alarm",
+      "stop the alarm",
+      "stop alarm",
+      "dismiss the alarm",
+      "dismiss alarm",
+      "deactivate alarm",
+      "i am awake"
+    ]
+  },
+  "todo_add": {
+    "target_topic": "jarvis/sys/todo/create",
+    "action_override": "create",
+    "priority_words": [
+      "add to todo list",
+      "add to to-do list",
+      "add to my todo list"
+    ],
+    "templates": [
+      "add {task} to my todo list",
+      "add {task} to the todo list",
+      "add {task} to my to-do list",
+      "add {task} to the to-do list",
+      "add to the todo list {task}",
+      "add to my todo list {task}"
+    ]
+  },
+  "todo_list": {
+    "target_topic": "jarvis/sys/todo/control",
+    "action_override": "list",
+    "priority_words": [
+      "todo list",
+      "to-do list",
+      "what is on my todo list"
+    ],
+    "templates": [
+      "show my todo list",
+      "what is on my todo list",
+      "read my todo list",
+      "list my todos"
     ]
   }
 }

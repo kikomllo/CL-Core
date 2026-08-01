@@ -7,6 +7,8 @@ import pyaudio
 import logging
 import collections
 import time
+import threading
+import wave
 import paho.mqtt.publish as publish
 import paho.mqtt.client as mqtt_client
 from typing import Dict, Any, Tuple, Optional, Deque
@@ -88,6 +90,7 @@ class VoiceSensor:
         
         self.vad_hangtime: int = 0
         self.pre_speech_buffer: Deque[np.ndarray] = collections.deque(maxlen=15)
+        self.ring_buffer: Deque[np.ndarray] = collections.deque(maxlen=30) # <--- ADD THIS HERE
         
         self.attention_multiplier = self._load_attention_multiplier()
         
@@ -133,12 +136,13 @@ class VoiceSensor:
             client.subscribe("jarvis/sys/mic_control")
             client.subscribe("jarvis/sys/tts_state") 
             client.subscribe("jarvis/sys/whisper_state")
+            client.subscribe("jarvis/sys/audio_process")
             client.loop_start()
             return client
         except Exception as e:
             logging.critical(f"Failed to connect to MQTT broker: {e}")
             sys.exit(1)
-
+            
     def _on_mqtt_message(self, client: mqtt_client.Client, userdata: Any, msg: mqtt_client.MQTTMessage) -> None:
         payload_str = msg.payload.decode('utf-8')
         payload = {}
@@ -150,7 +154,11 @@ class VoiceSensor:
 
         action = payload.get("action")
 
-        if msg.topic == "jarvis/sys/tts_state":
+        if msg.topic == "jarvis/sys/audio_process":
+            if payload.get("state") == "idle":
+                self.is_processing = False
+
+        elif msg.topic == "jarvis/sys/tts_state":
             state = payload.get("state")
             self.is_processing = False
             if state == "active":
@@ -180,6 +188,7 @@ class VoiceSensor:
         
             
         elif action == "request_reply":
+            self.tts_busy = False
             self.awaiting_reply = True
             self.ambient_noise_buffer.clear()
             self.oww_model.reset()
@@ -227,12 +236,18 @@ class VoiceSensor:
         
         return baseline, activation, silence
 
-    def _record_command(self, act_thresh: float, sil_thresh: float, bypass_wakeword: bool, pass_pre_frames: list = None, is_already_speaking: bool = False) -> str:
+    def _record_command(self, act_thresh: float, sil_thresh: float, bypass_wakeword: bool, pass_pre_frames: list = None, is_already_speaking: bool = False, wakeword_triggered: bool = False) -> str:
         if self.tts_busy: 
             if not self.attention_mode: self._publish("jarvis/sys/mic_state", {"state": "idle"})
             return ""
 
-        wait_limit = 5.0 if bypass_wakeword else self.INITIAL_SILENCE_SECONDS
+        # --- Dynamic wait limit for standalone wake words ---
+        if wakeword_triggered and not is_already_speaking:
+            wait_limit = 0.8
+        elif bypass_wakeword:
+            wait_limit = 5.0
+        else:
+            wait_limit = self.INITIAL_SILENCE_SECONDS
         
         if not self.attention_mode:
             logging.info(f"LISTENING... (Trigger: >{act_thresh:.0f} | Cutoff: <{sil_thresh:.0f} | Timeout: {wait_limit}s)")
@@ -307,9 +322,16 @@ class VoiceSensor:
                 break
                 
             if not started_speaking and wait_counter >= wait_limit_chunks:
-                if not self.attention_mode: logging.warning("No voice detected. Closing mic.")
-                self._publish("jarvis/sys/mic_state", {"state": "idle"})
-                return ""
+                if frames and wakeword_triggered:
+                    if not self.attention_mode: 
+                        logging.info("Standalone wake word timeout. BYPASSING WHISPER.")
+                    self._publish("jarvis/sys/mic_state", {"state": "idle"})
+                    return "hey jarvis"
+                else:
+                    if not self.attention_mode: 
+                        logging.warning("No voice detected. Closing mic.")
+                    self._publish("jarvis/sys/mic_state", {"state": "idle"})
+                    return ""
                 
         final_audio = np.concatenate(frames).astype(np.float32) / 32768.0
         audio_b64 = base64.b64encode(final_audio.tobytes()).decode('utf-8')
@@ -368,6 +390,8 @@ class VoiceSensor:
                 self.pending_active_window = False 
 
             audio_data = np.frombuffer(self.mic_stream.read(self.CHUNK, exception_on_overflow=False), dtype=np.int16)
+            self.ring_buffer.append(audio_data)
+            
             audio_float = audio_data.astype(np.float32)
             
             # 1. High-Pass Filter (Removes bass/thumps below ~300Hz)
@@ -449,21 +473,6 @@ class VoiceSensor:
                 if wakeword_triggered:
                     print("="*50)
                     logging.info("WAKE WORD DETECTED!")
-                    self._publish("pc/spotify/control", {"action": "duck", "silent": True})
-                
-                if not bypass_wakeword:
-                    try:
-                        self.tts_busy = True 
-                        greeting = "Hello Sir, what can I do?" if not self.already_spoke else "Yes sir?"
-                        self.already_spoke = True
-                        self._publish("jarvis/sys/speak", {"text": greeting, "skip_ducking": True, "request_reply": True})
-                    except Exception as e:
-                        self.tts_busy = False
-                        
-                wait_start = time.time()
-                while self.tts_busy and (time.time() - wait_start) < 30.0:
-                    self._flush_buffer()
-                    time.sleep(0.05)
                     
                 if self.awaiting_reply: self.awaiting_reply = False
                 if is_active_window: self.active_window_end = 0.0
@@ -488,14 +497,15 @@ class VoiceSensor:
                     
                 pass_pre_frames = []
                 is_already_speaking = False
-                if not wakeword_triggered and current_rms > a_thresh:
-                    pass_pre_frames = list(self.pre_speech_buffer)
-                    pass_pre_frames.append(audio_data)
-                    is_already_speaking = True
-                    
-                command_text = self._record_command(a_thresh, s_thresh, bypass_wakeword, pass_pre_frames, is_already_speaking)
                 
-                # --- FIX 1: Removed the premature unduck command entirely. The Daemon will handle restoring the volume. ---
+                if wakeword_triggered or current_rms > a_thresh:
+                    pass_pre_frames = list(self.ring_buffer)
+                    
+                    # If they are actively talking right now, tell the recorder not to wait for new audio
+                    if current_rms > a_thresh:
+                        is_already_speaking = True
+                    
+                command_text = self._record_command(a_thresh, s_thresh, bypass_wakeword, pass_pre_frames, is_already_speaking, wakeword_triggered)
                 
                 if command_text:
                     self._publish("jarvis/sensor/voice", command_text)
@@ -505,9 +515,10 @@ class VoiceSensor:
                 self.oww_model.reset()
                 self.ambient_noise_buffer.clear()
                 self.pre_speech_buffer.clear()
+                self.ring_buffer.clear()
                 self.vad_hangtime = 0
                 
-                # --- FIX 2: Explicit buffer flush with a tiny delay to ignore physical volume bumps ---
+                # --- Explicit buffer flush with a tiny delay to ignore physical volume bumps ---
                 time.sleep(0.15)
                 self._flush_buffer()
 

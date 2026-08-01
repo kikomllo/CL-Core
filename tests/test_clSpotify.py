@@ -3,6 +3,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
 from unittest.mock import patch
 
 @pytest.fixture
+def mock_redis(mocker):
+    return mocker.MagicMock()
+
+@pytest.fixture
 def spotify_manager(mock_redis):
     with patch.dict(os.environ, {"SPOTIPY_CLIENT_ID": "dummy", "SPOTIPY_CLIENT_SECRET": "dummy", "SPOTIPY_REDIRECT_URI": "dummy"}):
         with patch('spotipy.SpotifyOAuth'), patch('spotipy.Spotify'):
@@ -17,7 +21,7 @@ class TestSpotify:
         mocker.patch.object(spotify_manager, '_get_active_device', return_value="device")
         mocker.patch.object(spotify_manager.sp, 'current_playback', return_value={"device": {"volume_percent": 80}, "is_playing": True})
         spotify_manager.execute_command("duck")
-        mock_vol.assert_called_once_with(60, device_id="device")
+        mock_vol.assert_called_once_with(64, device_id="device")
 
     def test_track_search_and_cache(self, spotify_manager, mocker):
         mock_search = mocker.patch.object(spotify_manager.sp, 'search')
@@ -41,3 +45,24 @@ class TestSpotify:
         # Verify it dropped into the cache logic
         assert success is True, f"Failed: {feedback}"
         assert "CONFIDENCE_LOW|" in feedback
+
+    def test_duck_prevents_volume_collapse(self, spotify_manager, mocker):
+        mock_vol = mocker.patch.object(spotify_manager.sp, 'volume')
+        mocker.patch.object(spotify_manager, '_get_active_device', return_value="device")
+        
+        # Initial playback at 94%
+        mocker.patch.object(spotify_manager.sp, 'current_playback', return_value={"device": {"volume_percent": 94}, "is_playing": True})
+        spotify_manager.execute_command("duck")
+        assert spotify_manager.last_known_normal_volume == 94
+        assert spotify_manager.pre_duck_volume == 94
+        mock_vol.assert_called_with(75, device_id="device")
+
+        # Unduck called
+        spotify_manager.execute_command("unduck")
+        assert spotify_manager.pre_duck_volume is None
+
+        # Rapid second duck while current_playback still reports ducked 28%
+        mocker.patch.object(spotify_manager.sp, 'current_playback', return_value={"device": {"volume_percent": 28}, "is_playing": True})
+        spotify_manager.execute_command("duck")
+        assert spotify_manager.pre_duck_volume == 94  # Uses preserved last_known_normal_volume
+        mock_vol.assert_called_with(75, device_id="device")

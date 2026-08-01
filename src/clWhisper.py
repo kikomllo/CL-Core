@@ -82,6 +82,10 @@ async def main():
                 async for message in client.messages:
                     payload = json.loads(message.payload.decode('utf-8'))
                     
+                    # --- Ignore state messages from the Daemon ---
+                    if "audio_b64" not in payload:
+                        continue
+                    
                     # Reconstruct the numpy array from the Base64 MQTT message
                     audio_bytes = base64.b64decode(payload["audio_b64"])
                     audio_array = np.frombuffer(audio_bytes, dtype=np.float32)
