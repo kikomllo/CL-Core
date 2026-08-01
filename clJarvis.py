@@ -23,7 +23,7 @@ SYSTEM_HAS_ANNOUNCED = False
 # --- NATIVE HOST SERVICES (not in Docker) ---
 NATIVE_SERVICES = [
     ("UI",        "src/clUI.py"),
-    ("Reminders", "src/clReminders.py"),
+    ("Utilities", "src/clUtilities.py"),
 ]
 
 PROCESSES = {}
@@ -94,7 +94,17 @@ def on_message(client, userdata, msg):
             payload = json.loads(payload_str)
             action = payload.get("action")
 
-            if action == "restart_all_modules":
+            if action in ["shutdown", "shutdown_ecosystem", "stop_all_modules"]:
+                print("\n" + "="*60)
+                print("[SUPERVISOR] INITIATING CLEAN ECOSYSTEM SHUTDOWN")
+                print("="*60)
+                for desc, filename in NATIVE_SERVICES:
+                    stop_native(filename)
+                tear_down_docker()
+                print("[SUPERVISOR] Shutdown complete. Goodbye.")
+                os._exit(0)
+
+            elif action == "restart_all_modules":
                 print("\n" + "="*60)
                 print("[SUPERVISOR] INITIATING FULL ECOSYSTEM REBOOT")
                 print("="*60)
@@ -102,6 +112,51 @@ def on_message(client, userdata, msg):
                 time.sleep(1.0)
                 boot_docker()
                 print("[SUPERVISOR] ECOSYSTEM REBOOT COMPLETE\n" + "="*60)
+
+            elif action == "restart_module":
+                raw_target = str(payload.get("target", "")).lower().strip()
+                print(f"[SUPERVISOR] Requested restart for module target: '{raw_target}'")
+                
+                restarted = False
+                # Check native host services first
+                for desc, filename in NATIVE_SERVICES:
+                    desc_lower = desc.lower()
+                    file_lower = filename.lower()
+                    if raw_target in desc_lower or desc_lower in raw_target or raw_target in file_lower or ("ui" in raw_target and "ui" in file_lower):
+                        print(f"[SUPERVISOR] Restarting native host service: {desc} ({filename})...")
+                        stop_native(filename)
+                        time.sleep(0.5)
+                        start_native(desc, filename)
+                        restarted = True
+                        break
+                
+                if not restarted:
+                    # Check docker containers
+                    container_map = {
+                        "whisper": "jarvis-whisper",
+                        "brain": "jarvis-brain",
+                        "daemon": "jarvis-brain",
+                        "music": "jarvis-music",
+                        "spotify": "jarvis-music",
+                        "tts": "jarvis-tts",
+                        "mic": "jarvis-mic",
+                        "voice": "jarvis-mic",
+                        "sensor": "jarvis-mic",
+                        "light": "jarvis-lights",
+                    }
+                    matched_container = None
+                    for key, cname in container_map.items():
+                        if key in raw_target:
+                            matched_container = cname
+                            break
+                    if not matched_container and raw_target.startswith("jarvis-"):
+                        matched_container = raw_target
+
+                    if matched_container:
+                        print(f"[SUPERVISOR] Restarting docker container: {matched_container}...")
+                        subprocess.run(["docker", "restart", matched_container])
+                    else:
+                        print(f"[SUPERVISOR] Unable to match target '{raw_target}' to any active service or container.")
 
         except json.JSONDecodeError:
             print("[SUPERVISOR] Received malformed JSON command.")

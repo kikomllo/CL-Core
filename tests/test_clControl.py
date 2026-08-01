@@ -22,6 +22,8 @@ def manager():
     m.word_to_number = {"zero": "0", "one": "1", "two": "2", "three": "3", "four": "4"}
     
     m.update_env_credentials = MagicMock() 
+    m._save_devices = MagicMock()
+    m._save_last_target = MagicMock()
     
     return m
 
@@ -72,7 +74,7 @@ class TestLightManagerResolution:
         result = manager._handle_discovery_selection("tapo 11")
         
         assert result["status"] == "success", "Failed to resolve device cleanly."
-        manager.update_env_credentials.assert_called_with("192.168.1.11", "AA", "tapo")
+        manager.update_env_credentials.assert_called_with("192.168.1.11", "AA", "tapo", "main")
 
     def test_empty_memory_catch(self, manager):
         """Ensures the system rejects selection attempts if no scan was performed."""
@@ -81,3 +83,28 @@ class TestLightManagerResolution:
         result = manager._handle_discovery_selection(1)
         
         assert result["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_last_target_memory(self, manager, mocker):
+        """Ensures generic light commands target the last modified light instead of all."""
+        manager.lights = {
+            "bedroom": {"ip": "192.168.1.10", "mac": "AA", "type": "wiz"},
+            "desk_light": {"ip": "192.168.1.11", "mac": "BB", "type": "wiz"}
+        }
+        mocker.patch.object(manager, '_execute_wiz_target')
+        
+        # 1. Reset last_target to 'all'
+        manager.last_target = "all"
+        assert manager.last_target == "all"
+
+        # 2. Control bedroom light explicitly
+        await manager.control_bulb(off=True, target_name="bedroom light")
+        assert manager.last_target == "bedroom"
+
+        # 3. Generic turn off the light should target bedroom, not all
+        await manager.control_bulb(off=True, target_name="the light")
+        assert manager.last_target == "bedroom"
+
+        # 4. Explicit turn off all lights sets last_target to all
+        await manager.control_bulb(off=True, target_name="all lights")
+        assert manager.last_target == "all"

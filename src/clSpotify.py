@@ -56,6 +56,7 @@ class SpotifyManager:
         self.cache_lock = threading.Lock()
         self.pre_duck_volume: Optional[int] = None
         self.ducked_device_id: Optional[str] = None
+        self.last_known_normal_volume: int = 80
         
         self.confidence_threshold: float = 0.60
         self.perfect_match_threshold: float = 0.85
@@ -386,12 +387,18 @@ class SpotifyManager:
                 raw_vol = current_playback.get('device', {}).get('volume_percent')
                 current_vol = raw_vol if raw_vol is not None else 50
                 
-                # Cache both volume and target device
-                self.pre_duck_volume = current_vol
+                # If current volume is normal (>50%), record it as the true un-ducked volume.
+                # If current volume is <=50% (already ducked or mid-restore), preserve last_known_normal_volume.
+                if current_vol > 50:
+                    self.last_known_normal_volume = current_vol
+                    self.pre_duck_volume = current_vol
+                else:
+                    self.pre_duck_volume = getattr(self, 'last_known_normal_volume', 80)
+                    
                 self.ducked_device_id = device
-                new_vol = max(0, int(current_vol * 0.3))
+                new_vol = max(0, int(self.pre_duck_volume * 0.8))
                 
-                logging.info(f"[DUCK] Ducking volume from {current_vol}% to {new_vol}% on device '{device}'")
+                logging.info(f"[DUCK] Ducking volume from {self.pre_duck_volume}% to {new_vol}% on device '{device}'")
                 self.sp.volume(new_vol, device_id=device)
                 return True, f"Ducked to {new_vol}%"
             except Exception as e:

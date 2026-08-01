@@ -20,7 +20,7 @@ class TestDaemonCoreLogic:
         # --- 1. SPOTIFY SPECIFICITY & PLURALIZATION ---
         ("play my playlists chill vibes", "play", "playlist_name", "chill vibes"),
         ("play the playlist Meet the makers", "play", "playlist_name", "meet the makers"),
-        ("play shape of you by ed sheeran", "play", "track_name", "shape of you by ed sheeran"),
+        ("play shape of you by ed sheeran", "play", "track_name", "shape of you"),
         ("resume the music please", "play", None, None),
         ("play the next song", "next", None, None),
         ("go back a song", "prev", None, None),
@@ -138,7 +138,7 @@ class TestDaemonMQTTIntegration:
         with pytest.raises(asyncio.CancelledError):
             await daemon.run()
             
-        mock_sleep.assert_awaited_once_with(5)
+        mock_sleep.assert_awaited_once_with(1)
 
     @pytest.mark.asyncio
     async def test_state_ttl_expiration(self, daemon, mock_mqtt, message_stream, mocker):
@@ -160,3 +160,23 @@ class TestDaemonMQTTIntegration:
         publish_calls = mock_mqtt.publish.call_args_list
         spotify_calls = [c for c in publish_calls if c[0][0] == "pc/spotify/control"]
         assert len(spotify_calls) == 0, "Daemon executed expired state logic."
+
+    @pytest.mark.asyncio
+    async def test_silent_mode_suppresses_tts_and_followup(self, daemon, mock_mqtt, message_stream):
+        """Tests that enabling silent mode suppresses TTS speak requests and followups."""
+        mock_mqtt.messages = message_stream([
+            ("jarvis/sensor/voice", "enable silent mode"),
+            ("jarvis/sensor/voice", "turn on living room light")
+        ])
+        
+        await daemon.run()
+        
+        assert daemon.silent_mode is True
+        
+        publish_calls = mock_mqtt.publish.call_args_list
+        speak_calls = [c for c in publish_calls if c[0][0] == "jarvis/sys/speak"]
+        tts_req_calls = [c for c in publish_calls if c[0][0] == "jarvis/sys/tts_request"]
+        
+        # When silent mode is enabled, no TTS speech or followup request should be published
+        assert len(tts_req_calls) == 0
+        assert len(speak_calls) == 0

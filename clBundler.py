@@ -3,14 +3,14 @@ import glob
 import argparse
 
 def create_ai_bundle(specific_files=None):
-    output_file = "jarvis_ai_review.txt"
+    output_file = "./outputs/jarvis_ai_review.txt"
     
     # If specific files are passed via CLI, use those. Otherwise, use the default targets.
     if specific_files:
         target_files = specific_files
     else:
         # Default behavior: root runner + everything in src folder
-        target_files = ["clJarvis.py"] + glob.glob("src/*.py") + glob.glob("src/utils/*.py") + glob.glob("src/nlp/*.py")
+        target_files = ["clJarvis.py"] + glob.glob("src/*.py") + glob.glob("src/utils/*.py") + glob.glob("src/nlp/*.py") + glob.glob("config/*.json")
         
     with open(output_file, "w", encoding="utf-8") as outfile:
         outfile.write("# JARVIS SMART HOME OS - FILE BUNDLE\n\n")
@@ -18,7 +18,14 @@ def create_ai_bundle(specific_files=None):
         for filepath in target_files:
             if os.path.exists(filepath):
                 outfile.write(f"## File: `{filepath}`\n")
-                outfile.write("```python\n")
+                
+                extension = filepath.split(".")[-1]
+                if extension == "py":
+                    outfile.write("```python\n")
+                elif extension == "json":
+                    outfile.write("```json\n")
+                else: 
+                    outfile.write("```\n")
                 
                 try:
                     with open(filepath, "r", encoding="utf-8") as infile:

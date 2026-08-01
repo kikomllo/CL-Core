@@ -25,6 +25,12 @@ if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
+def _normalize_mac(mac: str) -> str:
+    if not mac:
+        return ""
+    return mac.replace(":", "").replace("-", "").strip().lower()
+
+
 class LightManager:
     """Enterprise state controller for single-device execution, dual discovery, and self-healing recovery."""
     
@@ -53,6 +59,30 @@ class LightManager:
             
         self.tapo_client: ApiClient = ApiClient(self.email, self.password)
         self.last_discovered_devices: List[Dict[str, str]] = []
+        self.last_target: str = self._load_last_target()
+        
+    def _load_last_target(self) -> str:
+        core_file = os.path.abspath(os.path.join(self.base_dir, "..", "config", "core.json"))
+        if os.path.exists(core_file):
+            try:
+                with open(core_file, 'r', encoding='utf-8') as f:
+                    return json.load(f).get("settings", {}).get("last_light_target", "all")
+            except Exception as e:
+                logging.error(f"Failed to load last_light_target from core.json: {e}")
+        return "all"
+
+    def _save_last_target(self, target: str) -> None:
+        core_file = os.path.abspath(os.path.join(self.base_dir, "..", "config", "core.json"))
+        if os.path.exists(core_file):
+            try:
+                with open(core_file, 'r', encoding='utf-8') as f:
+                    core = json.load(f)
+                if "settings" not in core: core["settings"] = {}
+                core["settings"]["last_light_target"] = target
+                with open(core_file, 'w', encoding='utf-8') as f:
+                    json.dump(core, f, indent=4)
+            except Exception as e:
+                logging.error(f"Failed to save last_light_target to core.json: {e}")
         
     def _load_devices(self) -> Dict[str, Any]:
         if os.path.exists(self.devices_file):
@@ -80,7 +110,7 @@ class LightManager:
             logging.error(f"Failed to load entities.json: {e}")
             return {}
 
-    def update_env_credentials(self, ip: str, mac: str, light_type: str) -> None:
+    def update_env_credentials(self, ip: str, mac: str, light_type: str, light_target: str = "main") -> None:
         self.env.update("LIGHT_IP", ip)
         self.env.update("LIGHT_MAC", mac)
         self.env.update("LIGHT_TYPE", light_type)
@@ -145,7 +175,7 @@ class LightManager:
             if self.light_type == "wiz":
                 results = await wiz_discovery.discover_lights(broadcast_space="255.255.255.255")
                 for dev in results:
-                    if dev.mac.lower() == self.bulb_mac.lower():
+                    if _normalize_mac(dev.mac) == _normalize_mac(self.bulb_mac):
                         logging.info(f"[SELF-HEALING] WiZ Bulb recovered at new IP: {dev.ip}")
                         self.update_env_credentials(dev.ip, self.bulb_mac, "wiz")
                         return True
@@ -154,7 +184,7 @@ class LightManager:
                 base_ip = self._get_subnet_base()
                 results = await self._sweep_ips([f"{base_ip}.{i}" for i in range(1, 255)])
                 for dev in results:
-                    if dev['mac'].lower() == self.bulb_mac.lower():
+                    if _normalize_mac(dev['mac']) == _normalize_mac(self.bulb_mac):
                         logging.info(f"[SELF-HEALING] Tapo Bulb recovered at new IP: {dev['ip']}")
                         self.update_env_credentials(dev['ip'], self.bulb_mac, "tapo")
                         return True
@@ -167,18 +197,35 @@ class LightManager:
     async def control_bulb(self, toggle: bool = False, on: bool = False, off: bool = False, 
                            color: str = None, lum: int = None, temp: int = None, retry_attempt: bool = False, target_name: str = "all") -> None:
         
+        all_synonyms = {"all", "all lights", "all the lights", "everything", "every light"}
+        generic_targets = {"light", "the light", "lights", "the lights", ""}
+        
+        target_name_clean = str(target_name).lower().strip() if target_name else ""
+        
+        if target_name_clean in generic_targets:
+            effective_target = getattr(self, 'last_target', 'all')
+        elif target_name_clean in all_synonyms:
+            self.last_target = "all"
+            self._save_last_target("all")
+            effective_target = "all"
+        else:
+            effective_target = target_name_clean
+
         targets = []
-        if target_name == "all" or not target_name:
+        if effective_target == "all" or not effective_target:
             if self.lights:
                 for name, dev in self.lights.items():
                     targets.append((name, dev['ip'], dev['mac'], dev['type']))
             elif self.bulb_ip:
                 targets.append(("default", self.bulb_ip, self.bulb_mac, self.light_type))
         else:
-            # find matching light
+            norm_target = effective_target.replace('_', ' ').strip()
             for name, dev in self.lights.items():
-                if target_name.lower() in name.lower() or name.lower() in target_name.lower():
+                norm_name = name.lower().replace('_', ' ').strip()
+                if norm_target in norm_name or norm_name in norm_target:
                     targets.append((name, dev['ip'], dev['mac'], dev['type']))
+                    self.last_target = name
+                    self._save_last_target(name)
                     break
             
             if not targets and self.bulb_ip:
@@ -292,8 +339,10 @@ class LightManager:
             return
 
         for p_dev in parsed_devices:
+            p_mac = _normalize_mac(p_dev.get('mac', ''))
             for saved_name, saved_dev in self.lights.items():
-                if p_dev['mac'] == saved_dev['mac'] or p_dev['ip'] == saved_dev['ip']:
+                s_mac = _normalize_mac(saved_dev.get('mac', ''))
+                if (p_mac and p_mac == s_mac) or (p_dev.get('ip') and p_dev['ip'] == saved_dev.get('ip')):
                     p_dev['saved_name'] = saved_name
                     break
         self.last_discovered_devices = parsed_devices
@@ -328,7 +377,14 @@ class LightManager:
         if choice.isdigit() and int(choice) < len(devices):
             selected = devices[int(choice)]
             if input(f"Confirm save for {selected['ip']} to local workspace configurations? (y/n): ").lower() == 'y':
-                name = f"LIGHT_{len(self.lights)+1}"
+                sel_mac = _normalize_mac(selected.get('mac', ''))
+                existing_name = None
+                for k, dev_info in self.lights.items():
+                    if (sel_mac and sel_mac == _normalize_mac(dev_info.get('mac', ''))) or (selected.get('ip') == dev_info.get('ip')):
+                        existing_name = k
+                        break
+                
+                name = existing_name or f"LIGHT_{len(self.lights)+1}"
                 self.lights[name] = {
                     "ip": selected["ip"],
                     "mac": selected["mac"],
@@ -410,6 +466,14 @@ class LightManager:
         # 4. Success Execution - Request Naming
         name = selected_device.get('saved_name')
         if not name:
+            sel_mac = _normalize_mac(selected_device.get('mac', ''))
+            for k, dev_info in self.lights.items():
+                if (sel_mac and sel_mac == _normalize_mac(dev_info.get('mac', ''))) or (selected_device.get('ip') == dev_info.get('ip')):
+                    name = k
+                    selected_device['saved_name'] = k
+                    break
+
+        if not name:
             name = f"LIGHT_{len(self.lights)+1}"
             self.lights[name] = {
                 "ip": selected_device['ip'],
@@ -418,6 +482,8 @@ class LightManager:
             }
             self._save_devices()
         
+        self.update_env_credentials(selected_device['ip'], selected_device['mac'], selected_device['type'].lower(), "main")
+
         return {
             "status": "success",
             "action": "request_naming",
@@ -550,11 +616,13 @@ async def mqtt_service_listener(manager: LightManager) -> None:
                                     manager.lights[new_name] = manager.lights.pop(match)
                                     manager._save_devices()
                                     msg = f"Renamed {match.replace('_', ' ')} to {new_name.replace('_', ' ')}."
+                                    await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "message": msg, "silent": True}))
                                 else:
                                     msg = f"Could not find a light matching {old_name}."
+                                    await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "error", "message": msg}))
                             else:
                                 msg = "Please specify the current name and the new name, like 'rename desk light to ceiling light'."
-                            await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "message": msg}))
+                                await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "error", "message": msg}))
                             continue
 
                         if action == "intent_remove_light":
@@ -566,15 +634,17 @@ async def mqtt_service_listener(manager: LightManager) -> None:
                                 manager.lights.clear()
                                 manager._save_devices()
                                 msg = "Removed all saved lights."
+                                await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "message": msg, "silent": True}))
                             else:
                                 match = _match_light(target_str, manager.lights)
                                 if match:
                                     del manager.lights[match]
                                     manager._save_devices()
                                     msg = f"Removed {match.replace('_', ' ')}."
+                                    await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "message": msg, "silent": True}))
                                 else:
                                     msg = f"Could not find a light matching {target_str}."
-                            await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "message": msg}))
+                                    await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "error", "message": msg}))
                             continue
 
                         if action == "intent_set_default_light":
@@ -587,14 +657,16 @@ async def mqtt_service_listener(manager: LightManager) -> None:
                                 dev = manager.lights[match]
                                 manager.update_env_credentials(dev['ip'], dev['mac'], dev['type'])
                                 msg = f"Set {match.replace('_', ' ')} as the default legacy light."
+                                await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "message": msg, "silent": True}))
                             else:
                                 msg = f"Could not find a light matching {target_str}."
-                            await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "message": msg}))
+                                await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "error", "message": msg}))
                             continue
+                        
                         # --- ISOLATED HARDWARE TASK ---
                         async def execute_hardware(payload_data, action_cmd):
                             is_silent = payload_data.get("silent", False)
-                            light_target = payload_data.get("light_target", "all")
+                            light_target = payload_data.get("light_target", "")
                             try:
                                 await manager.control_bulb(
                                     on=(action_cmd == "on"), off=(action_cmd == "off"), toggle=(action_cmd == "toggle"),
@@ -605,8 +677,8 @@ async def mqtt_service_listener(manager: LightManager) -> None:
                                     "device": "smart_lights", "status": "success",
                                     "message": f"Successfully shifted hardware targets to '{action_cmd}' state.",
                                     "action_cmd": action_cmd,
-                                    "target": light_target,
-                                    "silent": is_silent
+                                    "target": manager.last_target,
+                                    "silent": True
                                 }))
                                 manager.poll_trigger.set()
                             except Exception as e:
