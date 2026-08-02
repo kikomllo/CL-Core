@@ -19,10 +19,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ALARMS_DIR = os.path.join(BASE_DIR, "..", "data", "alarms")
 REMINDERS_DIR = os.path.join(BASE_DIR, "..", "data", "reminders")
 TODOS_DIR = os.path.join(BASE_DIR, "..", "data", "todos")
+EVENTS_DIR = os.path.join(BASE_DIR, "..", "data", "events")
 
 os.makedirs(ALARMS_DIR, exist_ok=True)
 os.makedirs(REMINDERS_DIR, exist_ok=True)
 os.makedirs(TODOS_DIR, exist_ok=True)
+os.makedirs(EVENTS_DIR, exist_ok=True)
 
 class JarvisUtilities:
     def __init__(self):
@@ -60,6 +62,9 @@ class JarvisUtilities:
                     await client.subscribe("jarvis/sys/todo/create")
                     await client.subscribe("jarvis/sys/todo/control")
                     await client.subscribe("jarvis/sys/todo/request")
+                    await client.subscribe("jarvis/sys/calendar/create")
+                    await client.subscribe("jarvis/sys/calendar/request")
+                    await client.subscribe("jarvis/sys/calendar/control")
                     
                     async for message in client.messages:
                         topic = message.topic.value
@@ -103,6 +108,20 @@ class JarvisUtilities:
                                 await self.handle_todo_list()
                         elif topic == "jarvis/sys/todo/request":
                             await self.handle_todo_list()
+                            
+                        # CALENDAR
+                        elif topic == "jarvis/sys/calendar/create":
+                            await self.handle_calendar_create(payload)
+                        elif topic == "jarvis/sys/calendar/request":
+                            action = payload.get("action")
+                            if action in ["read", "list"]:
+                                await self.handle_calendar_list()
+                            elif action == "daily_briefing":
+                                await self.handle_calendar_briefing()
+                        elif topic == "jarvis/sys/calendar/control":
+                            action = payload.get("action")
+                            if action == "delete":
+                                await self.handle_calendar_delete(payload.get("id"))
                             
             except Exception as e:
                 logging.error(f"MQTT Error in Utilities: {e}")
@@ -323,7 +342,12 @@ class JarvisUtilities:
         if not task:
             task = payload.get("raw_text")
         if not task:
-            await self.mqtt_client.publish("jarvis/sys/speak", json.dumps({"text": "What do you want me to add to the to-do list?", "request_reply": True}))
+            await self.mqtt_client.publish("jarvis/feedback", json.dumps({
+                "device": "utilities",
+                "status": "success",
+                "action": "request_todo_add",
+                "message": "What do you want me to add to the to-do list?"
+            }))
             return
             
         todo_id = str(int(time.time()))
@@ -380,6 +404,125 @@ class JarvisUtilities:
             "status": "success",
             "todos": todos
         }))
+
+    # -------------------------------------------------------------------------
+    # CALENDAR LOGIC
+    # -------------------------------------------------------------------------
+    async def handle_calendar_create(self, payload):
+        event_title = payload.get("event") or payload.get("raw_text")
+        time_str = payload.get("time_str")
+        
+        if not event_title:
+            await self.mqtt_client.publish("jarvis/feedback", json.dumps({
+                "device": "utilities",
+                "status": "success",
+                "action": "request_calendar_add",
+                "message": "What event would you like to schedule?"
+            }))
+            return
+            
+        if not time_str:
+            await self.mqtt_client.publish("jarvis/feedback", json.dumps({
+                "device": "utilities",
+                "status": "success",
+                "action": "request_calendar_time",
+                "event": event_title,
+                "message": "When is this event?"
+            }))
+            return
+
+        time_str = self.normalize_time_string(time_str)
+        
+        dt_res = dateparser.search.search_dates(time_str, settings={'PREFER_DATES_FROM': 'future'})
+        if not dt_res:
+            await self.mqtt_client.publish("jarvis/sys/speak", json.dumps({"text": "I couldn't figure out the time for that event, sir.", "skip_ducking": True}))
+            return
+
+        dt = dt_res[0][1]
+        event_id = str(payload.get("id")) if payload.get("id") else str(int(time.time()))
+        
+        # GCal Compatible Schema Prep
+        event_data = {
+            "id": event_id,
+            "summary": event_title,
+            "start": {
+                "dateTime": dt.isoformat(),
+                "timeZone": "Local"
+            },
+            "end": {
+                "dateTime": (dt + timedelta(hours=1)).isoformat(), # Default 1 hr duration
+                "timeZone": "Local"
+            },
+            "description": "",
+            "colorId": "1"
+        }
+
+        with open(os.path.join(EVENTS_DIR, f"{event_id}.json"), "w", encoding="utf-8") as f:
+            json.dump(event_data, f, indent=2)
+
+        # Broadcast UI refresh with updated events array
+        await self.handle_calendar_list()
+
+        display_time = dt.strftime('%B %-d at %I:%M %p') if dt.date() != datetime.now().date() else dt.strftime('%I:%M %p')
+        await self.mqtt_client.publish("jarvis/sys/speak", json.dumps({"text": f"Event '{event_title}' scheduled for {display_time}.", "skip_ducking": True}))
+
+    async def handle_calendar_delete(self, event_id):
+        if not event_id: return
+        file_path = os.path.join(EVENTS_DIR, f"{event_id}.json")
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception as e:
+                logging.error(f"Failed to delete event {event_id}: {e}")
+        await self.handle_calendar_list()
+
+    async def handle_calendar_list(self):
+        events = []
+        for file in os.listdir(EVENTS_DIR):
+            if file.endswith('.json'):
+                try:
+                    with open(os.path.join(EVENTS_DIR, file), 'r', encoding='utf-8') as f:
+                        events.append(json.load(f))
+                except Exception as e:
+                    logging.error(f"Failed to read event {file}: {e}")
+                    
+        events.sort(key=lambda x: x.get('start', {}).get('dateTime', ''))
+        await self.mqtt_client.publish("jarvis/sys/calendar/status", json.dumps({
+            "status": "success",
+            "events": events
+        }))
+
+    async def handle_calendar_briefing(self):
+        today_events = []
+        now = datetime.now()
+        
+        for file in os.listdir(EVENTS_DIR):
+            if file.endswith('.json'):
+                try:
+                    with open(os.path.join(EVENTS_DIR, file), 'r', encoding='utf-8') as f:
+                        ev = json.load(f)
+                        dt = datetime.fromisoformat(ev['start']['dateTime'])
+                        if dt.date() == now.date():
+                            today_events.append(ev)
+                except Exception as e:
+                    logging.error(f"Failed to read event {file}: {e}")
+                    
+        today_events.sort(key=lambda x: datetime.fromisoformat(x['start']['dateTime']))
+        
+        if not today_events:
+            msg = "Good morning sir. You have no events on your calendar for today."
+        else:
+            msg = f"Good morning sir. You have {len(today_events)} events today. "
+            if len(today_events) == 1:
+                ev = today_events[0]
+                dt = datetime.fromisoformat(ev['start']['dateTime'])
+                msg += f"Your only event is '{ev['summary']}' at {dt.strftime('%I:%M %p')}."
+            else:
+                first_ev = today_events[0]
+                dt = datetime.fromisoformat(first_ev['start']['dateTime'])
+                msg += f"Your first event is '{first_ev['summary']}' at {dt.strftime('%I:%M %p')}."
+
+        await self.mqtt_client.publish("jarvis/sys/speak", json.dumps({"text": msg, "skip_ducking": True}))
 
     def normalize_time_string(self, time_input):
         time_input = re.sub(r'\ba\.m\.?', 'am', time_input, flags=re.IGNORECASE)

@@ -1,0 +1,34 @@
+{
+  "drawer_open": false,
+  "carousel_tab": 1,
+  "reminder_widget": {
+    "visible": true,
+    "pos": [
+      1680,
+      925
+    ]
+  },
+  "active_widgets": {
+    "widget_light_controls": {
+      "visible": true,
+      "pos": [
+        1494,
+        62
+      ]
+    },
+    "widget_todo_list": {
+      "visible": true,
+      "pos": [
+        1367,
+        719
+      ]
+    },
+    "widget_media_controls": {
+      "visible": true,
+      "pos": [
+        95,
+        66
+      ]
+    }
+  }
+}

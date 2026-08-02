@@ -794,7 +794,8 @@
     "priority_words": [
       "add to todo list",
       "add to to-do list",
-      "add to my todo list"
+      "add to my todo list",
+      "add to my to-do list"
     ],
     "templates": [
       "add {task} to my todo list",
@@ -818,6 +819,38 @@
       "what is on my todo list",
       "read my todo list",
       "list my todos"
+    ]
+  },
+  "calendar_add": {
+    "target_topic": "jarvis/sys/calendar/create",
+    "action_override": "create",
+    "priority_words": [
+      "schedule",
+      "add to calendar",
+      "new event"
+    ],
+    "templates": [
+      "schedule a meeting",
+      "add {event} to my calendar",
+      "schedule {event} for {time_str}",
+      "add an event for {time_str}",
+      "schedule {event}"
+    ]
+  },
+  "calendar_read": {
+    "target_topic": "jarvis/sys/calendar/request",
+    "action_override": "read",
+    "priority_words": [
+      "my schedule",
+      "on the calendar",
+      "do i have any meetings"
+    ],
+    "templates": [
+      "what is my schedule",
+      "what is on my calendar",
+      "what do i have today",
+      "read my schedule",
+      "do i have any events today"
     ]
   }
 }
