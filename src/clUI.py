@@ -5,10 +5,17 @@ import math
 import random
 import paho.mqtt.client as mqtt
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPointF, QPoint, QFileSystemWatcher
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPointF, QPoint, QFileSystemWatcher, QPropertyAnimation, QEasingCurve, QRect
 from datetime import datetime
 import paho.mqtt.publish as publish
 from PyQt6.QtGui import QPainter, QColor, QPen, QPainterPath, QRadialGradient, QBrush, QLinearGradient
+from PyQt6.QtGui import QPainter, QColor, QPen, QPainterPath, QRadialGradient, QBrush, QLinearGradient
+
+from ui.clMediaWidget import MediaWidget
+from ui.clLightControlWidget import LightControlWidget
+from ui.clReminderWidget import ReminderWidget
+from ui.clTodoWidget import TodoWidget
+from ui.clDashboardDrawer import DashboardDrawer
 
 os.environ["QT_QPA_PLATFORM"] = "xcb"
 
@@ -18,6 +25,8 @@ try:
         ECOSYSTEM_STATE = json.load(f).get("settings", {}).get("ecosystem_state", "normal")
 except Exception:
     pass
+
+STATE_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "ui_state.json"))
 
 class MqttThread(QThread):
     state_signal = pyqtSignal(str)
@@ -29,6 +38,7 @@ class MqttThread(QThread):
     light_status_signal = pyqtSignal(dict)
     feedback_signal = pyqtSignal(dict)
     todo_status_signal = pyqtSignal(dict)
+    calendar_status_signal = pyqtSignal(dict)
     
     def __init__(self):
         super().__init__()
@@ -88,6 +98,7 @@ class MqttThread(QThread):
         client.subscribe("jarvis/sys/light_status")
         client.subscribe("jarvis/feedback")
         client.subscribe("jarvis/sys/todo/status")
+        client.subscribe("jarvis/sys/calendar/status")
         
     def on_message(self, client, userdata, msg):
         topic = msg.topic
@@ -109,7 +120,8 @@ class MqttThread(QThread):
             "jarvis/sys/media_status": self._handle_media_status,
             "jarvis/sys/light_status": self._handle_light_status,
             "jarvis/feedback": self._handle_feedback,
-            "jarvis/sys/todo/status": self._handle_todo_status
+            "jarvis/sys/todo/status": self._handle_todo_status,
+            "jarvis/sys/calendar/status": self._handle_calendar_status
         }
         
         handler = handlers.get(topic)
@@ -119,6 +131,10 @@ class MqttThread(QThread):
     def _handle_todo_status(self, payload):
         if isinstance(payload, dict):
             self.todo_status_signal.emit(payload)
+
+    def _handle_calendar_status(self, payload):
+        if isinstance(payload, dict):
+            self.calendar_status_signal.emit(payload)
 
     def _handle_light_status(self, payload):
         if isinstance(payload, dict):
@@ -290,604 +306,9 @@ class DraggableWidget(QWidget):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._dragging = False
+            if hasattr(self.parent(), 'save_ui_state'):
+                self.parent().save_ui_state()
         super().mouseReleaseEvent(event)
-
-class MediaWidget(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(15, 15, 15, 15)
-        self.layout.setSpacing(10)
-        
-        # Title and Artist
-        self.title_lbl = QLabel("No Media Playing")
-        self.title_lbl.setStyleSheet("color: #ffaa00; font-weight: bold; font-size: 11pt;")
-        self.artist_lbl = QLabel("Unknown Artist")
-        self.artist_lbl.setStyleSheet("color: rgba(255, 170, 0, 180); font-size: 9pt;")
-        
-        self.layout.addWidget(self.title_lbl)
-        self.layout.addWidget(self.artist_lbl)
-        
-        # Time and Progress Bar container
-        time_layout = QHBoxLayout()
-        self.time_lbl = QLabel("0:00 / 0:00")
-        self.time_lbl.setStyleSheet("color: rgba(255, 170, 0, 200); font-size: 8pt;")
-        time_layout.addWidget(self.time_lbl)
-        time_layout.addStretch()
-        self.layout.addLayout(time_layout)
-        
-        # Controls
-        controls_layout = QHBoxLayout()
-        controls_layout.setSpacing(15)
-        
-        btn_style = "QPushButton { background-color: rgba(255, 150, 0, 20); color: #ffaa00; border-radius: 15px; border: 1px solid rgba(255,150,0,80); font-size: 12pt; } QPushButton:hover { background-color: rgba(255, 150, 0, 60); }"
-        
-        self.prev_btn = QPushButton("⏮")
-        self.prev_btn.setFixedSize(30, 30)
-        self.prev_btn.setStyleSheet(btn_style)
-        self.prev_btn.clicked.connect(lambda: self.send_cmd("prev", silent=True))
-        
-        # --- FIX: Re-added the button creation lines ---
-        self.play_btn = QPushButton("⏯")
-        self.play_btn.setFixedSize(30, 30)
-        self.play_btn.setStyleSheet(btn_style)
-        self.play_btn.clicked.connect(self.toggle_optimistic)
-        
-        self.next_btn = QPushButton("⏭")
-        self.next_btn.setFixedSize(30, 30)
-        self.next_btn.setStyleSheet(btn_style)
-        self.next_btn.clicked.connect(lambda: self.send_cmd("next", silent=True))
-        
-        controls_layout.addStretch()
-        controls_layout.addWidget(self.prev_btn)
-        controls_layout.addWidget(self.play_btn)
-        controls_layout.addWidget(self.next_btn)
-        controls_layout.addStretch()
-        
-        self.layout.addLayout(controls_layout)
-        
-        self.position = 0.0
-        self.duration = 0.0
-        self.status = "Paused"
-                
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self._tick)
-        self.timer.start(1000)
-        
-    def showEvent(self, event):
-        """Fires automatically whenever the widget becomes visible on screen."""
-        super().showEvent(event)
-        
-        if getattr(self.window(), 'is_fullscreen', False):
-            self.send_cmd("status", silent=True)
-        
-    def toggle_optimistic(self):
-        self.status = "Paused" if self.status == "Playing" else "Playing"
-        self.play_btn.setText("⏸" if self.status == "Playing" else "▶")
-        self.send_cmd("toggle", silent=True)
-
-    def _tick(self):
-        if self.status == "Playing" and self.duration > 0:
-            self.position += 1.0
-            
-            if self.position >= self.duration:
-                self.position = self.duration
-                
-                if self.isVisible() and getattr(self.window(), 'is_fullscreen', False):
-                    self.send_cmd("status", silent=True)
-                    
-            self._update_time_label()
-            
-    def _update_time_label(self):
-        def fmt_time(secs):
-            m = int(secs // 60)
-            s = int(secs % 60)
-            return f"{m}:{s:02d}"
-        self.time_lbl.setText(f"{fmt_time(self.position)} / {fmt_time(self.duration)}")
-        
-    def send_cmd(self, action, silent=False):
-        import json
-        import paho.mqtt.publish as publish
-        try:
-            publish.single("pc/spotify/control", json.dumps({"action": action, "silent": silent}), hostname="localhost", qos=0)
-        except Exception as e:
-            print(f"Failed to publish media control: {e}")
-
-    def update_status(self, data):
-        title = data.get("title", "Unknown")
-        artist = data.get("artist", "Unknown")
-        self.position = data.get("position", 0.0)
-        self.duration = data.get("duration", 0.0)
-        self.status = data.get("status", "Paused")
-        
-        self.title_lbl.setText(title[:30] + ("..." if len(title) > 30 else ""))
-        self.artist_lbl.setText(artist[:30] + ("..." if len(artist) > 30 else ""))
-        
-        self._update_time_label()
-        self.play_btn.setText("⏸" if self.status == "Playing" else "▶")
-
-class LightControlWidget(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(15, 15, 15, 15)
-        self.layout.setSpacing(8)
-        self.setMinimumWidth(340)
-        
-        # Title and Refresh
-        top_layout = QHBoxLayout()
-        title_lbl = QLabel("Smart Lights")
-        title_lbl.setStyleSheet("color: #ffaa00; font-weight: bold; font-size: 14pt;")
-        
-        refresh_btn = QPushButton("⟳")
-        refresh_btn.setFixedSize(30, 30)
-        refresh_btn.setStyleSheet("QPushButton { background-color: rgba(255, 150, 0, 20); color: #ffaa00; border-radius: 15px; border: 1px solid rgba(255,150,0,80); font-size: 14pt; } QPushButton:hover { background-color: rgba(255, 150, 0, 60); }")
-        refresh_btn.clicked.connect(lambda: self.send_cmd("refresh_lights", "all"))
-        
-        top_layout.addWidget(title_lbl)
-        top_layout.addStretch()
-        top_layout.addWidget(refresh_btn)
-        self.layout.addLayout(top_layout)
-        
-        # Lights container
-        self.lights_container = QWidget()
-        self.lights_layout = QVBoxLayout(self.lights_container)
-        self.lights_layout.setContentsMargins(0, 0, 0, 0)
-        self.lights_layout.setSpacing(5)
-        
-        # Loading placeholder shown until first real data arrives
-        self._loading_lbl = QLabel("⏳ Loading lights...")
-        self._loading_lbl.setStyleSheet("color: rgba(255, 170, 0, 140); font-style: italic; font-size: 10pt;")
-        self.lights_layout.addWidget(self._loading_lbl)
-        
-        self.layout.addWidget(self.lights_container)
-        
-        # All off button
-        btn = QPushButton("Toggle All Off")
-        btn.setStyleSheet("QPushButton { background-color: rgba(255, 50, 0, 40); color: #ffaa00; border-radius: 5px; padding: 5px; border: 1px solid rgba(255,100,0,80); } QPushButton:hover { background-color: rgba(255, 50, 0, 80); }")
-        btn.clicked.connect(lambda: self.send_cmd("off", "all", silent=True))
-        self.layout.addWidget(btn)
-        
-        self.light_rows = {}
-
-    def send_cmd(self, action, target, silent=False):
-        import paho.mqtt.publish as publish
-        try:
-            publish.single("home/room/all/set", json.dumps({"action": action, "light_target": target, "silent": silent}), hostname="localhost", qos=0)
-        except Exception as e:
-            print(f"Failed to publish light control: {e}")
-
-    def _delete_light(self, target_name):
-        import paho.mqtt.publish as publish
-        try:
-            publish.single("home/room/all/set", json.dumps({"action": "intent_remove_light", "target_str": target_name}), hostname="localhost", qos=0)
-        except Exception as e:
-            print(f"Failed to publish delete: {e}")
-        # Remove from UI immediately
-        if target_name in self.light_rows:
-            row_data = self.light_rows.pop(target_name)
-            row_data["widget"].deleteLater()
-            self.lights_container.adjustSize()
-            self.adjustSize()
-
-    def handle_feedback(self, data):
-        if data.get("status") == "success" and data.get("action_cmd") == "toggle":
-            target = data.get("target", "")
-            if target in self.light_rows:
-                row_data = self.light_rows[target]
-                current_is_on = row_data["is_on"]
-                new_state = not current_is_on
-                row_data["is_on"] = new_state
-                self._update_indicator(row_data["indicator"], new_state, False)
-
-    def _update_indicator(self, indicator, is_on, is_offline):
-        if is_offline:
-            color = "rgba(120, 120, 120, 255)"
-        elif is_on:
-            color = "rgba(50, 255, 50, 255)"
-        else:
-            color = "rgba(255, 50, 50, 255)"
-        indicator.setStyleSheet(f"color: {color}; font-size: 16pt;")
-
-    def update_status(self, data):
-        lights = data.get("lights", [])
-        
-        # Remove loading placeholder once real data arrives
-        if self._loading_lbl is not None:
-            self._loading_lbl.deleteLater()
-            self._loading_lbl = None
-        
-        if not lights:
-            if not self.light_rows:
-                lbl = QLabel("No lights configured.")
-                lbl.setStyleSheet("color: rgba(150, 150, 150, 255); font-style: italic;")
-                self.lights_layout.addWidget(lbl)
-            return
-            
-        for l in lights:
-            target_name = l.get("name", "").lower().replace(" ", "_")
-            is_on = l.get("is_on", False)
-            is_offline = l.get("offline", False)
-            
-            if target_name in self.light_rows:
-                row_data = self.light_rows[target_name]
-                row_data["is_on"] = is_on
-                row_data["is_offline"] = is_offline
-                self._update_indicator(row_data["indicator"], is_on, is_offline)
-            else:
-                row = QWidget()
-                row_layout = QHBoxLayout(row)
-                row_layout.setContentsMargins(0, 0, 0, 0)
-                row_layout.setSpacing(6)
-                
-                indicator = QLabel("●")
-                indicator.setStyleSheet("color: rgba(100, 100, 100, 255); font-size: 16pt;")
-                indicator.setFixedWidth(22)
-                self._update_indicator(indicator, is_on, is_offline)
-                
-                name_lbl = QLabel(l.get("name", "Unknown"))
-                name_lbl.setStyleSheet("color: #ffaa00; font-weight: bold; font-size: 11pt;")
-                
-                btn_style = "QPushButton { background-color: rgba(255, 150, 0, 20); color: #ffaa00; border-radius: 5px; padding: 2px 8px; font-size: 10pt; border: 1px solid rgba(255,150,0,50); } QPushButton:hover { background-color: rgba(255, 150, 0, 60); }"
-                
-                toggle_btn = QPushButton("Toggle")
-                toggle_btn.setMinimumHeight(24)
-                toggle_btn.setStyleSheet(btn_style)
-                toggle_btn.clicked.connect(lambda checked, t=target_name: self.send_cmd("toggle", t, silent=True))
-                
-                delete_btn = QPushButton("✕")
-                delete_btn.setFixedSize(26, 24)
-                delete_btn.setToolTip("Remove light")
-                delete_btn.setStyleSheet("QPushButton { background-color: rgba(200, 50, 0, 30); color: rgba(255, 80, 60, 255); border-radius: 5px; border: 1px solid rgba(200,80,50,80); font-size: 11pt; font-weight: bold; font-family: monospace; } QPushButton:hover { background-color: rgba(200, 50, 0, 90); color: #ff4030; }")
-                delete_btn.clicked.connect(lambda checked, t=target_name: self._delete_light(t))
-                
-                row_layout.addWidget(indicator)
-                row_layout.addWidget(name_lbl)
-                row_layout.addStretch()
-                row_layout.addWidget(toggle_btn)
-                row_layout.addWidget(delete_btn)
-                
-                self.lights_layout.addWidget(row)
-                self.light_rows[target_name] = {
-                    "widget": row,
-                    "indicator": indicator,
-                    "is_on": is_on,
-                    "is_offline": is_offline
-                }
-            
-        self.lights_container.adjustSize()
-        self.adjustSize()
-        # Deferred resize ensures the parent wrapper picks up the new layout geometry
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(0, self.adjustSize)
-        QTimer.singleShot(50, self.adjustSize)
-
-
-class ReminderWidget(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedSize(180, 110)
-        self.reminders = []
-        self.current_idx = 0
-        
-        self.data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "reminders"))
-        if not os.path.exists(self.data_dir):
-            os.makedirs(self.data_dir, exist_ok=True)
-            
-        self.watcher = QFileSystemWatcher([self.data_dir], self)
-        self.watcher.directoryChanged.connect(self.reload_reminders)
-        
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.tick)
-        self.timer.start(1000)
-        
-        btn_arrow_style = """
-            QPushButton {
-                background-color: transparent;
-                color: #ffaa00;
-                border: none;
-                font-size: 13pt;
-                font-weight: bold;
-                font-family: 'Courier New';
-            }
-            QPushButton:hover {
-                color: #ffffff;
-            }
-        """
-        
-        btn_delete_style = """
-            QPushButton {
-                background-color: rgba(20, 10, 0, 180);
-                color: #ffaa00;
-                border-radius: 6px;
-                font-size: 7.5pt;
-                font-weight: bold;
-                font-family: 'Courier New';
-                border: 1px solid rgba(255, 150, 0, 80);
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 120, 0, 80);
-            }
-        """
-        
-        self.btn_delete = QPushButton("DELETE", self)
-        self.btn_delete.setFixedSize(64, 22)
-        self.btn_delete.setStyleSheet(btn_delete_style)
-        self.btn_delete.clicked.connect(self.cancel_reminder)
-        self.btn_delete.move(58, 76)
-        
-        self.btn_prev = QPushButton("<", self)
-        self.btn_prev.setFixedSize(24, 24)
-        self.btn_prev.setStyleSheet(btn_arrow_style)
-        self.btn_prev.clicked.connect(self.prev_reminder)
-        self.btn_prev.move(34, 75)
-        
-        self.btn_next = QPushButton(">", self)
-        self.btn_next.setFixedSize(24, 24)
-        self.btn_next.setStyleSheet(btn_arrow_style)
-        self.btn_next.clicked.connect(self.next_reminder)
-        self.btn_next.move(121, 75)
-        
-        self.reload_reminders()
-
-    def reload_reminders(self):
-        self.reminders = []
-        for f in os.listdir(self.data_dir):
-            if f.endswith(".json"):
-                try:
-                    fpath = os.path.join(self.data_dir, f)
-                    with open(fpath, "r") as file:
-                        data = json.load(file)
-                        target_dt = datetime.fromisoformat(data["time"])
-                        
-                        created_dt_str = data.get("time_created")
-                        if created_dt_str:
-                            created_dt = datetime.fromisoformat(created_dt_str)
-                        else:
-                            ctime = os.path.getctime(fpath)
-                            created_dt = datetime.fromtimestamp(ctime)
-                            
-                        if target_dt > datetime.now():
-                            data["target_dt"] = target_dt
-                            data["created_dt"] = created_dt
-                            data["id"] = f.replace(".json", "")
-                            self.reminders.append(data)
-                except Exception as e:
-                    print(f"Error loading reminder {f}: {e}")
-                    
-        self.reminders.sort(key=lambda x: x["target_dt"])
-        if self.current_idx >= len(self.reminders):
-            self.current_idx = 0
-            
-        self.update_buttons()
-        self.update()
-
-    def update_buttons(self):
-        if not self.reminders:
-            self.btn_delete.hide()
-            self.btn_prev.hide()
-            self.btn_next.hide()
-            return
-            
-        self.btn_delete.show()
-        if len(self.reminders) > 1:
-            self.btn_prev.show()
-            self.btn_next.show()
-        else:
-            self.btn_prev.hide()
-            self.btn_next.hide()
-
-    def tick(self):
-        if self.reminders:
-            self.update()
-
-    def next_reminder(self):
-        if self.reminders:
-            self.current_idx = (self.current_idx + 1) % len(self.reminders)
-            self.update()
-
-    def prev_reminder(self):
-        if self.reminders:
-            self.current_idx = (self.current_idx - 1) % len(self.reminders)
-            self.update()
-
-    def cancel_reminder(self):
-        if not self.reminders: return
-        rem_id = self.reminders[self.current_idx]["id"]
-        publish.single("jarvis/sys/reminder/control", json.dumps({"action": "delete", "id": rem_id}), hostname="localhost", qos=1)
-
-    def paintEvent(self, event):
-        from PyQt6.QtGui import QPainter, QColor, QPen, QFont
-        from PyQt6.QtCore import QRectF
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        if not self.reminders:
-            return
-            
-        rem = self.reminders[self.current_idx]
-        now = datetime.now()
-        target = rem["target_dt"]
-        created = rem["created_dt"]
-        
-        total_secs = (target - created).total_seconds()
-        remaining_secs = (target - now).total_seconds()
-        
-        if remaining_secs < 0:
-            remaining_secs = 0
-            
-        if total_secs > 0:
-            progress = max(0.0, min(1.0, 1.0 - (remaining_secs / total_secs)))
-        else:
-            progress = 1.0
-        
-        arc_rect = QRectF(25, 27, 130, 130)
-        
-        # Background arc (semi-circle from 180 deg to 0 deg)
-        painter.setPen(QPen(QColor(40, 20, 0, 200), 16))
-        painter.drawArc(arc_rect, 180 * 16, -180 * 16)
-        
-        # Active progress arc
-        painter.setPen(QPen(QColor(255, 170, 0, 255), 16, Qt.PenStyle.SolidLine, Qt.PenCapStyle.SquareCap))
-        span_angle = int(-progress * 180 * 16)
-        painter.drawArc(arc_rect, 180 * 16, span_angle)
-        
-        mins, secs = divmod(int(remaining_secs), 60)
-        hours, mins = divmod(mins, 60)
-        if hours > 0:
-            time_str = f"{hours:02d}:{mins:02d}:{secs:02d}"
-        else:
-            time_str = f"{mins:02d}:{secs:02d}"
-            
-        painter.setPen(QColor(255, 170, 0, 255))
-        font = painter.font()
-        font.setFamily("Courier New")
-        font.setPointSize(14)
-        font.setBold(True)
-        painter.setFont(font)
-        
-        text_rect = QRectF(25, 48, 130, 30)
-        painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, time_str)
-
-class TodoWidget(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        from PyQt6.QtWidgets import QScrollArea, QFrame, QCheckBox
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(15, 15, 15, 15)
-        self.layout.setSpacing(10)
-        
-        # Title
-        self.title_lbl = QLabel("My To-Do List")
-        self.title_lbl.setStyleSheet("color: #ffaa00; font-weight: bold; font-size: 11pt;")
-        self.layout.addWidget(self.title_lbl)
-        
-        # Scroll Area for tasks
-        self.scroll = QScrollArea(self)
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll.setStyleSheet("QScrollArea { background: transparent; } QScrollBar:vertical { width: 8px; background: rgba(0,0,0,50); border-radius: 4px; } QScrollBar::handle:vertical { background: rgba(255,170,0,100); border-radius: 4px; }")
-        
-        self.scroll_content = QWidget()
-        self.scroll_content.setStyleSheet("background: transparent;")
-        self.scroll_layout = QVBoxLayout(self.scroll_content)
-        self.scroll_layout.setContentsMargins(0, 0, 0, 0)
-        self.scroll_layout.setSpacing(8)
-        self.scroll_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        
-        self.scroll.setWidget(self.scroll_content)
-        self.layout.addWidget(self.scroll)
-        
-        # Add task input (Floating Window)
-        self.task_input = QLineEdit()
-        self.task_input.setWindowFlags(
-            Qt.WindowType.Window | 
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint
-        )
-        self.task_input.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.task_input.setPlaceholderText("New task...")
-        self.task_input.setStyleSheet("""
-            QLineEdit {
-                background-color: rgba(20, 10, 0, 220);
-                color: rgba(255, 200, 0, 200);
-                border: 1px solid rgba(255, 180, 0, 100);
-                border-radius: 6px;
-                padding: 4px;
-                font-family: 'Courier New';
-                font-size: 10pt;
-            }
-        """)
-        self.task_input.returnPressed.connect(self.submit_task)
-        self.task_input.hide()
-        
-        self.add_btn = QPushButton("+ Add Task")
-        self.add_btn.setFixedHeight(30)
-        self.add_btn.setStyleSheet("QPushButton { background-color: rgba(255, 150, 0, 20); color: #ffaa00; border-radius: 4px; border: 1px solid rgba(255,150,0,80); font-weight: bold; font-size: 10pt; } QPushButton:hover { background-color: rgba(255, 150, 0, 60); }")
-        self.add_btn.clicked.connect(self.open_task_input)
-        
-        self.layout.addWidget(self.add_btn)
-        
-        self.setMinimumSize(250, 300)
-        
-    def showEvent(self, event):
-        super().showEvent(event)
-        if getattr(self.window(), 'is_fullscreen', False):
-            publish.single("jarvis/sys/todo/request", json.dumps({"action": "list"}), hostname="localhost", qos=0)
-
-    def hideEvent(self, event):
-        super().hideEvent(event)
-        if hasattr(self, 'task_input'):
-            self.task_input.hide()
-
-    def on_drag_start(self):
-        if hasattr(self, 'task_input') and self.task_input.isVisible():
-            self.task_input.hide()
-
-    def open_task_input(self):
-        pos = self.mapToGlobal(self.add_btn.pos())
-        self.task_input.setGeometry(pos.x(), pos.y() - 40, 220, 35)
-        self.task_input.show()
-        self.task_input.activateWindow()
-        self.task_input.raise_()
-        self.task_input.setFocus()
-
-    def submit_task(self):
-        task_text = self.task_input.text().strip()
-        if task_text:
-            publish.single("jarvis/sys/todo/create", json.dumps({"task": task_text}), hostname="localhost", qos=0)
-            self.task_input.clear()
-        self.task_input.hide()
-
-    def update_status(self, data):
-        todos = data.get("todos", [])
-        
-        # Clear existing
-        while self.scroll_layout.count():
-            item = self.scroll_layout.takeAt(0)
-            widget = item.widget()
-            if widget: widget.deleteLater()
-            
-        if not todos:
-            lbl = QLabel("No pending tasks.")
-            lbl.setStyleSheet("color: rgba(255, 170, 0, 150); font-style: italic; font-size: 9pt;")
-            self.scroll_layout.addWidget(lbl)
-            return
-            
-        from PyQt6.QtWidgets import QCheckBox
-        for t in todos:
-            chk = QCheckBox(t["task"])
-            chk.setStyleSheet("""
-                QCheckBox {
-                    color: rgba(255, 170, 0, 220);
-                    font-size: 9pt;
-                    font-family: 'Courier New';
-                }
-                QCheckBox::indicator {
-                    width: 14px;
-                    height: 14px;
-                    border-radius: 3px;
-                    border: 1px solid rgba(255, 150, 0, 80);
-                    background: rgba(20, 10, 0, 150);
-                }
-                QCheckBox::indicator:checked {
-                    background: rgba(255, 150, 0, 150);
-                }
-            """)
-            is_completed = t.get("completed", False)
-            chk.setChecked(is_completed)
-            if is_completed:
-                chk.setStyleSheet(chk.styleSheet() + " QCheckBox { color: rgba(255, 170, 0, 100); text-decoration: line-through; }")
-            
-            # Connect the state change to MQTT
-            chk.stateChanged.connect(lambda state, tid=t["id"]: self.toggle_task(tid, state))
-            self.scroll_layout.addWidget(chk)
-            
-    def toggle_task(self, todo_id, state):
-        if state == 2: # Checked
-            publish.single("jarvis/sys/todo/control", json.dumps({"action": "complete", "id": todo_id}), hostname="localhost", qos=0)
-        else: # Note: unchecking is not currently supported by backend, but we'll leave it
-            publish.single("jarvis/sys/todo/control", json.dumps({"action": "delete", "id": todo_id}), hostname="localhost", qos=0)
 
 class JarvisVisualizer(QWidget):
     def __init__(self, parent=None):
@@ -1210,6 +631,19 @@ class JarvisUI(QWidget):
         self.btn_todos.clicked.connect(self._toggle_todos)
         self.btn_todos.hide()
         
+        self.btn_calendar = QPushButton("❮", self)
+        self.btn_calendar.setStyleSheet("QPushButton { background-color: rgba(255, 150, 0, 40); color: #ffaa00; border-radius: 5px; font-weight: bold; border: 1px solid rgba(255, 150, 0, 80); } QPushButton:hover { background-color: rgba(255, 150, 0, 80); }")
+        self.btn_calendar.setFixedSize(30, 80)
+        self.btn_calendar.clicked.connect(self._toggle_calendar)
+        self.btn_calendar.hide()
+        
+        # Persistent Dashboard Drawer (hidden off-screen right initially)
+        drawer_width = 380
+        self.calendar_drawer = DashboardDrawer(self)
+        self.calendar_drawer.setGeometry(screen_geom.width(), 0, drawer_width, screen_geom.height())
+        self.calendar_drawer.hide()
+        self.calendar_is_open = False
+        
         self.reminder_widget = ReminderWidget(self)
         self.reminder_widget.hide()
 
@@ -1226,6 +660,7 @@ class JarvisUI(QWidget):
         self.mqtt_thread.light_status_signal.connect(self._handle_light_status)
         self.mqtt_thread.feedback_signal.connect(self._handle_feedback)
         self.mqtt_thread.todo_status_signal.connect(self._handle_todo_status)
+        self.mqtt_thread.calendar_status_signal.connect(self._handle_calendar_data)
         self.mqtt_thread.start()
 
     def _handle_feedback(self, data):
@@ -1285,6 +720,7 @@ class JarvisUI(QWidget):
             else:
                 self.reminder_widget.show()
                 self.reminder_widget.raise_()
+            self.save_ui_state()
 
     def _toggle_todos(self):
         if getattr(self, 'is_fullscreen', False):
@@ -1297,8 +733,65 @@ class JarvisUI(QWidget):
                 if w.isHidden():
                     w.show()
                     w.raise_()
+                    self.save_ui_state()
                 else:
                     self.close_draggable_widget(widget_id)
+
+    def _toggle_calendar(self):
+        if not getattr(self, 'is_fullscreen', False):
+            return
+            
+        geom = self.geometry()
+        drawer_width = 380
+        
+        # Stop existing animation
+        if hasattr(self, 'calendar_animation') and self.calendar_animation.state() == QPropertyAnimation.State.Running:
+            self.calendar_animation.stop()
+            
+        self.calendar_animation = QPropertyAnimation(self.calendar_drawer, b"geometry")
+        self.calendar_animation.setDuration(400)
+        self.calendar_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        
+        btn_animation = QPropertyAnimation(self.btn_calendar, b"geometry")
+        btn_animation.setDuration(400)
+        btn_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        
+        if not self.calendar_is_open:
+            # Open drawer
+            self.calendar_drawer.setGeometry(geom.width(), 0, drawer_width, geom.height())
+            self.calendar_drawer.show()
+            self.calendar_drawer.raise_()
+            
+            self.calendar_animation.setEndValue(QRect(geom.width() - drawer_width, 0, drawer_width, geom.height()))
+            
+            # Move button
+            current_btn_geom = self.btn_calendar.geometry()
+            btn_animation.setEndValue(QRect(geom.width() - drawer_width - 30, current_btn_geom.y(), 30, 80))
+            self.btn_calendar.setText("❯")
+            
+            self.calendar_is_open = True
+            
+            import paho.mqtt.publish as publish
+            import json
+            try:
+                publish.single("jarvis/sys/calendar/request", json.dumps({"action": "read"}), hostname="localhost", qos=0)
+            except: pass
+        else:
+            # Close drawer
+            self.calendar_animation.setEndValue(QRect(geom.width(), 0, drawer_width, geom.height()))
+            
+            current_btn_geom = self.btn_calendar.geometry()
+            btn_animation.setEndValue(QRect(geom.width() - 30, current_btn_geom.y(), 30, 80))
+            self.btn_calendar.setText("❮")
+            
+            self.calendar_is_open = False
+            
+        self.calendar_animation.start()
+        btn_animation.start()
+        self.save_ui_state()
+        
+        # Keep reference to avoid garbage collection
+        self._btn_anim = btn_animation
 
     def _handle_todo_status(self, data):
         widget_id = "widget_todo_list"
@@ -1306,6 +799,14 @@ class JarvisUI(QWidget):
             wrapper = self.active_widgets[widget_id]
             if isinstance(wrapper.content_widget, TodoWidget):
                 wrapper.content_widget.update_status(data)
+                
+        if hasattr(self, 'calendar_drawer'):
+            self.calendar_drawer.carousel.todo_widget.update_status(data)
+
+    def _handle_calendar_data(self, data):
+        if hasattr(self, 'calendar_drawer'):
+            self.calendar_drawer.calendar.load_events(data)
+            self.calendar_drawer.up_next.load_events(data)
 
     def _handle_light_status(self, data):
         widget_id = "widget_light_controls"
@@ -1318,6 +819,8 @@ class JarvisUI(QWidget):
                 from PyQt6.QtCore import QTimer
                 QTimer.singleShot(0, wrapper.adjustSize)
                 QTimer.singleShot(60, wrapper.adjustSize)
+        if hasattr(self, 'calendar_drawer'):
+            self.calendar_drawer.carousel.lights_widget.update_status(data)
 
     def _handle_media_status(self, data):
         widget_id = "widget_media_controls"
@@ -1334,6 +837,8 @@ class JarvisUI(QWidget):
         if isinstance(wrapper.content_widget, MediaWidget):
             wrapper.content_widget.update_status(data)
             wrapper.adjustSize()
+        if hasattr(self, 'calendar_drawer'):
+            self.calendar_drawer.carousel.media_widget.update_status(data)
 
     def _on_app_state_changed(self, state):
         if not getattr(self, 'is_fullscreen', False) or getattr(self, 'text_input', None) is None:
@@ -1464,6 +969,7 @@ class JarvisUI(QWidget):
         wrapper.move(cx, cy)
         
         self.active_widgets[widget_id] = wrapper
+        self.save_ui_state()
         if self.is_fullscreen:
             if hasattr(wrapper, "title_bar"):
                 wrapper.title_bar.show()
@@ -1486,6 +992,7 @@ class JarvisUI(QWidget):
         if widget_id in self.active_widgets:
             w = self.active_widgets.pop(widget_id)
             w.deleteLater()
+            self.save_ui_state()
 
     def update_animation(self):
         self.visualizer.update_animation()
@@ -1544,23 +1051,34 @@ class JarvisUI(QWidget):
             self.btn_lights.setGeometry(120, geom.height() - 65, 80, 35)
             self.btn_reminders.setGeometry(210, geom.height() - 65, 100, 35)
             self.btn_todos.setGeometry(320, geom.height() - 65, 80, 35)
+            
+            # Position calendar toggle on right edge
+            self.btn_calendar.setGeometry(geom.width() - 30, int(geom.height() / 2) - 40, 30, 80)
+            self.btn_calendar.setText("❮")
+            
+            self.calendar_drawer.setGeometry(geom.width(), 0, 380, geom.height())
+            self.calendar_is_open = False
+            
             self.btn_media.show()
             self.btn_lights.show()
             self.btn_reminders.show()
             self.btn_todos.show()
+            self.btn_calendar.show()
             
-            rw_w, rw_h = 180, 110
+            rw_w, rw_h = 220, 135
             self.reminder_widget.setGeometry(geom.width() - rw_w - 20, geom.height() - rw_h - 20, rw_w, rw_h)
             if self.reminder_widget.reminders:
                 self.reminder_widget.show()
             
-                
             # Show dashboard widgets
             for wid, w in self.active_widgets.items():
                 if hasattr(w, "title_bar"):
                     w.title_bar.show()
                 w.show()
             
+            # Load and restore persistent UI state across sessions
+            self.load_ui_state()
+
             self.showFullScreen()
             self.raise_()
             self.activateWindow() 
@@ -1591,6 +1109,8 @@ class JarvisUI(QWidget):
             self.btn_lights.hide()
             self.btn_reminders.hide()
             self.btn_todos.hide()
+            self.btn_calendar.hide()
+            self.calendar_drawer.hide()
             self.reminder_widget.hide()
                 
             # Hide all dashboard widgets except options_list
@@ -1682,9 +1202,99 @@ class JarvisUI(QWidget):
         v_grad.setColorAt(1.0, QColor(0, 0, 0, 220))
         painter.setBrush(v_grad)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRect(self.rect())
-        if ECOSYSTEM_STATE == "debug":
-            pass
+    def closeEvent(self, event):
+        self.save_ui_state()
+        super().closeEvent(event)
+
+    def save_ui_state(self):
+        try:
+            active_widgets_data = {}
+            for wid, wrapper in self.active_widgets.items():
+                active_widgets_data[wid] = {
+                    "visible": wrapper.isVisible(),
+                    "pos": [wrapper.x(), wrapper.y()]
+                }
+                
+            reminder_data = {
+                "visible": self.reminder_widget.isVisible() if hasattr(self, 'reminder_widget') else False,
+                "pos": [self.reminder_widget.x(), self.reminder_widget.y()] if hasattr(self, 'reminder_widget') else [0, 0]
+            }
+            
+            carousel_idx = self.calendar_drawer.carousel.stack.currentIndex() if hasattr(self, 'calendar_drawer') else 0
+            
+            state_payload = {
+                "drawer_open": getattr(self, 'calendar_is_open', False),
+                "carousel_tab": carousel_idx,
+                "reminder_widget": reminder_data,
+                "active_widgets": active_widgets_data
+            }
+            
+            os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+            with open(STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(state_payload, f, indent=2)
+        except Exception as e:
+            print(f"Failed to save UI state: {e}")
+
+    def load_ui_state(self):
+        if not os.path.exists(STATE_FILE):
+            return
+            
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                state = json.load(f)
+                
+            # 1. Carousel tab
+            carousel_tab = state.get("carousel_tab", 0)
+            if hasattr(self, 'calendar_drawer'):
+                if 0 <= carousel_tab < self.calendar_drawer.carousel.stack.count():
+                    self.calendar_drawer.carousel.stack.setCurrentIndex(carousel_tab)
+                    self.calendar_drawer.carousel.update_indicator()
+                    
+            # 2. Drawer open/closed state
+            drawer_open = state.get("drawer_open", False)
+            if drawer_open and not getattr(self, 'calendar_is_open', False):
+                self._toggle_calendar()
+                
+            # 3. Floating Reminder Widget
+            rem_state = state.get("reminder_widget", {})
+            if hasattr(self, 'reminder_widget'):
+                pos = rem_state.get("pos")
+                if pos and len(pos) == 2:
+                    self.reminder_widget.move(pos[0], pos[1])
+                if rem_state.get("visible", False):
+                    self.reminder_widget.show()
+                    self.reminder_widget.raise_()
+                else:
+                    self.reminder_widget.hide()
+                    
+            # 4. Draggable Floating Widgets (Media, Lights, To-Do)
+            active_state = state.get("active_widgets", {})
+            for widget_id, info in active_state.items():
+                is_visible = info.get("visible", False)
+                pos = info.get("pos")
+                
+                if is_visible:
+                    if widget_id == "widget_media_controls":
+                        if widget_id not in self.active_widgets:
+                            media_widget = MediaWidget()
+                            self.spawn_widget(widget_id, "Media Controls", media_widget)
+                    elif widget_id == "widget_light_controls":
+                        if widget_id not in self.active_widgets:
+                            light_widget = LightControlWidget()
+                            self.spawn_widget(widget_id, "Smart Lights", light_widget)
+                    elif widget_id == "widget_todo_list":
+                        if widget_id not in self.active_widgets:
+                            todo_widget = TodoWidget()
+                            self.spawn_widget(widget_id, "To-Do List", todo_widget)
+                            
+                    if widget_id in self.active_widgets:
+                        w = self.active_widgets[widget_id]
+                        if pos and len(pos) == 2:
+                            w.move(pos[0], pos[1])
+                        w.show()
+                        w.raise_()
+        except Exception as e:
+            print(f"Failed to load UI state: {e}")
 
 
 if __name__ == "__main__":

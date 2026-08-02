@@ -77,11 +77,9 @@ class TTSManager:
             logging.error(f"Failed to extract RMS: {e}")
             return []
 
-    async def generate_and_play(self, client, text, voice="en-GB-RyanNeural", request_reply=False, ignore_silent=False) -> None:
+    async def generate_and_play(self, client, text, voice="en-GB-RyanNeural", ignore_silent=False) -> None:
         if self.silent_mode and not ignore_silent and not ("alarm" in text.lower()):
             logging.info("[TTS] Silent mode active. Skipping TTS playback.")
-            if request_reply and client:
-                await client.publish("jarvis/sys/mic_control", json.dumps({"action": "request_reply"}))
             return
             
         file_hash = hashlib.md5(f"{text}_{voice}".encode()).hexdigest()
@@ -151,8 +149,6 @@ class TTSManager:
                     # Broadcast idle so the Daemon knows it is safe to unduck (if mic isn't opening)
                     await client.publish("jarvis/sys/tts_state", json.dumps({"state": "idle"}))
                     await asyncio.sleep(0.05)
-                    if request_reply:
-                        await client.publish("jarvis/sys/mic_control", json.dumps({"action": "request_reply"}))
 
     async def play_audio_file(self, client, file_path: str) -> None:
         """Plays an existing audio file safely through the TTS queue to avoid ALSA locks."""
@@ -236,12 +232,10 @@ class TTSManager:
             except KeyError:
                 phrase = raw_phrase 
                 
-            request_reply = False
             if payload.get("append_followup"):
                 phrase += " Anything else sir?"
-                request_reply = True
 
-            await self.generate_and_play(client, phrase, request_reply=request_reply)
+            await self.generate_and_play(client, phrase)
 
 async def run_tts_service():
     manager = TTSManager()
@@ -280,7 +274,6 @@ async def run_tts_service():
                             await manager.generate_and_play(
                                 client, 
                                 payload.get("text", ""), 
-                                request_reply=payload.get("request_reply", False),
                                 ignore_silent=payload.get("ignore_silent", False) or payload.get("skip_ducking", False)
                             )
                         except json.JSONDecodeError:

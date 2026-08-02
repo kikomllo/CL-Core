@@ -49,6 +49,7 @@ class CentralDaemon:
         self.mic_state: str = "idle"
         self.is_ducked: bool = False
         self.attention_mode: bool = False
+        self.pending_mic_request: bool = False
         
         conversational_data = responses_data.get("conversational", {})
         self.nlp = IntentEngine(intents_data, word_to_number, abort_keywords, conversational_data)
@@ -141,6 +142,22 @@ class CentralDaemon:
             self.active_context["type"] = None
             if self.nlp.is_abort_command(clean_text): return [({"action": "abort"}, "jarvis/sys/control")]
             return [({"action": "intent_set_default_light", "target_str": clean_text}, "home/room/all/set")]
+
+        if self.active_context["type"] == "todo_add_target":
+            self.active_context["type"] = None
+            if self.nlp.is_abort_command(clean_text): return [({"action": "abort"}, "jarvis/sys/control")]
+            return [({"action": "create", "task": clean_text}, "jarvis/sys/todo/create")]
+
+        if self.active_context["type"] == "calendar_add_target":
+            self.active_context["type"] = None
+            if self.nlp.is_abort_command(clean_text): return [({"action": "abort"}, "jarvis/sys/control")]
+            return [({"action": "create", "event": clean_text}, "jarvis/sys/calendar/create")]
+
+        if self.active_context["type"] == "calendar_time_target":
+            event_name = self.active_context.get("event", "unknown")
+            self.active_context["type"] = None
+            if self.nlp.is_abort_command(clean_text): return [({"action": "abort"}, "jarvis/sys/control")]
+            return [({"action": "create", "event": event_name, "time_str": clean_text}, "jarvis/sys/calendar/create")]
 
         if self.active_context["type"] == "alarm_delete":
             alarms = self.active_context.get("alarms", [])
@@ -236,6 +253,7 @@ class CentralDaemon:
                     config_task = asyncio.create_task(self.monitor_config())
                     await client.subscribe("jarvis/sensor/voice")
                     await client.subscribe("jarvis/feedback")
+                    await client.subscribe("jarvis/sys/speak")
                     
                     await client.subscribe("jarvis/sys/tts_state")
                     await client.subscribe("jarvis/sys/mic_state")
@@ -266,11 +284,24 @@ class CentralDaemon:
                             if self.active_context["type"] == "alarm_ringing":
                                 logging.info("[DAEMON] Alarm deactivated. Releasing interface context.")
                                 self.active_context = {"type": None, "expires_at": 0.0}
+                                # Request Daily Briefing automatically after disabling morning alarm
+                                await client.publish("jarvis/sys/calendar/request", json.dumps({"action": "daily_briefing"}))
+
+                        elif topic == "jarvis/sys/speak":
+                            try:
+                                payload = json.loads(payload_data)
+                                if payload.get("request_reply", False):
+                                    self.pending_mic_request = True
+                            except json.JSONDecodeError:
+                                pass
 
                         elif topic == "jarvis/sys/tts_state":
                             try:
                                 payload = json.loads(payload_data)
                                 self.tts_state = payload.get("state", "idle")
+                                if self.tts_state == "idle" and self.pending_mic_request:
+                                    self.pending_mic_request = False
+                                    await client.publish("jarvis/sys/mic_control", json.dumps({"action": "request_reply"}))
                                 await self.evaluate_ducking(client)
                             except json.JSONDecodeError:
                                 pass
@@ -518,6 +549,21 @@ class CentralDaemon:
 
                                 elif device == 'smart_lights' and fb.get('action') == 'request_light_rename':
                                     self.active_context = {"type": "light_rename_target", "expires_at": time.time() + 30.0}
+                                    msg = fb.get('message', '')
+                                    await client.publish("jarvis/sys/speak", json.dumps({"text": msg, "request_reply": True}))
+
+                                elif device == 'utilities' and fb.get('action') == 'request_todo_add':
+                                    self.active_context = {"type": "todo_add_target", "expires_at": time.time() + 30.0}
+                                    msg = fb.get('message', '')
+                                    await client.publish("jarvis/sys/speak", json.dumps({"text": msg, "request_reply": True}))
+
+                                elif device == 'utilities' and fb.get('action') == 'request_calendar_add':
+                                    self.active_context = {"type": "calendar_add_target", "expires_at": time.time() + 30.0}
+                                    msg = fb.get('message', '')
+                                    await client.publish("jarvis/sys/speak", json.dumps({"text": msg, "request_reply": True}))
+
+                                elif device == 'utilities' and fb.get('action') == 'request_calendar_time':
+                                    self.active_context = {"type": "calendar_time_target", "expires_at": time.time() + 30.0, "event": fb.get('event', '')}
                                     msg = fb.get('message', '')
                                     await client.publish("jarvis/sys/speak", json.dumps({"text": msg, "request_reply": True}))
 
