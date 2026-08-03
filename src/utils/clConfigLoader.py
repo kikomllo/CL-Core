@@ -28,10 +28,10 @@ class ConfigLoader:
         with open(filepath, 'r', encoding='utf-8') as f:
             return json.load(f)
 
-    def load_and_validate(self, data_filename: str, schema_filename: str) -> Dict[str, Any]:
+    def load_and_validate(self, data_filename: str, schema_filename: str, fail_fast: bool = True) -> Dict[str, Any]:
         """
         Loads a JSON file and validates it against a target schema.
-        Fails fast by terminating the process if validation fails.
+        Fails fast by terminating the process if validation fails, unless fail_fast is False.
         """
         data = self.load_json(data_filename)
         schema = self.load_json(schema_filename)
@@ -45,7 +45,9 @@ class ConfigLoader:
             logging.critical(f"Failed Element Path : {' -> '.join(str(p) for p in ve.path)}")
             logging.critical(f"Validation Error    : {ve.message}")
             logging.critical(f"{'='*60}\n")
-            sys.exit(1)
+            if fail_fast:
+                sys.exit(1)
+            raise ve
 
 
 if __name__ == "__main__":

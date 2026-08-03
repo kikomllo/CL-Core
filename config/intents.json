@@ -488,6 +488,8 @@
       "disable"
     ],
     "templates": [
+      "disable responses",
+      "disable response",
       "enable silent mode",
       "enable silence mode",
       "turn on silent mode",

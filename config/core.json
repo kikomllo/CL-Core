@@ -6,7 +6,7 @@
         "debug_mqtt": true,
         "enable_followup": false,
         "silent_mode": false,
-        "last_light_target": "living_room"
+        "last_light_target": "KITCHEN"
     },
     "vad_settings": {
         "energy_threshold_normal": 300,

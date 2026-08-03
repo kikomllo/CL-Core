@@ -99,6 +99,7 @@ class MediaWidget(QWidget):
         self.position = 0.0
         self.duration = 0.0
         self.status = "Paused"
+        self._waiting_for_status = False
                 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
@@ -120,7 +121,9 @@ class MediaWidget(QWidget):
             if self.position >= self.duration:
                 self.position = self.duration
                 if self.isVisible() and getattr(self.window(), 'is_fullscreen', False):
-                    self.send_cmd("status", silent=True)
+                    if not getattr(self, '_waiting_for_status', False):
+                        self._waiting_for_status = True
+                        self.send_cmd("status", silent=True)
             self._update_time_label()
             
     def _update_time_label(self):
@@ -137,6 +140,7 @@ class MediaWidget(QWidget):
             print(f"Failed to publish media control: {e}")
 
     def update_status(self, data):
+        self._waiting_for_status = False
         title = data.get("title", "Unknown")
         artist = data.get("artist", "Unknown")
         self.position = data.get("position", 0.0)

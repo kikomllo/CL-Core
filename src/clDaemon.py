@@ -234,7 +234,7 @@ class CentralDaemon:
                     current_mtime = os.stat(self.intents_file_path).st_mtime
                     if current_mtime > self.last_intents_mtime:
                         logging.info("[CONFIG] intents.json modified. Reloading...")
-                        new_data = self.loader.load_and_validate("intents.json", "intents_schema.json")
+                        new_data = self.loader.load_and_validate("intents.json", "intents_schema.json", fail_fast=False)
                         self.nlp.reload_intents(new_data)
                         self.last_intents_mtime = current_mtime
             except Exception as e:
