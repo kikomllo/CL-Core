@@ -1,33 +1,33 @@
 {
-  "drawer_open": false,
-  "carousel_tab": 1,
+  "drawer_open": true,
+  "carousel_tab": 0,
   "reminder_widget": {
-    "visible": true,
+    "visible": false,
     "pos": [
       1680,
       925
     ]
   },
   "active_widgets": {
+    "widget_media_controls": {
+      "visible": true,
+      "pos": [
+        63,
+        60
+      ]
+    },
     "widget_light_controls": {
       "visible": true,
       "pos": [
-        1494,
-        62
+        1159,
+        16
       ]
     },
     "widget_todo_list": {
       "visible": true,
       "pos": [
-        1367,
-        719
-      ]
-    },
-    "widget_media_controls": {
-      "visible": true,
-      "pos": [
-        95,
-        66
+        47,
+        634
       ]
     }
   }
