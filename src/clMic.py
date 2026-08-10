@@ -87,10 +87,12 @@ class VoiceSensor:
         self.processing_timer: float = 0.0
         
         self.system_ready: bool = False
+        self.ptt_active: bool = False
         
         self.vad_hangtime: int = 0
         self.pre_speech_buffer: Deque[np.ndarray] = collections.deque(maxlen=15)
         self.ring_buffer: Deque[np.ndarray] = collections.deque(maxlen=30) # <--- ADD THIS HERE
+        self.last_vol_publish: float = 0.0
         
         self.attention_multiplier = self._load_attention_multiplier()
         
@@ -114,10 +116,19 @@ class VoiceSensor:
         import openwakeword
         from openwakeword.model import Model
         
-        available_models = openwakeword.get_pretrained_model_paths()
-        jarvis_path = next((path for path in available_models if self.target_word in path), None)
+        custom_model_dir = os.path.join(self.base_dir, "..", "config", "models")
+        os.makedirs(custom_model_dir, exist_ok=True)
+        custom_path = os.path.join(custom_model_dir, f"{self.target_word}.onnx")
+        
+        if os.path.exists(custom_path):
+            jarvis_path = custom_path
+            logging.info(f"Loaded custom wake word model from: {custom_path}")
+        else:
+            available_models = openwakeword.get_pretrained_model_paths()
+            jarvis_path = next((path for path in available_models if self.target_word in path), None)
+            
         if not jarvis_path:
-            logging.critical(f"Error: Pre-trained '{self.target_word}' model not found!")
+            logging.critical(f"Error: '{self.target_word}.onnx' not found in {custom_model_dir} or pre-trained models!")
             sys.exit(1)
             
         try:
@@ -185,7 +196,22 @@ class VoiceSensor:
         elif msg.topic == "jarvis/sys/mic_open" or action == "open_window":
             self.pending_active_window = True
             
-        
+        elif action == "ptt_start":
+            self.ptt_active = True
+            self.pending_active_window = True
+            logging.info("PTT Started - Forcing active listening.")
+            
+        elif action == "ptt_stop":
+            self.ptt_active = False
+            logging.info("PTT Stopped.")
+            
+        elif action == "ptt_toggle":
+            self.ptt_active = not self.ptt_active
+            if self.ptt_active:
+                self.pending_active_window = True
+                logging.info("PTT Toggled ON - Forcing active listening.")
+            else:
+                logging.info("PTT Toggled OFF.")
             
         elif action == "request_reply":
             self.tts_busy = False
@@ -264,6 +290,7 @@ class VoiceSensor:
         last_rms = 0
         flatline_counter = 0
         FLATLINE_LIMIT_CHUNKS = int(self.RATE / self.CHUNK * 1.5)
+        was_ptt = getattr(self, "ptt_active", False)
         
         try:
             available = self.mic_stream.get_read_available()
@@ -312,6 +339,13 @@ class VoiceSensor:
                     silence_counter += 1
                 else: 
                     silence_counter = 0
+                    
+            if getattr(self, "ptt_active", False):
+                started_speaking, silence_counter, flatline_counter = True, 0, 0
+                was_ptt = True
+            elif was_ptt:
+                logging.info("PTT Released -> Breaking recording loop.")
+                break
                     
             last_rms = rms
 
@@ -428,14 +462,20 @@ class VoiceSensor:
                 self._publish("jarvis/sys/mic_state", {"state": "idle"})
 
             if not self.is_processing:
-                self._publish("jarvis/sys/volume", {
-                    "rms": int(current_rms),
-                    "bar": meter,
-                    "status": status_tag,
-                    "b_noise": int(b_noise),
-                    "a_thresh": int(a_thresh),
-                    "s_thresh": int(s_thresh)
-                })
+                now = time.time()
+                is_speaking = current_rms > a_thresh
+                publish_interval = 0.08 if is_speaking else 0.33
+                
+                if (now - self.last_vol_publish > publish_interval):
+                    self._publish("jarvis/sys/volume", {
+                        "rms": int(current_rms),
+                        "bar": meter,
+                        "status": status_tag,
+                        "b_noise": int(b_noise),
+                        "a_thresh": int(a_thresh),
+                        "s_thresh": int(s_thresh)
+                    })
+                    self.last_vol_publish = now
             
             is_active_window = time.time() < self.active_window_end
             bypass_wakeword = self.attention_mode or self.awaiting_reply or is_active_window
@@ -468,10 +508,10 @@ class VoiceSensor:
                             break
             
             if wakeword_triggered or voice_triggered:
-                if not self.attention_mode: print("\n")
+                if not self.attention_mode: logging.info("\n")
                 
                 if wakeword_triggered:
-                    print("="*50)
+                    logging.info("="*50)
                     logging.info("WAKE WORD DETECTED!")
                     
                 if self.awaiting_reply: self.awaiting_reply = False
@@ -510,7 +550,7 @@ class VoiceSensor:
                 if command_text:
                     self._publish("jarvis/sensor/voice", command_text)
                     
-                if not self.attention_mode: print("="*50 + "\n")
+                if not self.attention_mode: logging.info("="*50 + "\n")
                 
                 self.oww_model.reset()
                 self.ambient_noise_buffer.clear()

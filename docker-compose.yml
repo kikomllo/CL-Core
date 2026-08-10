@@ -18,6 +18,7 @@ services:
       - .:/app
     environment:
       - PYTHONUNBUFFERED=1
+      - JARVIS_ECOSYSTEM=1
 
   jarvis-brain:
     build: .
@@ -28,6 +29,7 @@ services:
       - .:/app
     environment:
       - PYTHONUNBUFFERED=1
+      - JARVIS_ECOSYSTEM=1
 
   jarvis-music:
     build: .
@@ -38,6 +40,7 @@ services:
       - .:/app
     environment:
       - PYTHONUNBUFFERED=1
+      - JARVIS_ECOSYSTEM=1
 
   jarvis-tts:
     build: .
@@ -56,6 +59,7 @@ services:
       - /dev/snd:/dev/snd
     environment:
       - PYTHONUNBUFFERED=1
+      - JARVIS_ECOSYSTEM=1
       - PULSE_SERVER=unix:/run/user/1000/pulse/native
       - HOME=/home/kikomlo
       - XDG_RUNTIME_DIR=/run/user/1000
@@ -69,6 +73,7 @@ services:
       - .:/app
     environment:
       - PYTHONUNBUFFERED=1
+      - JARVIS_ECOSYSTEM=1
 
   jarvis-mic:
     build: .
@@ -87,6 +92,7 @@ services:
       - /dev/snd:/dev/snd
     environment:
       - PYTHONUNBUFFERED=1
+      - JARVIS_ECOSYSTEM=1
       - PULSE_SERVER=unix:/run/user/1000/pulse/native
       - HOME=/home/kikomlo
       - XDG_RUNTIME_DIR=/run/user/1000
@@ -102,5 +108,6 @@ services:
     user: "1000:1000"
     environment:
       - PYTHONUNBUFFERED=1
+      - JARVIS_ECOSYSTEM=1
       - DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 

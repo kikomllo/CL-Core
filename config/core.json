@@ -1,12 +1,19 @@
 {
+    "ecosystem": {
+        "mode": "DEBUG"
+    },
     "settings": {
-        "language": "en",
-        "hardware": "cpu",
+        "languages": [
+            "en",
+            "pt"
+        ],
         "stt_model": "small",
-        "debug_mqtt": true,
+        "stt_processing_mode": "parallel",
+        "hardware": "cpu",
         "enable_followup": false,
         "silent_mode": false,
-        "last_light_target": "KITCHEN"
+        "last_light_target": "KITCHEN",
+        "ecosystem_state": "debug"
     },
     "vad_settings": {
         "energy_threshold_normal": 300,
@@ -35,7 +42,8 @@
             "boss music": "pause music",
             "paws music": "pause music",
             "play missing": "play music",
-            "stop the using": "stop the music"
+            "stop the using": "stop the music",
+            "met the music": "play the song"
         },
         "autocorrect": {
             " dot ": ".",
@@ -53,7 +61,6 @@
             "nope",
             "abort",
             "cancel",
-            "no",
             "forget it"
         ],
         "word_to_number": {

@@ -49,6 +49,31 @@ class ConfigLoader:
                 sys.exit(1)
             raise ve
 
+    def update_json_atomic(self, filename: str, callback) -> None:
+        """
+        Safely updates a JSON file using a file lock to prevent concurrent write issues.
+        The callback function receives the parsed JSON dict, mutates it, and it gets saved.
+        """
+        from filelock import FileLock
+        filepath = os.path.join(self.config_dir, filename)
+        lockpath = filepath + ".lock"
+        
+        with FileLock(lockpath, timeout=5):
+            data = {}
+            if os.path.exists(filepath):
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    try:
+                        data = json.load(f)
+                    except json.JSONDecodeError:
+                        pass
+            
+            # Allow the callback to mutate data
+            callback(data)
+            
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=4)
+
+
 
 if __name__ == "__main__":
     # --- STANDALONE CLI RUNNER ---

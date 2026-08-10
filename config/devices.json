@@ -1,19 +1,21 @@
 {
-  "lights": {
-    "living_room": {
-      "ip": "192.168.1.88",
-      "mac": "cc40851c1118",
-      "type": "wiz"
-    },
-    "BEDROOM": {
-      "ip": "192.168.1.111",
-      "mac": "10:5A:95:B7:0C:86",
-      "type": "tapo"
-    },
-    "KITCHEN": {
-      "ip": "192.168.1.217",
-      "mac": "444f8e30aa06",
-      "type": "wiz"
+  "networks": {
+    "Vodafone-28F72F": {
+      "living_room": {
+        "ip": "192.168.1.88",
+        "mac": "cc40851c1118",
+        "type": "tapo"
+      },
+      "bedroom": {
+        "ip": "192.168.1.111",
+        "mac": "10:5A:95:B7:0C:86",
+        "type": "tapo"
+      },
+      "kitchen": {
+        "ip": "192.168.1.217",
+        "mac": "444f8e30aa06",
+        "type": "wiz"
+      }
     }
   }
 }

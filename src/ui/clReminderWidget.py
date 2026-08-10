@@ -1,4 +1,5 @@
 import os
+import logging
 import json
 from datetime import datetime
 import paho.mqtt.publish as publish
@@ -15,7 +16,7 @@ class ReminderWidget(QWidget):
         self.current_page = 0
         
         if not self.grid_mode:
-            self.setFixedSize(220, 135)
+            self.setMinimumSize(220, 135)
             
         self.data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data", "reminders"))
         if not os.path.exists(self.data_dir):
@@ -120,7 +121,7 @@ class ReminderWidget(QWidget):
                             data["id"] = f.replace(".json", "")
                             self.reminders.append(data)
                 except Exception as e:
-                    print(f"Error loading reminder {f}: {e}")
+                    logging.error(f"Error loading reminder {f}: {e}")
                     
         self.reminders.sort(key=lambda x: x["target_dt"])
         

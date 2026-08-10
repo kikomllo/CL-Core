@@ -12,26 +12,84 @@ def load_settings():
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             cfg = json.load(f)
-            return cfg.get("settings", {}), cfg.get("ecosystem", {}).get("mode", "STANDARD")
+            mode = cfg.get("ecosystem", {}).get("mode") or cfg.get("settings", {}).get("ecosystem_state", "STANDARD")
+            return cfg.get("settings", {}), mode.upper()
     except Exception:
         return {}, "STANDARD"
 
 SETTINGS, ECOSYSTEM_MODE = load_settings()
-DEBUG_MQTT = SETTINGS.get("debug_mqtt", False)
+DEBUG_MQTT = (ECOSYSTEM_MODE == "DEBUG")
 SYSTEM_HAS_ANNOUNCED = False
+
+import re
+import threading
+
+ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+
+class TeeLogger:
+    def __init__(self, filename):
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        self.terminal = sys.__stdout__
+        self.log = open(filename, "w", encoding="utf-8")
+        
+    def write(self, message):
+        if ECOSYSTEM_MODE != "BACKGROUND":
+            self.terminal.write(message)
+        
+        clean_msg = ANSI_ESCAPE.sub('', message).replace('\r', '')
+        if clean_msg:
+            self.log.write(clean_msg)
+            self.log.flush()
+            
+    def flush(self):
+        if ECOSYSTEM_MODE != "BACKGROUND":
+            self.terminal.flush()
+        self.log.flush()
+
+# Redirect all standard output to the logger
+sys.stdout = TeeLogger("logs/latest_run.log")
+sys.stderr = sys.stdout
+
+def stream_reader(container_name, pipe):
+    """Continuously reads from a subprocess pipe in the background."""
+    for line in iter(pipe.readline, b''):
+        sys.stdout.write(line.decode('utf-8', errors='replace'))
+        sys.stdout.flush()
 
 # --- NATIVE HOST SERVICES (not in Docker) ---
 NATIVE_SERVICES = [
     ("UI",        "src/clUI.py"),
+    ("Keybinds",  "src/clKeybinds.py"),
     ("Utilities", "src/clUtilities.py"),
 ]
+DOCKER_LOG_PROCS = []
+
+def load_modules_config():
+    config_path = os.path.join("config", "modules.json")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"native": {"UI": True, "Keybinds": True, "Utilities": True}, "docker": {}}
+
+MODULES_CONFIG = load_modules_config()
 
 PROCESSES = {}
 
 def start_native(desc, filename):
     print(f"[SUPERVISOR] Launching {filename}...")
-    proc = subprocess.Popen([sys.executable, filename])
+    env = os.environ.copy()
+    env["JARVIS_ECOSYSTEM"] = "1"
+    
+    proc = subprocess.Popen(
+        [sys.executable, filename],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=env
+    )
     PROCESSES[filename] = proc
+    t = threading.Thread(target=stream_reader, args=(filename, proc.stdout), daemon=True)
+    t.start()
     return proc
 
 def stop_native(filename):
@@ -46,23 +104,57 @@ def stop_native(filename):
 
 def boot_docker():
     print("[SUPERVISOR] Booting Docker Ecosystem...")
+    services = ["mqtt-broker"]
+    docker_cfg = MODULES_CONFIG.get("docker", {})
+    for container_name, enabled in docker_cfg.items():
+        if enabled:
+            services.append(container_name)
+            
     result = subprocess.run(
-        ["docker", "compose", "up", "-d"],
-        capture_output=False,
+        ["docker", "compose", "up", "-d"] + services,
+        capture_output=True,
         text=True
     )
     if result.returncode != 0:
         print("[SUPERVISOR] FATAL: Docker Ecosystem failed to start!")
+        if result.stderr:
+            print(f"[SUPERVISOR] Docker Error Output:\n{result.stderr.strip()}")
         sys.exit(1)
+    elif result.stdout and DEBUG_MQTT:
+        print(f"[SUPERVISOR] Docker Output:\n{result.stdout.strip()}")
+        
     print("[SUPERVISOR] Docker containers are running.")
     # Give the MQTT broker a moment to be ready
     time.sleep(1.5)
 
 def tear_down_docker():
     print("[SUPERVISOR] Bringing down Docker containers...")
-    subprocess.run(["docker", "compose", "down", "-t", "1"], capture_output=False, text=True)
+    result = subprocess.run(["docker", "compose", "down", "-t", "1"], capture_output=True, text=True)
+    if result.returncode != 0 and result.stderr:
+        print(f"[SUPERVISOR] Docker Teardown Warning:\n{result.stderr.strip()}")
+
+def attach_docker_logs():
+    global DOCKER_LOG_PROCS
+    print("[SUPERVISOR] Attaching to core Docker logs (Mic, Daemon, Whisper)...")
+    for proc in DOCKER_LOG_PROCS:
+        try:
+            proc.terminate()
+        except:
+            pass
+    DOCKER_LOG_PROCS.clear()
+    
+    for container in ["jarvis-mic", "jarvis-brain", "jarvis-whisper"]:
+        proc = subprocess.Popen(
+            ["docker", "logs", "-f", "--tail", "0", container],
+            stdout=subprocess.PIPE,  
+            stderr=subprocess.STDOUT 
+        )
+        t = threading.Thread(target=stream_reader, args=(container, proc.stdout), daemon=True)
+        t.start()
+        DOCKER_LOG_PROCS.append(proc)
 
 def on_message(client, userdata, msg):
+    global SYSTEM_HAS_ANNOUNCED, ECOSYSTEM_MODE, DEBUG_MQTT
     topic = msg.topic
     try:
         payload_str = msg.payload.decode('utf-8')
@@ -79,14 +171,39 @@ def on_message(client, userdata, msg):
             if b_noise is not None:
                 a_thresh = vol.get("a_thresh", 0)
                 s_thresh = vol.get("s_thresh", 0)
-                print(f"\r\033[K[{status}] Vol: {rms:5d} ||{bar}|| ACT: {a_thresh} SIL: {s_thresh} AVG: {b_noise}", end='', flush=True)
+                if ECOSYSTEM_MODE != "BACKGROUND":
+                    sys.__stdout__.write(f"\r\033[K[{status}] Vol: {rms:5d} ||{bar}|| ACT: {a_thresh} SIL: {s_thresh} AVG: {b_noise}")
+                    sys.__stdout__.flush()
             else:
-                print(f"\r\033[K[{status}] Vol: {rms:5d} ||{bar}||", end='', flush=True)
+                if ECOSYSTEM_MODE != "BACKGROUND":
+                    sys.__stdout__.write(f"\r\033[K[{status}] Vol: {rms:5d} ||{bar}||")
+                    sys.__stdout__.flush()
         except Exception:
             pass
         return
 
-    if DEBUG_MQTT and topic != "jarvis/sys/volume" and topic != "jarvis/sys/audio_process":
+    if topic == "jarvis/sys/state_change":
+        try:
+            payload = json.loads(payload_str) if payload_str else {}
+            new_mode = str(payload.get("action", "")).upper()
+            if new_mode in ["DEBUG", "NORMAL", "STANDARD", "BACKGROUND"]:
+                ECOSYSTEM_MODE = new_mode
+                DEBUG_MQTT = (ECOSYSTEM_MODE == "DEBUG")
+                if DEBUG_MQTT:
+                    client.subscribe("#")
+                    print("\n\033[36m[SUPERVISOR] Ecosystem shifted to DEBUG mode. Global MQTT Packet Sniffer ACTIVE.\033[0m")
+                else:
+                    client.unsubscribe("#")
+                    client.subscribe("jarvis/sys/manager")
+                    client.subscribe("jarvis/sys/ui_control")
+                    client.subscribe("jarvis/sys/volume")
+                    client.subscribe("jarvis/sys/whisper_state")
+                    client.subscribe("jarvis/sys/state_change")
+                    print(f"\n\033[32m[SUPERVISOR] Ecosystem shifted to {ECOSYSTEM_MODE} mode.\033[0m")
+        except Exception:
+            pass
+
+    if DEBUG_MQTT and topic not in ["jarvis/sys/volume", "jarvis/sys/audio_process", "jarvis/sensor/mic_vol"]:
         print(f"\r\033[K\033[36m[DEBUG-MQTT] [CH: {topic}] {payload_str}\033[0m")
 
     if topic == "jarvis/sys/manager":
@@ -108,9 +225,25 @@ def on_message(client, userdata, msg):
                 print("\n" + "="*60)
                 print("[SUPERVISOR] INITIATING FULL ECOSYSTEM REBOOT")
                 print("="*60)
+                for desc, filename in NATIVE_SERVICES:
+                    stop_native(filename)
                 tear_down_docker()
                 time.sleep(1.0)
+                
+                global MODULES_CONFIG
+                MODULES_CONFIG = load_modules_config()
+                
                 boot_docker()
+                attach_docker_logs()
+                
+                SYSTEM_HAS_ANNOUNCED = False
+                
+                print("[SUPERVISOR] Starting native host services...")
+                native_cfg = MODULES_CONFIG.get("native", {})
+                for desc, filename in NATIVE_SERVICES:
+                    if native_cfg.get(desc, True):
+                        start_native(desc, filename)
+                        
                 print("[SUPERVISOR] ECOSYSTEM REBOOT COMPLETE\n" + "="*60)
 
             elif action == "restart_module":
@@ -174,7 +307,6 @@ def on_message(client, userdata, msg):
             pass
     
     elif topic == "jarvis/sys/whisper_state":
-        global SYSTEM_HAS_ANNOUNCED
         if SYSTEM_HAS_ANNOUNCED:
             return
             
@@ -201,41 +333,19 @@ def main():
     print(f"Ecosystem State: {ECOSYSTEM_MODE}")
     print("="*50 + "\n")
 
-    # 1. Start Docker ecosystem first (This boots the Mosquitto Broker)
+    # 1. Start Docker ecosystem (This boots the Mosquitto Broker)
     boot_docker()
 
-    # --- THE FIX: Start Native Services BEFORE the Supervisor connects to MQTT ---
     print("[SUPERVISOR] Starting native host services...")
+    native_cfg = MODULES_CONFIG.get("native", {})
     for desc, filename in NATIVE_SERVICES:
-        start_native(desc, filename)
+        if native_cfg.get(desc, True):
+            start_native(desc, filename)
 
     print("[SUPERVISOR] Giving UI and services 3 seconds to mount and subscribe...")
     time.sleep(3)
-    # -------------------------------------------------------------------------
 
-    import threading
-
-    def stream_reader(container_name, pipe):
-        """Continuously reads from a subprocess pipe in the background."""
-        for line in iter(pipe.readline, b''):
-            if ECOSYSTEM_MODE.upper() in ["STANDARD", "NORMAL", "DEBUG"]:
-                sys.stdout.write(line.decode('utf-8', errors='replace'))
-                sys.stdout.flush()
-
-    print("[SUPERVISOR] Attaching to core Docker logs (Mic, Daemon, Whisper)...")
-    
-    docker_log_procs = []
-    for container in ["jarvis-mic", "jarvis-brain", "jarvis-whisper"]:
-        proc = subprocess.Popen(
-            ["docker", "logs", "-f", "--tail", "0", container],
-            stdout=subprocess.PIPE,  
-            stderr=subprocess.STDOUT 
-        )
-        
-        t = threading.Thread(target=stream_reader, args=(container, proc.stdout), daemon=True)
-        t.start()
-        
-        docker_log_procs.append(proc)   
+    attach_docker_logs()
 
     # 2. Connect global MQTT supervisor (This will now trigger the TTS *after* UI is ready)
     client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION1)
@@ -246,6 +356,7 @@ def main():
         client.subscribe("jarvis/sys/ui_control")
         client.subscribe("jarvis/sys/volume")
         client.subscribe("jarvis/sys/whisper_state")
+        client.subscribe("jarvis/sys/state_change")
         if DEBUG_MQTT:
             client.subscribe("#")
             print("\033[36m[SUPERVISOR] Global MQTT Packet Sniffer is ONLINE.\033[0m")
@@ -255,40 +366,7 @@ def main():
         tear_down_docker()
         sys.exit(1)
 
-    # 3. Register global hotkeys
-    try:
-        from pynput import keyboard
-
-        def on_fullscreen_toggle():
-            print("\n[SUPERVISOR] Global hotkey detected! Activating UI Fullscreen Mode...")
-            try:
-                client.publish("jarvis/sys/ui_control", json.dumps({"action": "set_fullscreen"}))
-            except Exception as e:
-                print(f"[SUPERVISOR] Hotkey publish error: {e}")
-
-        def on_overlay_toggle():
-            print("\n[SUPERVISOR] Global hotkey detected! Activating UI Overlay Mode...")
-            try:
-                client.publish("jarvis/sys/ui_control", json.dumps({"action": "set_overlay"}))
-            except Exception as e:
-                print(f"[SUPERVISOR] Hotkey publish error: {e}")
-
-        def on_activate_abort():
-            print("\n[SUPERVISOR] Global ABORT hotkey triggered!")
-            try:
-                client.publish("jarvis/sys/abort", json.dumps({"action": "abort"}))
-            except Exception as e:
-                print(f"[SUPERVISOR] Abort publish error: {e}")
-
-        hotkey = keyboard.GlobalHotKeys({
-            '<ctrl>+<alt>+<shift>+j': on_activate_abort,
-            '<ctrl>+<alt>+<shift>+f': on_fullscreen_toggle,
-            '<ctrl>+<alt>+<shift>+o': on_overlay_toggle,
-        })
-        hotkey.start()
-        print("[SUPERVISOR] Global hotkeys are registered.")
-    except Exception as e:
-        print(f"[SUPERVISOR] Warning: Could not register hotkeys: {e}")
+    # 3. Global hotkeys are now managed via GNOME Settings (Wayland Compatibility)
 
     print("\n" + "="*50)
     print("HOST SUPERVISOR ONLINE. Press Ctrl+C to shutdown.")
@@ -298,7 +376,10 @@ def main():
         while True:
             time.sleep(3)
             # Resurrect dead native services
+            native_cfg = MODULES_CONFIG.get("native", {})
             for desc, filename in NATIVE_SERVICES:
+                if not native_cfg.get(desc, True):
+                    continue
                 proc = PROCESSES.get(filename)
                 if proc and proc.poll() is not None:
                     print(f"[SUPERVISOR] FATAL: {filename} died unexpectedly! Resurrecting...")
@@ -313,7 +394,7 @@ def main():
         stop_native(filename)
 
     try:
-        for proc in docker_log_procs:
+        for proc in DOCKER_LOG_PROCS:
             proc.terminate()
     except Exception:
         pass

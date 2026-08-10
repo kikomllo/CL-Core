@@ -29,6 +29,7 @@ class TTSManager:
         self.assets_dir = os.path.abspath(os.path.join(self.base_dir, "..", "assets"))
         self.blip_path = os.path.join(self.assets_dir, "blip.mp3")
         self.semaphore = asyncio.Semaphore(1) 
+        self.abort_counter = 0
         
         # Load the dynamic responses once at boot
         responses_data = ConfigLoader().load_json("responses.json")
@@ -39,7 +40,7 @@ class TTSManager:
         
         mixer.init()
         logging.info("Audio mixer initialized.")
-        self.clean_old_cache(max_files=30)
+        self.clean_old_cache(max_files=200)
 
     def clean_old_cache(self, max_files: int = 30) -> None:
         """Removes oldest cached tts_*.mp3 files to prevent assets folder bloat."""
@@ -77,7 +78,7 @@ class TTSManager:
             logging.error(f"Failed to extract RMS: {e}")
             return []
 
-    async def generate_and_play(self, client, text, voice="en-GB-RyanNeural", ignore_silent=False) -> None:
+    async def generate_and_play(self, client, text, voice="en-GB-RyanNeural", ignore_silent=False, abort_count=0) -> None:
         if self.silent_mode and not ignore_silent and not ("alarm" in text.lower()):
             logging.info("[TTS] Silent mode active. Skipping TTS playback.")
             return
@@ -88,9 +89,18 @@ class TTSManager:
         if not os.path.exists(temp_file):
             communicate = edge_tts.Communicate(text, voice, rate="+27%", pitch="-5Hz")
             await communicate.save(temp_file)
-            self.clean_old_cache(max_files=30)
+        else:
+            try:
+                os.utime(temp_file, None)
+            except Exception:
+                pass
+        self.clean_old_cache(max_files=200)
 
         async with self.semaphore:
+            if self.abort_counter != abort_count:
+                logging.info("[TTS] Task aborted before playing.")
+                return
+                
             try:
                 if client:
                     # Broadcast state to the Daemon so it can handle the ducking
@@ -150,13 +160,17 @@ class TTSManager:
                     await client.publish("jarvis/sys/tts_state", json.dumps({"state": "idle"}))
                     await asyncio.sleep(0.05)
 
-    async def play_audio_file(self, client, file_path: str) -> None:
+    async def play_audio_file(self, client, file_path: str, abort_count=0) -> None:
         """Plays an existing audio file safely through the TTS queue to avoid ALSA locks."""
         if not os.path.exists(file_path):
             logging.error(f"[TTS] Audio file not found: {file_path}")
             return
             
         async with self.semaphore:
+            if self.abort_counter != abort_count:
+                logging.info("[TTS] Audio file playback aborted.")
+                return
+                
             try:
                 if client:
                     await client.publish("jarvis/sys/tts_state", json.dumps({"state": "active"}))
@@ -185,6 +199,7 @@ class TTSManager:
                 start_time = asyncio.get_event_loop().time()
                 
                 while mixer.music.get_busy():
+                    await asyncio.sleep(0.01)
                     elapsed = asyncio.get_event_loop().time() - start_time
                     if elapsed >= cutoff_time:
                         mixer.music.stop()
@@ -204,7 +219,7 @@ class TTSManager:
                     await client.publish("jarvis/sys/tts_state", json.dumps({"state": "idle"}))
 
 
-    async def handle_tts_request(self, client, payload: dict) -> None:
+    async def handle_tts_request(self, client, payload: dict, abort_count=0) -> None:
         """Formats dynamic text from templates and sends it to the voice generator."""
         target_topic = payload.get("target_topic", "")
         command = payload.get("command", {})
@@ -235,7 +250,7 @@ class TTSManager:
             if payload.get("append_followup"):
                 phrase += " Anything else sir?"
 
-            await self.generate_and_play(client, phrase)
+            await self.generate_and_play(client, phrase, abort_count=abort_count)
 
 async def run_tts_service():
     manager = TTSManager()
@@ -246,6 +261,7 @@ async def run_tts_service():
                 attempt = 0
                 await client.subscribe("jarvis/sys/speak")
                 await client.subscribe("jarvis/sys/tts_stop")
+                await client.subscribe("jarvis/sys/abort")
                 await client.subscribe("jarvis/sys/tts_request")
                 await client.subscribe("jarvis/sys/silent_mode")
                 await client.subscribe("jarvis/sys/play_audio")
@@ -255,7 +271,8 @@ async def run_tts_service():
                 async for message in client.messages:
                     topic = message.topic.value
                     
-                    if topic == "jarvis/sys/tts_stop":
+                    if topic in ["jarvis/sys/tts_stop", "jarvis/sys/abort"]:
+                        manager.abort_counter += 1
                         mixer.music.stop()
                         continue
 
@@ -271,18 +288,23 @@ async def run_tts_service():
                     if topic == "jarvis/sys/speak":
                         try:
                             payload = json.loads(message.payload.decode('utf-8'))
-                            await manager.generate_and_play(
+                            asyncio.create_task(manager.generate_and_play(
                                 client, 
                                 payload.get("text", ""), 
-                                ignore_silent=payload.get("ignore_silent", False) or payload.get("skip_ducking", False)
-                            )
+                                ignore_silent=payload.get("ignore_silent", False) or payload.get("skip_ducking", False),
+                                abort_count=manager.abort_counter
+                            ))
                         except json.JSONDecodeError:
                             logging.error("Received malformed TTS JSON.")
                             
                     elif topic == "jarvis/sys/tts_request":
                         try:
                             payload = json.loads(message.payload.decode('utf-8'))
-                            await manager.handle_tts_request(client, payload)
+                            asyncio.create_task(manager.handle_tts_request(
+                                client, 
+                                payload,
+                                abort_count=manager.abort_counter
+                            ))
                         except json.JSONDecodeError:
                             logging.error("Malformed TTS request JSON.")
                             
@@ -291,8 +313,11 @@ async def run_tts_service():
                             payload = json.loads(message.payload.decode('utf-8'))
                             audio_path = payload.get("path")
                             if audio_path:
-                                # Run in background so it doesn't block the MQTT loop, just like TTS
-                                asyncio.create_task(manager.play_audio_file(client, audio_path))
+                                asyncio.create_task(manager.play_audio_file(
+                                    client, 
+                                    audio_path,
+                                    abort_count=manager.abort_counter
+                                ))
                         except json.JSONDecodeError:
                             logging.error("Malformed play_audio JSON.")
 

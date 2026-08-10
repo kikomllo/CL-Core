@@ -1,4 +1,5 @@
 import json
+import logging
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
 from PyQt6.QtCore import QTimer
 
@@ -12,15 +13,15 @@ class LightControlWidget(QWidget):
         
         # Title and Refresh
         top_layout = QHBoxLayout()
-        title_lbl = QLabel("Smart Lights")
-        title_lbl.setStyleSheet("color: #ffaa00; font-weight: bold; font-size: 14pt;")
+        self.title_lbl = QLabel("Smart Lights")
+        self.title_lbl.setStyleSheet("color: #ffaa00; font-weight: bold; font-size: 13pt;")
         
         refresh_btn = QPushButton("⟳")
         refresh_btn.setFixedSize(30, 30)
         refresh_btn.setStyleSheet("QPushButton { background-color: rgba(255, 150, 0, 20); color: #ffaa00; border-radius: 15px; border: 1px solid rgba(255,150,0,80); font-size: 14pt; } QPushButton:hover { background-color: rgba(255, 150, 0, 60); }")
         refresh_btn.clicked.connect(lambda: self.send_cmd("refresh_lights", "all"))
         
-        top_layout.addWidget(title_lbl)
+        top_layout.addWidget(self.title_lbl)
         top_layout.addStretch()
         top_layout.addWidget(refresh_btn)
         self.layout.addLayout(top_layout)
@@ -46,20 +47,28 @@ class LightControlWidget(QWidget):
         
         self.light_rows = {}
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        import paho.mqtt.publish as publish
+        if getattr(self.window(), 'is_fullscreen', False):
+            try:
+                publish.single("home/room/all/set", json.dumps({"action": "refresh_lights", "light_target": "all"}), hostname="localhost", qos=0)
+            except Exception as e:
+                pass
+
     def send_cmd(self, action, target, silent=False):
         import paho.mqtt.publish as publish
         try:
             publish.single("home/room/all/set", json.dumps({"action": action, "light_target": target, "silent": silent}), hostname="localhost", qos=0)
         except Exception as e:
-            print(f"Failed to publish light control: {e}")
+            logging.error(f"Failed to publish light control: {e}")
 
     def _delete_light(self, target_name):
         import paho.mqtt.publish as publish
         try:
             publish.single("home/room/all/set", json.dumps({"action": "intent_remove_light", "target_str": target_name}), hostname="localhost", qos=0)
         except Exception as e:
-            print(f"Failed to publish delete: {e}")
-        # Remove from UI immediately
+            logging.error(f"Failed to publish delete: {e}")
         if target_name in self.light_rows:
             row_data = self.light_rows.pop(target_name)
             row_data["widget"].deleteLater()
@@ -86,6 +95,10 @@ class LightControlWidget(QWidget):
         indicator.setStyleSheet(f"color: {color}; font-size: 16pt;")
 
     def update_status(self, data):
+        network_name = data.get("network", "")
+        if network_name:
+            self.title_lbl.setText(f"Smart Lights ({network_name})")
+            
         lights = data.get("lights", [])
         
         # Remove loading placeholder once real data arrives
@@ -94,11 +107,18 @@ class LightControlWidget(QWidget):
             self._loading_lbl = None
         
         if not lights:
-            if not self.light_rows:
-                lbl = QLabel("No lights configured.")
-                lbl.setStyleSheet("color: rgba(150, 150, 150, 255); font-style: italic;")
-                self.lights_layout.addWidget(lbl)
+            for r in list(self.light_rows.values()):
+                r["widget"].deleteLater()
+            self.light_rows.clear()
+            
+            if getattr(self, '_empty_lbl', None) is None:
+                self._empty_lbl = QLabel("No lights configured for this network.")
+                self._empty_lbl.setStyleSheet("color: rgba(150, 150, 150, 255); font-style: italic; font-size: 9.5pt;")
+                self.lights_layout.addWidget(self._empty_lbl)
             return
+        elif getattr(self, '_empty_lbl', None) is not None:
+            self._empty_lbl.deleteLater()
+            self._empty_lbl = None
             
         for l in lights:
             target_name = l.get("name", "").lower().replace(" ", "_")

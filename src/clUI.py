@@ -16,9 +16,14 @@ from ui.clLightControlWidget import LightControlWidget
 from ui.clReminderWidget import ReminderWidget
 from ui.clTodoWidget import TodoWidget
 from ui.clDashboardDrawer import DashboardDrawer
+from ui.clSettingsWidget import SettingsWidget
 
 os.environ["QT_QPA_PLATFORM"] = "xcb"
 
+import logging
+from utils.clLogging import setup_logging
+setup_logging('UI')
+from utils.clConfigLoader import ConfigLoader
 ECOSYSTEM_STATE = "normal"
 try:
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config", "core.json"), "r") as f:
@@ -78,7 +83,7 @@ class MqttThread(QThread):
                 client.loop_forever()
             except Exception as e:
                 delay = min(60, 2 ** attempt)
-                print(f"MQTT Error: {e}. Reconnecting in {delay}s...")
+                logging.error(f"MQTT Error: {e}. Reconnecting in {delay}s...")
                 import time
                 time.sleep(delay)
                 attempt += 1
@@ -224,6 +229,15 @@ class MqttThread(QThread):
             new_state = payload.get("action")
             if new_state in ["debug", "normal", "background"]:
                 self.state_change_signal.emit(new_state)
+                try:
+                    def update_cb(core):
+                        if "settings" not in core: core["settings"] = {}
+                        if "ecosystem" not in core: core["ecosystem"] = {}
+                        core["settings"]["ecosystem_state"] = new_state.lower()
+                        core["ecosystem"]["mode"] = new_state.upper()
+                    ConfigLoader().update_json_atomic("core.json", update_cb)
+                except Exception as e:
+                    logging.error(f"Failed to persist state_change to core.json: {e}")
 
 class DraggableWidget(QWidget):
     def __init__(self, widget_id, title, content_widget, closable=True, parent=None):
@@ -265,6 +279,11 @@ class DraggableWidget(QWidget):
         self.content_widget = content_widget
         self.layout.addWidget(self.content_widget)
         
+        # Enforce minimum size based on content to prevent squashing and clipping
+        min_w = self.content_widget.minimumWidth()
+        min_h = self.content_widget.minimumHeight() + (24 if title or closable else 0)
+        self.setMinimumSize(max(150, min_w), max(50, min_h))
+        
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet("""
             DraggableWidget {
@@ -275,7 +294,9 @@ class DraggableWidget(QWidget):
         """)
         
         self._dragging = False
+        self._resizing = False
         self._drag_start_pos = QPoint()
+        self._resize_start_size = self.size()
 
     def close_widget(self):
         if hasattr(self.parent(), 'close_draggable_widget'):
@@ -283,21 +304,45 @@ class DraggableWidget(QWidget):
         else:
             self.hide()
 
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = self.rect()
+        painter.setPen(QPen(QColor(255, 120, 0, 180), 3))
+        x, y = rect.width(), rect.height()
+        painter.drawLine(x - 14, y - 4, x - 4, y - 14)
+        painter.drawLine(x - 9, y - 4, x - 4, y - 9)
+        painter.drawLine(x - 4, y - 4, x - 4, y - 4)
+
     def mousePressEvent(self, event):
+        rect = self.rect()
+        bottom_right = QRect(rect.width() - 20, rect.height() - 20, 20, 20)
+        
         if event.button() == Qt.MouseButton.LeftButton:
-            self._dragging = True
-            self._drag_start_global = event.globalPosition().toPoint()
-            self._drag_start_pos = self.pos()
-            if hasattr(self.content_widget, "on_drag_start"):
-                self.content_widget.on_drag_start()
+            if bottom_right.contains(event.pos()):
+                self._resizing = True
+                self._resize_start_global = event.globalPosition().toPoint()
+                self._resize_start_size = self.size()
+            else:
+                self._dragging = True
+                self._drag_start_global = event.globalPosition().toPoint()
+                self._drag_start_pos = self.pos()
+                if hasattr(self.content_widget, "on_drag_start"):
+                    self.content_widget.on_drag_start()
             self.raise_()
         super().mousePressEvent(event)
         
     def mouseMoveEvent(self, event):
-        if self._dragging:
+        if hasattr(self, '_resizing') and self._resizing:
+            delta = event.globalPosition().toPoint() - self._resize_start_global
+            min_size = self.layout.minimumSize()
+            new_w = max(min_size.width(), self._resize_start_size.width() + delta.x())
+            new_h = max(min_size.height(), self._resize_start_size.height() + delta.y())
+            self.resize(new_w, new_h)
+        elif self._dragging:
             delta = event.globalPosition().toPoint() - self._drag_start_global
             new_pos = self._drag_start_pos + delta
-            # Prevent dragging out of parent bounds
             if self.parent():
                 new_pos.setX(max(0, min(new_pos.x(), self.parent().width() - self.width())))
                 new_pos.setY(max(0, min(new_pos.y(), self.parent().height() - self.height())))
@@ -306,6 +351,7 @@ class DraggableWidget(QWidget):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._dragging = False
+            self._resizing = False
             if hasattr(self.parent(), 'save_ui_state'):
                 self.parent().save_ui_state()
         super().mouseReleaseEvent(event)
@@ -391,6 +437,9 @@ class JarvisVisualizer(QWidget):
         self.target_opacity = 1.0
 
     def update_animation(self):
+        if self.current_opacity <= 0.01 and self.target_opacity <= 0.01 and not self.is_fullscreen and not self.particles:
+            return
+
         if abs(self.current_opacity - self.target_opacity) > 0.01:
             self.current_opacity += (self.target_opacity - self.current_opacity) * 0.1
         else:
@@ -631,6 +680,12 @@ class JarvisUI(QWidget):
         self.btn_todos.clicked.connect(self._toggle_todos)
         self.btn_todos.hide()
         
+        self.btn_settings = QPushButton("SETTINGS", self)
+        self.btn_settings.setStyleSheet(btn_style)
+        self.btn_settings.setFixedSize(90, 35)
+        self.btn_settings.clicked.connect(self._toggle_settings)
+        self.btn_settings.hide()
+        
         self.btn_calendar = QPushButton("❮", self)
         self.btn_calendar.setStyleSheet("QPushButton { background-color: rgba(255, 150, 0, 40); color: #ffaa00; border-radius: 5px; font-weight: bold; border: 1px solid rgba(255, 150, 0, 80); } QPushButton:hover { background-color: rgba(255, 150, 0, 80); }")
         self.btn_calendar.setFixedSize(30, 80)
@@ -687,9 +742,6 @@ class JarvisUI(QWidget):
                 if w.isHidden():
                     w.show()
                     w.raise_()
-                    
-                    # Fetch instantly when brought back from hidden state
-                    w.content_widget.send_cmd("status", silent=True)
                 else:
                     self.close_draggable_widget(widget_id)
 
@@ -728,6 +780,21 @@ class JarvisUI(QWidget):
             if widget_id not in self.active_widgets:
                 todo_widget = TodoWidget()
                 self.spawn_widget(widget_id, "To-Do List", todo_widget)
+            else:
+                w = self.active_widgets[widget_id]
+                if w.isHidden():
+                    w.show()
+                    w.raise_()
+                    self.save_ui_state()
+                else:
+                    self.close_draggable_widget(widget_id)
+
+    def _toggle_settings(self):
+        if getattr(self, 'is_fullscreen', False):
+            widget_id = "widget_settings"
+            if widget_id not in self.active_widgets:
+                settings_widget = SettingsWidget()
+                self.spawn_widget(widget_id, "System Settings", settings_widget)
             else:
                 w = self.active_widgets[widget_id]
                 if w.isHidden():
@@ -814,29 +881,15 @@ class JarvisUI(QWidget):
             wrapper = self.active_widgets[widget_id]
             if isinstance(wrapper.content_widget, LightControlWidget):
                 wrapper.content_widget.update_status(data)
-                # Immediate + deferred resize so wrapper tracks new content height
-                wrapper.adjustSize()
-                from PyQt6.QtCore import QTimer
-                QTimer.singleShot(0, wrapper.adjustSize)
-                QTimer.singleShot(60, wrapper.adjustSize)
         if hasattr(self, 'calendar_drawer'):
             self.calendar_drawer.carousel.lights_widget.update_status(data)
 
     def _handle_media_status(self, data):
         widget_id = "widget_media_controls"
-        if widget_id not in self.active_widgets:
-            media_widget = MediaWidget()
-            # Wrap and spawn it
-            self.spawn_widget(widget_id, "Media Controls", media_widget)
-        else:
-            if self.is_fullscreen:
-                self.active_widgets[widget_id].show()
-                self.active_widgets[widget_id].raise_()
-        # Update the widget contents
-        wrapper = self.active_widgets[widget_id]
-        if isinstance(wrapper.content_widget, MediaWidget):
-            wrapper.content_widget.update_status(data)
-            wrapper.adjustSize()
+        if widget_id in self.active_widgets:
+            wrapper = self.active_widgets[widget_id]
+            if isinstance(wrapper.content_widget, MediaWidget):
+                wrapper.content_widget.update_status(data)
         if hasattr(self, 'calendar_drawer'):
             self.calendar_drawer.carousel.media_widget.update_status(data)
 
@@ -990,8 +1043,8 @@ class JarvisUI(QWidget):
 
     def close_draggable_widget(self, widget_id):
         if widget_id in self.active_widgets:
-            w = self.active_widgets.pop(widget_id)
-            w.deleteLater()
+            w = self.active_widgets[widget_id]
+            w.hide()
             self.save_ui_state()
 
     def update_animation(self):
@@ -1013,7 +1066,7 @@ class JarvisUI(QWidget):
             try:
                 publish.single("jarvis/sensor/voice", text, hostname="localhost", qos=1)
             except Exception as e:
-                print(f"Failed to publish text command: {e}")
+                logging.error(f"Failed to publish text command: {e}")
             self.text_input.clear()
             self.text_input.setFocus()
 
@@ -1051,6 +1104,7 @@ class JarvisUI(QWidget):
             self.btn_lights.setGeometry(120, geom.height() - 65, 80, 35)
             self.btn_reminders.setGeometry(210, geom.height() - 65, 100, 35)
             self.btn_todos.setGeometry(320, geom.height() - 65, 80, 35)
+            self.btn_settings.setGeometry(410, geom.height() - 65, 90, 35)
             
             # Position calendar toggle on right edge
             self.btn_calendar.setGeometry(geom.width() - 30, int(geom.height() / 2) - 40, 30, 80)
@@ -1063,6 +1117,7 @@ class JarvisUI(QWidget):
             self.btn_lights.show()
             self.btn_reminders.show()
             self.btn_todos.show()
+            self.btn_settings.show()
             self.btn_calendar.show()
             
             rw_w, rw_h = 220, 135
@@ -1078,6 +1133,10 @@ class JarvisUI(QWidget):
             
             # Load and restore persistent UI state across sessions
             self.load_ui_state()
+
+            # Refresh states for modules to sync UI
+            if getattr(self, "calendar_is_open", False):
+                publish.single("jarvis/sys/calendar/request", json.dumps({"action": "read"}), hostname="localhost", qos=0)
 
             self.showFullScreen()
             self.raise_()
@@ -1109,6 +1168,7 @@ class JarvisUI(QWidget):
             self.btn_lights.hide()
             self.btn_reminders.hide()
             self.btn_todos.hide()
+            self.btn_settings.hide()
             self.btn_calendar.hide()
             self.calendar_drawer.hide()
             self.reminder_widget.hide()
@@ -1212,7 +1272,8 @@ class JarvisUI(QWidget):
             for wid, wrapper in self.active_widgets.items():
                 active_widgets_data[wid] = {
                     "visible": wrapper.isVisible(),
-                    "pos": [wrapper.x(), wrapper.y()]
+                    "pos": [wrapper.x(), wrapper.y()],
+                    "size": [wrapper.width(), wrapper.height()]
                 }
                 
             reminder_data = {
@@ -1233,7 +1294,7 @@ class JarvisUI(QWidget):
             with open(STATE_FILE, "w", encoding="utf-8") as f:
                 json.dump(state_payload, f, indent=2)
         except Exception as e:
-            print(f"Failed to save UI state: {e}")
+            logging.error(f"Failed to save UI state: {e}")
 
     def load_ui_state(self):
         if not os.path.exists(STATE_FILE):
@@ -1272,29 +1333,37 @@ class JarvisUI(QWidget):
             for widget_id, info in active_state.items():
                 is_visible = info.get("visible", False)
                 pos = info.get("pos")
+                size = info.get("size")
                 
-                if is_visible:
-                    if widget_id == "widget_media_controls":
-                        if widget_id not in self.active_widgets:
-                            media_widget = MediaWidget()
-                            self.spawn_widget(widget_id, "Media Controls", media_widget)
-                    elif widget_id == "widget_light_controls":
-                        if widget_id not in self.active_widgets:
-                            light_widget = LightControlWidget()
-                            self.spawn_widget(widget_id, "Smart Lights", light_widget)
-                    elif widget_id == "widget_todo_list":
-                        if widget_id not in self.active_widgets:
-                            todo_widget = TodoWidget()
-                            self.spawn_widget(widget_id, "To-Do List", todo_widget)
-                            
-                    if widget_id in self.active_widgets:
-                        w = self.active_widgets[widget_id]
-                        if pos and len(pos) == 2:
-                            w.move(pos[0], pos[1])
+                if widget_id == "widget_media_controls":
+                    if widget_id not in self.active_widgets:
+                        media_widget = MediaWidget()
+                        self.spawn_widget(widget_id, "Media Controls", media_widget)
+                elif widget_id == "widget_light_controls":
+                    if widget_id not in self.active_widgets:
+                        light_widget = LightControlWidget()
+                        self.spawn_widget(widget_id, "Smart Lights", light_widget)
+                elif widget_id == "widget_todo_list":
+                    if widget_id not in self.active_widgets:
+                        todo_widget = TodoWidget()
+                        self.spawn_widget(widget_id, "To-Do List", todo_widget)
+                        
+                if widget_id in self.active_widgets:
+                    w = self.active_widgets[widget_id]
+                    
+                    if pos and len(pos) == 2:
+                        w.move(pos[0], pos[1])
+                        
+                    if size and len(size) == 2:
+                        w.resize(size[0], size[1])
+                        
+                    if is_visible:
                         w.show()
                         w.raise_()
+                    else:
+                        w.hide()
         except Exception as e:
-            print(f"Failed to load UI state: {e}")
+            logging.error(f"Failed to load UI state: {e}")
 
 
 if __name__ == "__main__":
