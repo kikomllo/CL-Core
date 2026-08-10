@@ -14,6 +14,8 @@ import aiomqtt
 
 # NEW: Import your centralized env loader
 from utils.clEnvLoader import EnvLoader
+from utils.clConfigLoader import ConfigLoader
+from utils.clNetworkUtils import get_current_wifi_ssid
 
 # --- LOGGING SETUP ---
 import sys, os
@@ -72,31 +74,56 @@ class LightManager:
         return "all"
 
     def _save_last_target(self, target: str) -> None:
-        core_file = os.path.abspath(os.path.join(self.base_dir, "..", "config", "core.json"))
-        if os.path.exists(core_file):
-            try:
-                with open(core_file, 'r', encoding='utf-8') as f:
-                    core = json.load(f)
+        try:
+            def update_cb(core):
                 if "settings" not in core: core["settings"] = {}
                 core["settings"]["last_light_target"] = target
-                with open(core_file, 'w', encoding='utf-8') as f:
-                    json.dump(core, f, indent=4)
-            except Exception as e:
-                logging.error(f"Failed to save last_light_target to core.json: {e}")
+            ConfigLoader().update_json_atomic("core.json", update_cb)
+        except Exception as e:
+            logging.error(f"Failed to save last_light_target to core.json: {e}")
         
     def _load_devices(self) -> Dict[str, Any]:
+        self.current_ssid = get_current_wifi_ssid()
         if os.path.exists(self.devices_file):
             try:
                 with open(self.devices_file, 'r', encoding='utf-8') as f:
-                    return json.load(f).get("lights", {})
+                    data = json.load(f)
+                    if "networks" in data:
+                        networks = data.get("networks", {})
+                        # Exact network match
+                        if self.current_ssid in networks:
+                            logging.info(f"[CONTROL] Loaded {len(networks[self.current_ssid])} lights for current network '{self.current_ssid}'.")
+                            return networks[self.current_ssid]
+                        # Substring match
+                        for net_name, lights in networks.items():
+                            if net_name.lower() in self.current_ssid.lower() or self.current_ssid.lower() in net_name.lower():
+                                logging.info(f"[CONTROL] Matched network '{net_name}' for SSID '{self.current_ssid}'.")
+                                return lights
+                        # No match found -> Return empty dict (no lights for this network)
+                        logging.info(f"[CONTROL] No lights configured in devices.json for active SSID '{self.current_ssid}'.")
+                        return {}
+                    elif "lights" in data:
+                        return data.get("lights", {})
             except Exception as e:
                 logging.error(f"Failed to load devices.json: {e}")
         return {}
-        
+
     def _save_devices(self) -> None:
         try:
+            current_ssid = getattr(self, 'current_ssid', get_current_wifi_ssid())
+            data = {"networks": {}}
+            if os.path.exists(self.devices_file):
+                try:
+                    with open(self.devices_file, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                except Exception:
+                    pass
+            if "networks" not in data:
+                data = {"networks": {}}
+
+            data["networks"][current_ssid] = self.lights
             with open(self.devices_file, 'w', encoding='utf-8') as f:
-                json.dump({"lights": self.lights}, f, indent=2)
+                json.dump(data, f, indent=2)
             self.poll_trigger.set()
         except Exception as e:
             logging.error(f"Failed to save devices.json: {e}")
@@ -361,15 +388,13 @@ class LightManager:
                 logging.error(f"Failed to deploy discovery feedback: {e}")
         else:
             # CLI Mode: Output a clean, beautiful terminal UI wrapper
-            print("\n" + "=" * 60)
-            print("{:^60}".format("DISCOVERED HARDWARE TARGETS"))
-            print("=" * 60)
+            header = "\n" + "=" * 60 + "\n" + "{:^60}".format("DISCOVERED HARDWARE TARGETS") + "\n" + "=" * 60 + "\n"
             table_str = "  {:<5} {:<8} {:<15} {:<15}\n".format("IDX", "TYPE", "MODEL", "IP")
             table_str += "  " + "-" * 54 + "\n"
             for i, dev in enumerate(parsed_devices):
                 table_str += "  {:<5} {:<8} {:<15} {:<15}\n".format(f"[{i}]", dev['type'].upper(), dev['model'], dev['ip'])
-            print(table_str)
-            print("=" * 60)
+            footer = "=" * 60 + "\n"
+            logging.info(header + table_str + footer)
             self._handle_cli_save(parsed_devices)
 
     def _handle_cli_save(self, devices: List[Dict[str, str]]) -> None:
@@ -524,22 +549,20 @@ async def poll_light_status(manager: LightManager) -> None:
 
                     # Do an initial poll
                     tasks = [poll_single(n, i) for n, i in manager.lights.items()]
-                    results = await asyncio.gather(*tasks)
+                    results = await asyncio.gather(*tasks) if tasks else []
                     statuses = [r for r in results if r]
                             
-                    if statuses:
-                        await mqtt_client.publish("jarvis/sys/light_status", json.dumps({"lights": statuses}))
+                    await mqtt_client.publish("jarvis/sys/light_status", json.dumps({"network": manager.current_ssid, "lights": statuses}))
 
                     while True:
                         await manager.poll_trigger.wait()
                         manager.poll_trigger.clear()
                         
                         tasks = [poll_single(n, i) for n, i in manager.lights.items()]
-                        results = await asyncio.gather(*tasks)
+                        results = await asyncio.gather(*tasks) if tasks else []
                         statuses = [r for r in results if r]
                                 
-                        if statuses:
-                            await mqtt_client.publish("jarvis/sys/light_status", json.dumps({"lights": statuses}))
+                        await mqtt_client.publish("jarvis/sys/light_status", json.dumps({"network": manager.current_ssid, "lights": statuses}))
         except aiomqtt.MqttError:
             await asyncio.sleep(5)
         except asyncio.CancelledError:
@@ -699,7 +722,7 @@ async def mqtt_service_listener(manager: LightManager) -> None:
 
 def print_color_list(color_matrix: Dict[str, Any]) -> None:
     if not color_matrix:
-        print("\nError: No colors found in entities.json matrix.\n")
+        logging.error("\nError: No colors found in entities.json matrix.\n")
         return
 
     temps_grouped = {}
@@ -714,23 +737,23 @@ def print_color_list(color_matrix: Dict[str, Any]) -> None:
             key = (data.get("r"), data.get("g"), data.get("b"))
             colors_grouped.setdefault(key, []).append(name.title())
 
-    print("\n" + "=" * 70)
-    print("{:^70}".format("AVAILABLE COLOR PRESETS & ALIASES"))
-    print("=" * 70)
-
-    print("\n[ WHITES & TEMPERATURES ]\n")
+    header = "\n" + "=" * 70 + "\n" + "{:^70}".format("AVAILABLE COLOR PRESETS & ALIASES") + "\n" + "=" * 70 + "\n"
+    
+    whites = "\n[ WHITES & TEMPERATURES ]\n\n"
     # Sort by temperature value to group logically
     for val, names in sorted(temps_grouped.items(), key=lambda x: x[0]):
         aliases = ", ".join(sorted(names))
-        print(f"  • {aliases}")
+        whites += f"  • {aliases}\n"
 
-    print("\n[ COLORS (RGB) ]\n")
+    colors = "\n[ COLORS (RGB) ]\n\n"
     # Sort alphabetically by the primary alias
     for rgb, names in sorted(colors_grouped.items(), key=lambda x: sorted(x[1])[0]):
         aliases = ", ".join(sorted(names))
-        print(f"  • {aliases}")
+        colors += f"  • {aliases}\n"
         
-    print("\n" + "=" * 70 + "\n")
+    footer = "\n" + "=" * 70 + "\n"
+    
+    logging.info(header + whites + colors + footer)
 
 # --- MAIN ---
 def main():

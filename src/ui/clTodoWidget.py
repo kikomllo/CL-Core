@@ -1,11 +1,12 @@
 import json
 import paho.mqtt.publish as publish
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QScrollArea, QFrame, QLineEdit, QPushButton, QCheckBox
-from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QFrame, QLineEdit, QPushButton, QCheckBox
+from PyQt6.QtCore import Qt, QPoint
 
 class TodoWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setMinimumSize(250, 300)
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(15, 15, 15, 15)
         self.layout.setSpacing(10)
@@ -40,9 +41,10 @@ class TodoWidget(QWidget):
         )
         self.task_input.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.task_input.setPlaceholderText("New task...")
+        self.task_input.setFixedHeight(32)
         self.task_input.setStyleSheet("""
             QLineEdit {
-                background-color: rgba(25, 12, 3, 240);
+                background-color: rgba(25, 12, 3, 255);
                 color: #ffe6cc;
                 border: 1px solid rgba(255, 180, 0, 150);
                 border-radius: 8px;
@@ -91,8 +93,9 @@ class TodoWidget(QWidget):
             self.task_input.hide()
 
     def open_task_input(self):
-        pos = self.mapToGlobal(self.add_btn.pos())
-        self.task_input.setGeometry(pos.x(), pos.y() - 40, 220, 35)
+        btn_global_pos = self.add_btn.mapToGlobal(QPoint(0, 0))
+        self.task_input.setFixedWidth(self.add_btn.width())
+        self.task_input.move(btn_global_pos.x(), btn_global_pos.y())
         self.task_input.show()
         self.task_input.activateWindow()
         self.task_input.raise_()
@@ -121,14 +124,13 @@ class TodoWidget(QWidget):
             return
             
         for t in todos:
-            chk = QCheckBox(t["task"])
+            task_widget = QWidget()
+            task_layout = QHBoxLayout(task_widget)
+            task_layout.setContentsMargins(0, 0, 0, 0)
+            task_layout.setSpacing(8)
+            
+            chk = QCheckBox()
             chk.setStyleSheet("""
-                QCheckBox {
-                    color: #ffe6cc;
-                    font-size: 10pt;
-                    font-weight: 500;
-                    padding: 2px 0px;
-                }
                 QCheckBox::indicator {
                     width: 16px;
                     height: 16px;
@@ -145,14 +147,29 @@ class TodoWidget(QWidget):
                     border: 1px solid #ffbb33;
                 }
             """)
+            
+            lbl = QLabel(t["task"])
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet("""
+                color: #ffe6cc;
+                font-size: 10pt;
+                font-weight: 500;
+                padding: 2px 0px;
+            """)
+            
             is_completed = t.get("completed", False)
             chk.setChecked(is_completed)
             if is_completed:
-                chk.setStyleSheet(chk.styleSheet() + " QCheckBox { color: rgba(255, 200, 150, 0.45); text-decoration: line-through; }")
+                lbl.setStyleSheet(lbl.styleSheet() + " color: rgba(255, 200, 150, 0.45); text-decoration: line-through;")
+            
+            task_layout.addWidget(chk)
+            task_layout.addWidget(lbl, 1)
+            
+            task_widget.mouseReleaseEvent = lambda e, c=chk: c.setChecked(not c.isChecked()) if e.button() == Qt.MouseButton.LeftButton else None
             
             # Connect the state change to MQTT
             chk.stateChanged.connect(lambda state, tid=t["id"]: self.toggle_task(tid, state))
-            self.scroll_layout.addWidget(chk)
+            self.scroll_layout.addWidget(task_widget)
             
     def toggle_task(self, todo_id, state):
         if state == 2: # Checked

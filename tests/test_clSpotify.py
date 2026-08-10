@@ -66,3 +66,27 @@ class TestSpotify:
         spotify_manager.execute_command("duck")
         assert spotify_manager.pre_duck_volume == 94  # Uses preserved last_known_normal_volume
         mock_vol.assert_called_with(75, device_id="device")
+
+class TestSpotifyEdgeCases:
+    def test_search_zero_results(self, spotify_manager, mocker):
+        mock_search = mocker.patch.object(spotify_manager.sp, 'search')
+        mock_search.return_value = {"tracks": {"items": []}}
+
+        mocker.patch.object(spotify_manager, '_ensure_active_device', return_value="device_123")
+        success, feedback = spotify_manager.execute_command("play", track_name="Nonexistent Song That Nobody Made")
+
+        assert success is False
+        assert "could not find" in feedback.lower() or "not found" in feedback.lower() or "0" in feedback
+
+    def test_api_unauthorized_token_refresh(self, spotify_manager, mocker):
+        from spotipy.exceptions import SpotifyException
+        # Simulate a 401 Unauthorized exception
+        mock_search = mocker.patch.object(spotify_manager.sp, 'search')
+        mock_search.side_effect = SpotifyException(401, -1, "The access token expired")
+        
+        mocker.patch.object(spotify_manager, '_ensure_active_device', return_value="device_123")
+        success, feedback = spotify_manager.execute_command("play", track_name="Song A")
+        
+        # It should catch the exception and return a clean error without crashing
+        assert success is False
+        assert "spotify error" in feedback.lower() or "token" in feedback.lower() or "401" in feedback.lower() or "expired" in feedback.lower()

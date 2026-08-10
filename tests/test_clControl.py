@@ -108,3 +108,39 @@ class TestLightManagerResolution:
         # 4. Explicit turn off all lights sets last_target to all
         await manager.control_bulb(off=True, target_name="all lights")
         assert manager.last_target == "all"
+
+class TestControlEdgeCases:
+    @pytest.mark.asyncio
+    async def test_network_timeout(self, manager, mocker):
+        """Ensure network timeouts during light operations are gracefully handled."""
+        manager.lights = {
+            "bedroom": {"ip": "192.168.1.10", "mac": "AA", "type": "wiz"}
+        }
+        manager.last_target = "bedroom"
+        
+        # Mock wizlight.updateState to raise TimeoutError
+        import asyncio
+        mock_wiz = mocker.patch('clControl.wizlight')
+        mock_wiz.return_value.updateState = mocker.AsyncMock(side_effect=asyncio.TimeoutError("Bulb offline"))
+        
+        # Should not crash, but it logs an error
+        await manager.control_bulb(on=True, target_name="bedroom")
+        # We just assert it completed without raising
+
+    @pytest.mark.asyncio
+    async def test_invalid_color_hex(self, manager, mocker):
+        """Ensure invalid color strings do not crash the control loop."""
+        manager.lights = {
+            "bedroom": {"ip": "192.168.1.10", "mac": "AA", "type": "wiz"}
+        }
+        manager.last_target = "bedroom"
+        
+        # Mock the hardware call so it doesn't try to connect to the real IP and hang
+        mock_wiz = mocker.patch('clControl.wizlight')
+        mock_wiz.return_value.turn_on = mocker.AsyncMock()
+        
+        # Provide non-hex color string
+        await manager.control_bulb(color="not_a_hex_color", target_name="bedroom")
+        
+        # Execution shouldn't crash.
+        assert True

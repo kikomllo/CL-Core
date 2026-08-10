@@ -156,15 +156,24 @@ class IntentEngine:
         if not self.conversational_data:
             return None
 
-        clean_phrase = text.lower()
+        clean_phrase = re.sub(r'[^\w\s]', '', text.lower()).strip()
 
         for key, response in self.conversational_data.items():
-            if key.lower() in clean_phrase:
-                return response
+            clean_key = re.sub(r'[^\w\s]', '', key.lower()).strip()
+            if clean_key in clean_phrase:
+                if isinstance(response, str):
+                    return {"text": response, "action": "conversational", "target_topic": "jarvis/sys/control"}
+                elif isinstance(response, dict):
+                    return {
+                        "text": response.get("text", ""),
+                        "action": response.get("action", "conversational"),
+                        "target_topic": response.get("target_topic", "jarvis/sys/control")
+                    }
+                return None
                 
         return None
 
-    def parse(self, text: str) -> List[Tuple[Dict[str, Any], str]]:
+    def parse(self, text: str, raw_text: str = None) -> List[Tuple[Dict[str, Any], str]]:
         """Parses a normalized text string into actionable intents."""
         text = text.replace(",", "")
         text = text.replace("playlists", "playlist").replace("lights", "light").replace("songs", "song")
@@ -184,11 +193,26 @@ class IntentEngine:
             
             chunk_tokens = chunk.split()
             
+            # C++ optimized pre-filter to find top 20 candidates rapidly
+            pre_candidates = process.extract(
+                chunk, 
+                self.flat_templates, 
+                scorer=fuzz.token_set_ratio, 
+                limit=20
+            )
+            
             scored_candidates = []
-            for template_str in self.flat_templates:
-                ts_score = fuzz.token_set_ratio(chunk, template_str)
+            for template_str, ts_score, _ in pre_candidates:
                 p_score = fuzz.partial_ratio(chunk, template_str)
                 score = (ts_score * 0.5) + (p_score * 0.5)
+                
+                # Length penalty: penalize short chunks matching long templates (e.g. "you" matching "you can chill")
+                chunk_len = len(chunk)
+                template_len = len(template_str)
+                if chunk_len < template_len:
+                    penalty = (chunk_len / template_len) ** 0.5
+                    score = score * penalty
+
                 if score >= 60:
                     scored_candidates.append((template_str, score))
                     
@@ -231,15 +255,12 @@ class IntentEngine:
                 
         # --- MODULAR CONVERSATIONAL FALLBACK ---
         if not executed_intents:
-            convo_response = self.check_conversational(text)
+            convo_response = self.check_conversational(raw_text if raw_text else text)
             
             if convo_response:
                 logging.info(f"[NLP CONVERSATION MATCH] Passing to daemon for routing.")
                 
-                # Pass a generic intent to the system control topic
-                executed_intents.append(({
-                    "action": "conversational", 
-                    "text": convo_response
-                }, "jarvis/sys/control"))
+                target_topic = convo_response.pop("target_topic", "jarvis/sys/control")
+                executed_intents.append((convo_response, target_topic))
                 
         return executed_intents

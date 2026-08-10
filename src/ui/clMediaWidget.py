@@ -1,4 +1,5 @@
 import json
+import logging
 import paho.mqtt.publish as publish
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
 from PyQt6.QtCore import QTimer
@@ -7,7 +8,7 @@ class MediaWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(10, 5, 10, 5)
+        self.layout.setContentsMargins(15, 10, 15, 15)
         self.layout.setSpacing(6)
         
         # Header Badge
@@ -137,7 +138,7 @@ class MediaWidget(QWidget):
         try:
             publish.single("pc/spotify/control", json.dumps({"action": action, "silent": silent}), hostname="localhost", qos=0)
         except Exception as e:
-            print(f"Failed to publish media control: {e}")
+            logging.error(f"Failed to publish media control: {e}")
 
     def update_status(self, data):
         self._waiting_for_status = False

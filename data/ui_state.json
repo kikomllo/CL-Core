@@ -12,22 +12,45 @@
     "widget_media_controls": {
       "visible": true,
       "pos": [
-        63,
-        60
+        288,
+        815
+      ],
+      "size": [
+        212,
+        194
       ]
     },
     "widget_light_controls": {
       "visible": true,
       "pos": [
-        1159,
-        16
+        15,
+        38
+      ],
+      "size": [
+        340,
+        146
       ]
     },
     "widget_todo_list": {
       "visible": true,
       "pos": [
-        47,
-        634
+        30,
+        626
+      ],
+      "size": [
+        250,
+        381
+      ]
+    },
+    "widget_settings": {
+      "visible": false,
+      "pos": [
+        805,
+        309
+      ],
+      "size": [
+        325,
+        464
       ]
     }
   }

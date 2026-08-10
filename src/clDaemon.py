@@ -32,6 +32,7 @@ class CentralDaemon:
         core_data = self.loader.load_json("core.json")
         
         responses_data = self.loader.load_json("responses.json")
+        self.responses_data = responses_data
         
         nlp_rules = core_data.get("nlp_rules", {})
         word_to_number = nlp_rules.get("word_to_number", {})
@@ -50,12 +51,17 @@ class CentralDaemon:
         self.is_ducked: bool = False
         self.attention_mode: bool = False
         self.pending_mic_request: bool = False
+        self.is_spotify_playing: bool = False
         
         conversational_data = responses_data.get("conversational", {})
         self.nlp = IntentEngine(intents_data, word_to_number, abort_keywords, conversational_data)
         
-        self.intents_file_path = os.path.join(os.path.dirname(__file__), "..", "config", "intents.json")
+        self.intents_file_path = os.path.join(self.loader.config_dir, "intents.json")
         self.last_intents_mtime = os.stat(self.intents_file_path).st_mtime if os.path.exists(self.intents_file_path) else 0
+
+        self.responses_file_path = os.path.join(self.loader.config_dir, "responses.json")
+        self.last_responses_mtime = os.stat(self.responses_file_path).st_mtime if os.path.exists(self.responses_file_path) else 0
+
         self.followups_enabled = core_data.get("settings", {}).get("enable_followup", True)
         self.silent_mode = core_data.get("settings", {}).get("silent_mode", False)
 
@@ -195,11 +201,14 @@ class CentralDaemon:
                 return [({"text": "Say disable alarm to turn it off.", "request_reply": True, "skip_ducking": True}, "jarvis/sys/speak")]
 
         # 4. Standard NLP Parsing & Shadowing Execution
-        raw_intents = self.nlp.parse(clean_text)
+        raw_intents = self.nlp.parse(clean_text, sanitized_payload)
         return self._optimize_intent_queue(raw_intents)
     
     async def evaluate_ducking(self, client: aiomqtt.Client):
         """Single source of truth for volume ducking logic."""
+        if not self.is_spotify_playing and not self.is_ducked:
+            return
+            
         should_duck = False
         
         if self.tts_state == "active":
@@ -209,8 +218,9 @@ class CentralDaemon:
             should_duck = True
             
         if should_duck and not self.is_ducked:
-            await client.publish("pc/spotify/control", json.dumps({"action": "duck", "silent": True}))
-            self.is_ducked = True
+            if self.is_spotify_playing:
+                await client.publish("pc/spotify/control", json.dumps({"action": "duck", "silent": True}))
+                self.is_ducked = True
         elif not should_duck and self.is_ducked:
             await client.publish("pc/spotify/control", json.dumps({"action": "unduck", "silent": True}))
             self.is_ducked = False
@@ -226,7 +236,7 @@ class CentralDaemon:
                 
                 await self.evaluate_ducking(client)
                     
-    async def monitor_config(self):
+    async def _watch_configs(self):
         while True:
             await asyncio.sleep(5)
             try:
@@ -237,8 +247,17 @@ class CentralDaemon:
                         new_data = self.loader.load_and_validate("intents.json", "intents_schema.json", fail_fast=False)
                         self.nlp.reload_intents(new_data)
                         self.last_intents_mtime = current_mtime
+                        
+                if os.path.exists(self.responses_file_path):
+                    current_mtime = os.stat(self.responses_file_path).st_mtime
+                    if current_mtime > self.last_responses_mtime:
+                        logging.info("[CONFIG] responses.json modified. Reloading...")
+                        new_responses = self.loader.load_json("responses.json")
+                        self.responses_data = new_responses
+                        self.nlp.conversational_data = new_responses.get("conversational", {})
+                        self.last_responses_mtime = current_mtime
             except Exception as e:
-                logging.error(f"[CONFIG] Error reloading intents: {e}")
+                logging.error(f"[CONFIG] Error reloading configs: {e}")
 
     async def run(self) -> None:
         logging.info("Central Daemon Online. Connecting to MQTT broker...")
@@ -250,7 +269,7 @@ class CentralDaemon:
                     attempt = 0
                     logging.info("MQTT broker connected. Subscribing to topics...")
                     monitor_task = asyncio.create_task(self.monitor_timeouts(client))
-                    config_task = asyncio.create_task(self.monitor_config())
+                    config_task = asyncio.create_task(self._watch_configs())
                     await client.subscribe("jarvis/sensor/voice")
                     await client.subscribe("jarvis/feedback")
                     await client.subscribe("jarvis/sys/speak")
@@ -260,6 +279,9 @@ class CentralDaemon:
                     await client.subscribe("jarvis/sys/mic_control")
                     await client.subscribe("jarvis/sys/alarm/ring")
                     await client.subscribe("jarvis/sys/alarm/deactivate")
+                    await client.subscribe("jarvis/sys/abort")
+                    await client.subscribe("jarvis/sys/media_status")
+                    await client.subscribe("jarvis/sys/daemon_control")
                     
                     logging.info("--- DAEMON READY: Listening for commands ---")
                     
@@ -286,6 +308,11 @@ class CentralDaemon:
                                 self.active_context = {"type": None, "expires_at": 0.0}
                                 # Request Daily Briefing automatically after disabling morning alarm
                                 await client.publish("jarvis/sys/calendar/request", json.dumps({"action": "daily_briefing"}))
+
+                        elif topic == "jarvis/sys/abort":
+                            logging.info("[SYSTEM] Universal Abort received. Clearing contexts.")
+                            self.active_context = {"type": None, "expires_at": 0.0}
+                            self.pending_mic_request = False
 
                         elif topic == "jarvis/sys/speak":
                             try:
@@ -326,6 +353,62 @@ class CentralDaemon:
                             except json.JSONDecodeError:
                                 pass
                             
+                        elif topic == "jarvis/sys/media_status":
+                            try:
+                                payload = json.loads(payload_data)
+                                self.is_spotify_playing = (payload.get("status") == "Playing")
+                            except Exception:
+                                pass
+
+                        elif topic == "jarvis/sys/daemon_control":
+                            try:
+                                payload = json.loads(payload_data)
+                                action_cmd = payload.get("action")
+                                
+                                if action_cmd in ["toggle_followup", "followup_on", "followup_off"]:
+                                    if action_cmd == "followup_on":
+                                        self.followups_enabled = True
+                                    elif action_cmd == "followup_off":
+                                        self.followups_enabled = False
+                                    else:
+                                        self.followups_enabled = not self.followups_enabled
+                                        
+                                    try:
+                                        def update_cb(core):
+                                            if "settings" not in core: core["settings"] = {}
+                                            core["settings"]["enable_followup"] = self.followups_enabled
+                                        self.loader.update_json_atomic("core.json", update_cb)
+                                    except Exception as e:
+                                        logging.error(f"Failed to persist followup setting: {e}")
+                                        
+                                    state_str = "enabled" if self.followups_enabled else "disabled"
+                                    if not self.silent_mode:
+                                        await client.publish("jarvis/sys/speak", json.dumps({"text": f"Follow ups are now {state_str}."}))
+                                        
+                                elif action_cmd in ["toggle_silent_mode", "silent_mode_on", "silent_mode_off"]:
+                                    if action_cmd == "silent_mode_on":
+                                        self.silent_mode = True
+                                    elif action_cmd == "silent_mode_off":
+                                        self.silent_mode = False
+                                    else:
+                                        self.silent_mode = not self.silent_mode
+                                        
+                                    try:
+                                        def update_cb(core):
+                                            if "settings" not in core: core["settings"] = {}
+                                            core["settings"]["silent_mode"] = self.silent_mode
+                                        self.loader.update_json_atomic("core.json", update_cb)
+                                    except Exception as e:
+                                        logging.error(f"Failed to persist silent_mode setting: {e}")
+                                        
+                                    state_str = "enabled" if self.silent_mode else "disabled"
+                                    logging.info(f"[DAEMON] Silent mode is now {state_str}.")
+                                    await client.publish("jarvis/sys/silent_mode", json.dumps({"silent_mode": self.silent_mode}))
+                                    if not self.silent_mode:
+                                        await client.publish("jarvis/sys/speak", json.dumps({"text": "Silent mode disabled."}))
+                            except json.JSONDecodeError:
+                                pass
+
                         elif topic == "jarvis/sensor/voice":
                             # --- 1. DAEMON-LEVEL WAKE WORD EXTRACTION ---
                             raw_payload = self.sanitize_transcription(payload_data)
@@ -339,84 +422,39 @@ class CentralDaemon:
                             # --- 2. NORMALIZE THE REMAINDER ---
                             clean_text = self.nlp.normalize_text(raw_payload)
                             logging.info(f"[VOICE INPUT] Raw: '{payload_data}' | Extracted: '{raw_payload}' | Normalized: '{clean_text}'")
-                            # Pass only the extracted command to the intent router
-                            intents = self.route_voice_command(raw_payload)
+                            
+                            # If only the wake word was spoken, respond and await reply
+                            if is_wakeword_present and not raw_payload:
+                                import random
+                                speak_responses = self.responses_data.get("mqtt", {}).get("jarvis/sys/speak", {})
+                                choices = speak_responses.get("standalone_wakeword", ["Yes sir?"])
+                                response_text = random.choice(choices)
+                                intents = [({"text": response_text, "request_reply": True, "skip_ducking": True, "ignore_silent": True}, "jarvis/sys/speak")]
+                            else:
+                                # Pass only the extracted command to the intent router
+                                intents = self.route_voice_command(raw_payload)
                             
                             if intents:
                                 final_mic_state = "open_window" if (self.followups_enabled and not self.silent_mode) else None
                                 
                                 for command, target_topic in intents:
                                     if target_topic == "jarvis/sys/control" and command.get("action") == "abort":
-                                        logging.info("[SYSTEM] Abort sequence initiated.")
-                                        await client.publish("jarvis/sys/tts_stop", "1")
+                                        logging.info("[SYSTEM] Abort sequence initiated via voice command.")
+                                        await client.publish("jarvis/sys/abort", json.dumps({"action": "abort"}))
                                         
                                         await self.evaluate_ducking(client)
                                         
                                         final_mic_state = None  
                                         break
-                                        
-                                    elif target_topic in ["jarvis/sys/daemon_control", "jarvis/sys/control"] and command.get("action") in ["toggle_followup", "followup_on", "followup_off"]:
-                                        action_cmd = command.get("action")
-                                        if action_cmd == "followup_on":
-                                            self.followups_enabled = True
-                                        elif action_cmd == "followup_off":
-                                            self.followups_enabled = False
-                                        else:
-                                            self.followups_enabled = not self.followups_enabled
-                                        
-                                        # Save to core.json
-                                        try:
-                                            with open(os.path.join(os.path.dirname(__file__), "..", "config", "core.json"), "r") as f:
-                                                core = json.load(f)
-                                            if "settings" not in core: core["settings"] = {}
-                                            core["settings"]["enable_followup"] = self.followups_enabled
-                                            with open(os.path.join(os.path.dirname(__file__), "..", "config", "core.json"), "w") as f:
-                                                json.dump(core, f, indent=4)
-                                        except Exception as e:
-                                            logging.error(f"Failed to persist followup setting: {e}")
-                                            
-                                        state_str = "enabled" if self.followups_enabled else "disabled"
-                                        if not self.silent_mode:
-                                            await client.publish("jarvis/sys/speak", json.dumps({"text": f"Follow ups are now {state_str}."}))
-                                        final_mic_state = None
-                                        continue
 
-                                    elif target_topic in ["jarvis/sys/daemon_control", "jarvis/sys/control"] and command.get("action") in ["toggle_silent_mode", "silent_mode_on", "silent_mode_off"]:
-                                        action_cmd = command.get("action")
-                                        if action_cmd == "silent_mode_on":
-                                            self.silent_mode = True
-                                        elif action_cmd == "silent_mode_off":
-                                            self.silent_mode = False
-                                        else:
-                                            self.silent_mode = not self.silent_mode
-                                        
-                                        # Save to core.json
-                                        try:
-                                            with open(os.path.join(os.path.dirname(__file__), "..", "config", "core.json"), "r") as f:
-                                                core = json.load(f)
-                                            if "settings" not in core: core["settings"] = {}
-                                            core["settings"]["silent_mode"] = self.silent_mode
-                                            with open(os.path.join(os.path.dirname(__file__), "..", "config", "core.json"), "w") as f:
-                                                json.dump(core, f, indent=4)
-                                        except Exception as e:
-                                            logging.error(f"Failed to persist silent_mode setting: {e}")
-                                            
-                                        state_str = "enabled" if self.silent_mode else "disabled"
-                                        logging.info(f"[DAEMON] Silent mode is now {state_str}.")
-                                        await client.publish("jarvis/sys/silent_mode", json.dumps({"silent_mode": self.silent_mode}))
-                                        if not self.silent_mode:
-                                            await client.publish("jarvis/sys/speak", json.dumps({"text": "Silent mode disabled."}))
-                                        final_mic_state = None
-                                        continue
                                     
                                     # --- Intercept and route conversational intents ---
                                     elif target_topic == "jarvis/sys/control" and command.get("action") == "conversational":
-                                        if not self.silent_mode:
-                                            logging.info("[DAEMON] Routing conversational intent to TTS.")
-                                            await client.publish("jarvis/sys/speak", json.dumps({
-                                                "text": command.get("text"),
-                                                "request_reply": False
-                                            }))
+                                        logging.info("[DAEMON] Routing conversational intent to TTS.")
+                                        await client.publish("jarvis/sys/speak", json.dumps({
+                                            "text": command.get("text"),
+                                            "request_reply": False
+                                        }))
                                         
                                         final_mic_state = None 
                                         continue
@@ -426,15 +464,32 @@ class CentralDaemon:
                                         is_silent = command.get("silent", False)
                                         is_spotify_status = (target_topic == "pc/spotify/control" and action.startswith("status_"))
                                         
+                                        if target_topic == "jarvis/sys/state_change" and action:
+                                            try:
+                                                def update_cb(core):
+                                                    if "settings" not in core: core["settings"] = {}
+                                                    if "ecosystem" not in core: core["ecosystem"] = {}
+                                                    core["settings"]["ecosystem_state"] = action.lower()
+                                                    core["ecosystem"]["mode"] = action.upper()
+                                                self.loader.update_json_atomic("core.json", update_cb)
+                                            except Exception as e:
+                                                logging.error(f"Failed to persist ecosystem state to core.json: {e}")
+
                                         logging.info(f"Routing intent -> {target_topic}: {command}")
                                         await client.publish(target_topic, json.dumps(command))
                                         
-                                        if not is_spotify_status and not is_silent and not self.silent_mode:
-                                            await client.publish("jarvis/sys/tts_request", json.dumps({
-                                                "target_topic": target_topic,
-                                                "command": command,
-                                                "append_followup": self.followups_enabled and not self.silent_mode and action != "discover"
-                                            }))
+                                        if target_topic != "jarvis/sys/speak":
+                                            if command.get("text") and not is_silent and not self.silent_mode:
+                                                await client.publish("jarvis/sys/speak", json.dumps({
+                                                    "text": command.get("text"),
+                                                    "request_reply": False
+                                                }))
+                                            elif not is_spotify_status and not is_silent and not self.silent_mode:
+                                                await client.publish("jarvis/sys/tts_request", json.dumps({
+                                                    "target_topic": target_topic,
+                                                    "command": command,
+                                                    "append_followup": self.followups_enabled and not self.silent_mode and action != "discover"
+                                                }))
                                         
                                         if self.active_context["type"] is not None and not self.silent_mode:
                                             final_mic_state = "request_reply"
@@ -471,12 +526,15 @@ class CentralDaemon:
                                 if device == 'spotify' and isinstance(msg, dict) and msg.get('query_action'):
                                     query_action = msg.get('query_action')
                                     if msg.get('status') == 'success':
-                                        print("\n" + "="*55)
-                                        print(f"NOW PLAYING: {msg.get('track')} - {msg.get('artist')}")
-                                        print(f"CONTEXT:     {msg.get('context')}")
-                                        print(f"UP NEXT:     {msg.get('next_in_queue')}")
-                                        print(f"VOLUME:      {msg.get('volume')}%")
-                                        print("="*55 + "\n")
+                                        status_text = (
+                                            f"\n{'='*55}\n"
+                                            f"NOW PLAYING: {msg.get('track')} - {msg.get('artist')}\n"
+                                            f"CONTEXT:     {msg.get('context')}\n"
+                                            f"UP NEXT:     {msg.get('next_in_queue')}\n"
+                                            f"VOLUME:      {msg.get('volume')}%\n"
+                                            f"{'='*55}\n"
+                                        )
+                                        logging.info(status_text)
                                         pseudo_cmd = {"action": query_action, **msg}
                                     else:
                                         pseudo_cmd = {"action": "status_idle"}
@@ -495,15 +553,13 @@ class CentralDaemon:
                                     self.active_context = {"type": "discovery_choice", "expires_at": time.time() + 30.0}
                                     devices = fb.get('devices', [])
                                     
-                                    print("\n" + "=" * 60)
-                                    print("{:^60}".format("DISCOVERED HARDWARE TARGETS"))
-                                    print("=" * 60)
+                                    header = "\n" + "=" * 60 + "\n" + "{:^60}".format("DISCOVERED HARDWARE TARGETS") + "\n" + "=" * 60 + "\n"
                                     table_str = "  {:<5} {:<8} {:<15} {:<15}\n".format("IDX", "TYPE", "MODEL", "IP")
                                     table_str += "  " + "-" * 54 + "\n"
                                     for i, dev in enumerate(devices):
                                         table_str += "  {:<5} {:<8} {:<15} {:<15}\n".format(f"[{i}]", dev['type'].upper(), dev['model'], dev['ip'])
-                                    print(table_str)
-                                    print("=" * 60 + "\n")
+                                    footer = "=" * 60 + "\n"
+                                    logging.info(header + table_str + footer)
                                     
                                     ui_options = []
                                     for i, dev in enumerate(devices):
@@ -579,6 +635,7 @@ class CentralDaemon:
                                             text_to_speak = msg if isinstance(msg, str) else str(msg)
                                             
                                             await client.publish("jarvis/sys/mic_control", json.dumps({"action": "cancel"}))
+                                            await client.publish("jarvis/sys/tts_stop", "stop")
                                             
                                             await client.publish("jarvis/sys/speak", json.dumps({
                                                 "text": text_to_speak,

@@ -141,7 +141,14 @@
       "play songs by {artist_name}",
       "play artist {artist_name}",
       "play some {search_query}",
-      "put on some {search_query}"
+      "put on some {search_query}",
+      "play the song {track_name} by {artist_name}",
+      "play the song {track_name} by the artist {artist_name}",
+      "play the song {track_name} by artist {artist_name}",
+      "play {track_name} by the artist {artist_name}",
+      "play {track_name} by artist {artist_name}",
+      "play music {track_name} by artist {artist_name}",
+      "play the song {track_name}"
     ]
   },
   "spotify_pause": {
@@ -423,7 +430,8 @@
       "remind",
       "reminder",
       "timer",
-      "schedule"
+      "schedule",
+      "remember"
     ],
     "templates": [
       "remind me to {task} in {time}",
@@ -434,7 +442,11 @@
       "remind me {time}",
       "set a timer for {time}",
       "schedule a reminder for {time}",
-      "schedule a reminder for {time} to {task}"
+      "schedule a reminder for {time} to {task}",
+      "remember this for {time}",
+      "remember me in {time}",
+      "remember {task} for {time}",
+      "remember {task} in {time}"
     ]
   },
   "system_followup_on": {
@@ -524,6 +536,8 @@
       "disable silence mode",
       "turn off silent mode",
       "turn off silence mode",
+      "enable responses",
+      "turn on responses",
       "enable tts response",
       "enable tts responses",
       "enable tts",
@@ -643,9 +657,9 @@
       "remove reminder"
     ]
   },
-  "system_followup_toggle": {
+  "system_followup_on": {
     "target_topic": "jarvis/sys/daemon_control",
-    "action_override": "toggle_followup",
+    "action_override": "followup_on",
     "priority_words": [
       "follow",
       "followup",
@@ -653,10 +667,21 @@
     ],
     "templates": [
       "enable followup",
-      "disable follow up",
       "turn on followups",
+      "enable follow ups"
+    ]
+  },
+  "system_followup_off": {
+    "target_topic": "jarvis/sys/daemon_control",
+    "action_override": "followup_off",
+    "priority_words": [
+      "follow",
+      "followup",
+      "follow-up"
+    ],
+    "templates": [
+      "disable follow up",
       "turn off follow up",
-      "enable follow ups",
       "disable followups"
     ]
   },
@@ -724,13 +749,9 @@
     "target_topic": "jarvis/sys/alarm/control",
     "action_override": "intent_delete_alarm",
     "priority_words": [
-      "cancel alarm",
       "delete alarm"
     ],
     "templates": [
-      "cancel the alarm",
-      "cancel my alarm",
-      "cancel alarm",
       "delete the alarm",
       "delete my alarm",
       "delete alarm",

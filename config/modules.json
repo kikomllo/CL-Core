@@ -1,0 +1,16 @@
+{
+  "native": {
+    "UI": true,
+    "Keybinds": true,
+    "Utilities": true
+  },
+  "docker": {
+    "jarvis-whisper": true,
+    "jarvis-brain": true,
+    "jarvis-music": true,
+    "jarvis-tts": true,
+    "jarvis-light": true,
+    "jarvis-mic": true,
+    "jarvis-terminal": true
+  }
+}

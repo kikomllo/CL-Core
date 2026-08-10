@@ -1,0 +1,6 @@
+{
+  "abort": "<ctrl>+<alt>+<shift>+a",
+  "ui_fullscreen": "<ctrl>+<alt>+<shift>+f",
+  "ui_overlay": "<ctrl>+<alt>+<shift>+o",
+  "push_to_talk": "KEY_RIGHTALT"
+}

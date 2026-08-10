@@ -2,22 +2,27 @@ import logging
 import json
 import os
 
+def get_log_level_for_mode(mode_str: str) -> int:
+    m = str(mode_str).lower()
+    if m == "debug":
+        return logging.DEBUG
+    elif m == "background":
+        return logging.CRITICAL
+    return logging.INFO
+
 def setup_logging(module_name: str) -> None:
-    # Handle paths robustly whether called from root or src/
     curr_dir = os.path.dirname(os.path.abspath(__file__))
     config_path = os.path.join(curr_dir, "..", "..", "config", "core.json")
     
     log_level = logging.INFO
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-            mode = cfg.get("ecosystem", {}).get("mode", "STANDARD").lower()
-            if mode == "debug":
-                log_level = logging.DEBUG
-            elif mode == "background":
-                log_level = logging.CRITICAL
-    except Exception:
-        pass
+    if os.getenv("JARVIS_ECOSYSTEM") == "1":
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+                mode = cfg.get("ecosystem", {}).get("mode") or cfg.get("settings", {}).get("ecosystem_state", "STANDARD")
+                log_level = get_log_level_for_mode(mode)
+        except Exception:
+            pass
         
     logging.basicConfig(
         level=log_level,
@@ -25,3 +30,7 @@ def setup_logging(module_name: str) -> None:
         datefmt="%H:%M:%S",
         force=True
     )
+
+def update_log_level(mode_str: str) -> None:
+    level = get_log_level_for_mode(mode_str)
+    logging.getLogger().setLevel(level)

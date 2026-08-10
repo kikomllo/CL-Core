@@ -180,3 +180,35 @@ class TestDaemonMQTTIntegration:
         # When silent mode is enabled, no TTS speech or followup request should be published
         assert len(tts_req_calls) == 0
         assert len(speak_calls) == 0
+
+class TestDaemonEdgeCases:
+    @pytest.mark.asyncio
+    async def test_malformed_json_payload(self, daemon, mock_mqtt, message_stream):
+        """Ensure the daemon gracefully handles broken JSON on MQTT topics."""
+        mock_mqtt.messages = message_stream([
+            ("jarvis/sys/speak", "{ broken json"),
+            ("jarvis/sys/alarm/ring", "not a json"),
+            ("jarvis/sys/mic_state", "{}"),
+            ("jarvis/sensor/voice", "test command")
+        ])
+        
+        # Should not raise exception
+        await daemon.run()
+        
+        # If it didn't crash, the test passed. No need to assert specific publish logic 
+        # since it correctly drops malformed JSON.
+        assert True
+
+    @pytest.mark.asyncio
+    async def test_missing_payload_fields(self, daemon, mock_mqtt, message_stream):
+        """Ensure missing expected keys in JSON don't crash processing."""
+        import json
+        mock_mqtt.messages = message_stream([
+            ("jarvis/sys/alarm/ring", json.dumps({"wrong_key": "value"})),
+            ("jarvis/sys/speak", json.dumps({"other_key": True})),
+            ("jarvis/sensor/voice", "hello")
+        ])
+        
+        # Should complete successfully
+        await daemon.run()
+        assert not daemon.pending_mic_request

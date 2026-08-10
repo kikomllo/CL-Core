@@ -70,6 +70,57 @@ class SpotifyManager:
         self.ui_is_fullscreen: bool = False
         self.last_ui_poll_time: float = 0.0
 
+        # --- NEW: API Rate Limit & Caching State ---
+        self.api_cooldown_until: float = 0.0
+        self.rolling_request_count: int = 0
+        self.rolling_window_start: float = time.time()
+        self.rolling_window_seconds: float = 30.0
+        self.known_limit: Optional[int] = None
+        self._cached_playback_data: Optional[Dict[str, Any]] = None
+        self._cached_playback_time: float = 0.0
+
+    # --- RATE LIMIT & CACHE ENGINES ---
+    def _check_rate_limit(self) -> bool:
+        """Pre-flight check to enforce API cooldowns and track rolling limits."""
+        now = time.time()
+        if now < self.api_cooldown_until:
+            logging.warning(f"Spotify API is on cooldown for {self.api_cooldown_until - now:.1f} more seconds.")
+            return False
+
+        if now - self.rolling_window_start > self.rolling_window_seconds:
+            self.rolling_window_start = now
+            self.rolling_request_count = 0
+
+        if self.known_limit is not None and self.rolling_request_count >= (self.known_limit - 1):
+            logging.warning("Approaching known Spotify API rate limit. Blocking request to avoid 429.")
+            self.api_cooldown_until = self.rolling_window_start + self.rolling_window_seconds
+            return False
+
+        self.rolling_request_count += 1
+        return True
+
+    def _get_current_playback(self, force_refresh: bool = False) -> Optional[Dict[str, Any]]:
+        """Fetch current playback with a 3-second cache and rate limit protection."""
+        now = time.time()
+        if not force_refresh and now - self._cached_playback_time < 3.0:
+            return self._cached_playback_data
+
+        if not self._check_rate_limit():
+            return self._cached_playback_data  # Return stale cache if blocked
+
+        try:
+            playback = self.sp.current_playback()
+            self._cached_playback_data = playback
+            self._cached_playback_time = time.time()
+            return playback
+        except spotipy.exceptions.SpotifyException as e:
+            if e.http_status == 429:
+                retry_after = int(e.headers.get("Retry-After", 30)) if hasattr(e, 'headers') and e.headers else 30
+                self.api_cooldown_until = time.time() + retry_after
+                self.known_limit = max(1, self.rolling_request_count)
+                logging.error(f"HTTP 429 Too Many Requests! Cooldown set for {retry_after}s. Known limit recorded as {self.known_limit}.")
+            raise
+
     # --- DEVICE WAKEUP ENGINE ---
     def _wake_up_spotify(self) -> None:
         """Simulate a media 'play' command on the host computer to wake up Spotify."""
@@ -95,6 +146,12 @@ class SpotifyManager:
 
     def _get_active_device(self) -> Optional[str]:
         """Retrieve the active device ID."""
+        # 1. Zero-cost fast path: Check if we already have the device in the playback cache!
+        playback = self._get_current_playback(force_refresh=False)
+        if playback and playback.get('device'):
+            return playback['device'].get('id')
+            
+        # 2. Fallback: Hit the API if no active playback was cached
         try:
             devices = self.sp.devices()
             for device in devices.get('devices', []):
@@ -114,16 +171,13 @@ class SpotifyManager:
         return device
 
     # --- STATUS ENGINE ---
-    def status(self, lightweight: bool = False) -> Dict[str, Any]:
+    def status(self, lightweight: bool = False, force_refresh: bool = False) -> Dict[str, Any]:
         """
         Retrieve comprehensive status of the current playback.
         If lightweight=True, skips secondary API calls for context/queue.
         """
-        if not self._get_active_device():
-             return {"status": "error", "message": "No active Spotify session found."}
-             
         try:
-            playback = self.sp.current_playback()
+            playback = self._get_current_playback(force_refresh=force_refresh)
             if not playback or not playback.get('item'):
                 return {"status": "idle", "message": "Nothing is currently playing."}
                 
@@ -188,17 +242,20 @@ class SpotifyManager:
     def get_status(self) -> None:
         """Reads the API and prints the currently playing track and queue information."""
         status_data = self.status()
-        print("\n--- Spotify Status ---")
         if status_data.get("status") == "success":
-            print(f"Status:\t\t{'Playing' if status_data.get('is_playing') else 'Paused'}")
-            print(f"Track:\t\t{status_data.get('track')}")
-            print(f"Artist(s):\t{status_data.get('artist')}")
-            print(f"Context:\t{status_data.get('context')}")
-            print(f"Volume:\t\t{status_data.get('volume')}%")
-            print(f"Next in Queue:\t{status_data.get('next_in_queue')}")
+            status_text = (
+                f"\n--- Spotify Status ---\n"
+                f"Status:\t\t{'Playing' if status_data.get('is_playing') else 'Paused'}\n"
+                f"Track:\t\t{status_data.get('track')}\n"
+                f"Artist(s):\t{status_data.get('artist')}\n"
+                f"Context:\t{status_data.get('context')}\n"
+                f"Volume:\t\t{status_data.get('volume')}%\n"
+                f"Next in Queue:\t{status_data.get('next_in_queue')}\n"
+                f"----------------------\n"
+            )
+            logging.info(status_text)
         else:
-            print(f"Status:\t\t{status_data.get('message', 'Inactive')}")
-        print("-" * 22 + "\n")
+            logging.info(f"\n--- Spotify Status ---\nStatus:\t\t{status_data.get('message', 'Inactive')}\n----------------------\n")
 
     # --- MATHEMATICS & LOGIC ENGINES ---
     def _calculate_confidence(self, track_query: str, artist_query: str, actual_name: str, actual_artist: str, popularity: int) -> float:
@@ -237,11 +294,14 @@ class SpotifyManager:
         composite = (base_match * 0.85) + (pop_weight * 0.15)
         
         if self.debug_math:
-            print(f"\n[DEBUG] Evaluating: '{actual_name}' by '{actual_artist}' (Pop: {popularity})")
-            print(f"  ├─ Track Score:  {track_score:.2f}")
-            print(f"  ├─ Artist Score: {artist_score:.2f}")
-            print(f"  └─ Final Math:   (Base {base_match:.2f} * 0.85) + (Pop {pop_weight:.2f} * 0.15) = {composite:.0%}")
-            print("-" * 50)
+            debug_text = (
+                f"\n[DEBUG] Evaluating: '{actual_name}' by '{actual_artist}' (Pop: {popularity})\n"
+                f"  ├─ Track Score:  {track_score:.2f}\n"
+                f"  ├─ Artist Score: {artist_score:.2f}\n"
+                f"  └─ Final Math:   (Base {base_match:.2f} * 0.85) + (Pop {pop_weight:.2f} * 0.15) = {composite:.0%}\n"
+                f"--------------------------------------------------\n"
+            )
+            logging.debug(debug_text)
             
         return composite
 
@@ -379,7 +439,7 @@ class SpotifyManager:
                 return False, "No active device"
 
             try:
-                current_playback = self.sp.current_playback()
+                current_playback = self._get_current_playback()
                 if not current_playback or not current_playback.get('is_playing'):
                     logging.info("[DUCK] Spotify is not currently playing. Skipping ducking.")
                     return False, "Not currently playing"
@@ -504,7 +564,7 @@ class SpotifyManager:
             if action == "toggle":
                 is_playing = self._local_playing_state
                 if time.time() - self._last_state_change_time >= 3.0 or is_playing is None:
-                    playback = self.sp.current_playback()
+                    playback = self._get_current_playback()
                     is_playing = playback.get("is_playing", False) if playback else False
 
                 if is_playing:
@@ -637,15 +697,12 @@ async def mqtt_service_listener(manager: SpotifyManager) -> None:
                                 if action_cmd in ["duck", "unduck"]:
                                     continue
                                 
-                                # 2. For all other playback commands, only refresh if the widget is open in fullscreen.
-                                #    (We know it's open if it's been sending "status" heartbeats in the last 15s)
-                                widget_is_active = manager.ui_is_fullscreen and (time.time() - manager.last_ui_poll_time <= 15.0)
-                                
-                                if widget_is_active:
+                                # 2. Always refresh status on explicit playback commands to keep UI synced
+                                if action_cmd in ["play", "pause", "toggle", "next", "prev", "status"]:
                                     async def background_refresh():
                                         await asyncio.sleep(1.0)
                                         try:
-                                            status_data = await asyncio.to_thread(manager.status, lightweight=True)
+                                            status_data = await asyncio.to_thread(manager.status, lightweight=True, force_refresh=True)
                                             if status_data and status_data.get("status") == "success":
                                                 refresh_payload = {
                                                     "title": status_data.get("track", "Unknown"),
