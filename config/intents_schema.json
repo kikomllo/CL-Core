@@ -4,15 +4,14 @@
   "type": "object",
   "additionalProperties": {
     "type": "object",
-    "required": ["target_topic", "action_override", "templates"],
+    "required": ["action_id", "templates"],
     "properties": {
-      "target_topic": {
+      "action_id": {
         "type": "string",
         "minLength": 1
       },
-      "action_override": {
-        "type": "string",
-        "minLength": 1
+      "action_args": {
+        "type": "object"
       },
       "templates": {
         "type": "array",

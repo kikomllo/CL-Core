@@ -9,16 +9,16 @@
         ],
         "stt_model": "small",
         "stt_processing_mode": "parallel",
-        "hardware": "cpu",
+        "hardware": "cuda",
         "enable_followup": false,
-        "silent_mode": false,
-        "last_light_target": "KITCHEN",
+        "silent_mode": true,
+        "last_light_target": "all",
         "ecosystem_state": "debug"
     },
     "vad_settings": {
         "energy_threshold_normal": 300,
         "attention_mode_multiplier": 2.5,
-        "silence_timeout_seconds": 1.5
+        "silence_timeout_seconds": 1.2
     },
     "alarm_settings": {
         "tts_prompt": "Wake up, sir! Alarm activated. Please speak the deactivation code to dismiss.",

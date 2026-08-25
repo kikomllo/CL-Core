@@ -2,10 +2,12 @@ import json
 import logging
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
 from PyQt6.QtCore import QTimer
+from utils.clActionRouter import ActionRouter
 
 class LightControlWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.router = ActionRouter()
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(15, 15, 15, 15)
         self.layout.setSpacing(8)
@@ -18,7 +20,7 @@ class LightControlWidget(QWidget):
         
         refresh_btn = QPushButton("⟳")
         refresh_btn.setFixedSize(30, 30)
-        refresh_btn.setStyleSheet("QPushButton { background-color: rgba(255, 150, 0, 20); color: #ffaa00; border-radius: 15px; border: 1px solid rgba(255,150,0,80); font-size: 14pt; } QPushButton:hover { background-color: rgba(255, 150, 0, 60); }")
+        refresh_btn.setStyleSheet("QPushButton { text-align: center; padding-bottom: 4px; background-color: rgba(255, 150, 0, 20); color: #ffaa00; border-radius: 15px; border: 1px solid rgba(255,150,0,80); font-size: 14pt; } QPushButton:hover { background-color: rgba(255, 150, 0, 60); }")
         refresh_btn.clicked.connect(lambda: self.send_cmd("refresh_lights", "all"))
         
         top_layout.addWidget(self.title_lbl)
@@ -41,7 +43,7 @@ class LightControlWidget(QWidget):
         
         # All off button
         btn = QPushButton("Toggle All Off")
-        btn.setStyleSheet("QPushButton { background-color: rgba(255, 50, 0, 40); color: #ffaa00; border-radius: 5px; padding: 5px; border: 1px solid rgba(255,100,0,80); } QPushButton:hover { background-color: rgba(255, 50, 0, 80); }")
+        btn.setStyleSheet("QPushButton { text-align: center; padding-bottom: 4px; background-color: rgba(255, 50, 0, 40); color: #ffaa00; border-radius: 5px; padding: 5px; border: 1px solid rgba(255,100,0,80); } QPushButton:hover { background-color: rgba(255, 50, 0, 80); }")
         btn.clicked.connect(lambda: self.send_cmd("off", "all", silent=True))
         self.layout.addWidget(btn)
         
@@ -49,24 +51,23 @@ class LightControlWidget(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        import paho.mqtt.publish as publish
         if getattr(self.window(), 'is_fullscreen', False):
             try:
-                publish.single("home/room/all/set", json.dumps({"action": "refresh_lights", "light_target": "all"}), hostname="localhost", qos=0)
+                self.router.dispatch("light.set", action="refresh_lights", light_target="all")
             except Exception as e:
                 pass
 
     def send_cmd(self, action, target, silent=False):
         import paho.mqtt.publish as publish
         try:
-            publish.single("home/room/all/set", json.dumps({"action": action, "light_target": target, "silent": silent}), hostname="localhost", qos=0)
+            self.router.dispatch("light.set", action=action, light_target=target, silent=silent)
         except Exception as e:
             logging.error(f"Failed to publish light control: {e}")
 
     def _delete_light(self, target_name):
         import paho.mqtt.publish as publish
         try:
-            publish.single("home/room/all/set", json.dumps({"action": "intent_remove_light", "target_str": target_name}), hostname="localhost", qos=0)
+            self.router.dispatch("system.discovery", action="intent_remove_light", target_str=target_name)
         except Exception as e:
             logging.error(f"Failed to publish delete: {e}")
         if target_name in self.light_rows:
@@ -144,17 +145,17 @@ class LightControlWidget(QWidget):
                 name_lbl = QLabel(l.get("name", "Unknown"))
                 name_lbl.setStyleSheet("color: #ffaa00; font-weight: bold; font-size: 11pt;")
                 
-                btn_style = "QPushButton { background-color: rgba(255, 150, 0, 20); color: #ffaa00; border-radius: 5px; padding: 2px 8px; font-size: 10pt; border: 1px solid rgba(255,150,0,50); } QPushButton:hover { background-color: rgba(255, 150, 0, 60); }"
+                btn_style = "QPushButton { text-align: center; background-color: rgba(255, 150, 0, 20); color: #ffaa00; border-radius: 5px; font-size: 10pt; border: 1px solid rgba(255,150,0,50); padding: 2px 8px; padding-bottom: 4px; } QPushButton:hover { background-color: rgba(255, 150, 0, 60); }"
                 
                 toggle_btn = QPushButton("Toggle")
                 toggle_btn.setMinimumHeight(24)
                 toggle_btn.setStyleSheet(btn_style)
                 toggle_btn.clicked.connect(lambda checked, t=target_name: self.send_cmd("toggle", t, silent=True))
                 
-                delete_btn = QPushButton("✕")
+                delete_btn = QPushButton("X")
                 delete_btn.setFixedSize(26, 24)
                 delete_btn.setToolTip("Remove light")
-                delete_btn.setStyleSheet("QPushButton { background-color: rgba(200, 50, 0, 30); color: rgba(255, 80, 60, 255); border-radius: 5px; border: 1px solid rgba(200,80,50,80); font-size: 11pt; font-weight: bold; font-family: monospace; } QPushButton:hover { background-color: rgba(200, 50, 0, 90); color: #ff4030; }")
+                delete_btn.setStyleSheet("QPushButton { text-align: center; padding-bottom: 4px; background-color: rgba(255, 150, 0, 20); color: #ffaa00; border-radius: 5px; border: 1px solid rgba(255,150,0,50); font-size: 11pt; font-weight: bold; font-family: monospace; } QPushButton:hover { background-color: rgba(255, 150, 0, 60); color: #ffffff; }")
                 delete_btn.clicked.connect(lambda checked, t=target_name: self._delete_light(t))
                 
                 row_layout.addWidget(indicator)

@@ -1,12 +1,14 @@
 import json
 import logging
-import paho.mqtt.publish as publish
+from utils.clActionRouter import ActionRouter
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
 from PyQt6.QtCore import QTimer
 
 class MediaWidget(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, grid_mode=False):
         super().__init__(parent)
+        self.router = ActionRouter()
+        self.grid_mode = grid_mode
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(15, 10, 15, 15)
         self.layout.setSpacing(6)
@@ -47,11 +49,14 @@ class MediaWidget(QWidget):
         
         small_btn_style = """
             QPushButton {
+                text-align: center;
+                padding-bottom: 4px;
                 background-color: rgba(35, 18, 5, 0.8);
                 color: #ffaa00;
                 border-radius: 16px;
                 border: 1px solid rgba(255, 160, 0, 0.4);
-                font-size: 11pt;
+                font-size: 9pt;
+                font-family: "Segoe UI Symbol", sans-serif;
             }
             QPushButton:hover {
                 background-color: rgba(255, 150, 0, 0.35);
@@ -62,12 +67,15 @@ class MediaWidget(QWidget):
         
         play_btn_style = """
             QPushButton {
+                text-align: center;
+                padding-bottom: 4px;
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ff8c00, stop:1 #e65c00);
                 color: #ffffff;
                 border-radius: 20px;
                 border: 1px solid #ffcc66;
-                font-size: 13pt;
+                font-size: 11pt;
                 font-weight: bold;
+                font-family: "Segoe UI Symbol", sans-serif;
             }
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ffa01a, stop:1 #ff701a);
@@ -136,9 +144,9 @@ class MediaWidget(QWidget):
         
     def send_cmd(self, action, silent=False):
         try:
-            publish.single("pc/spotify/control", json.dumps({"action": action, "silent": silent}), hostname="localhost", qos=0)
+            self.router.dispatch("spotify.control", action=action, silent=silent)
         except Exception as e:
-            logging.error(f"Failed to publish media control: {e}")
+            logging.error(f"MQTT Publish failed: {e}")
 
     def update_status(self, data):
         self._waiting_for_status = False

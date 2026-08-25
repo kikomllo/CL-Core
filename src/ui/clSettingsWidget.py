@@ -1,6 +1,6 @@
 import json
 import os
-import paho.mqtt.publish as publish
+from utils.clActionRouter import ActionRouter
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QFrame, QCheckBox, QComboBox, QPushButton, QTabWidget, QLineEdit, QInputDialog
 from PyQt6.QtCore import Qt, QTimer
 from utils.clConfigLoader import ConfigLoader
@@ -81,7 +81,8 @@ class CollapsibleBlock(QWidget):
 class SettingsWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(325, 440)
+        self.router = ActionRouter()
+        self.setMinimumSize(325, 385)
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 10)
         self.layout.setSpacing(0)
@@ -138,6 +139,8 @@ class SettingsWidget(QWidget):
         self.reboot_btn.setFixedHeight(32)
         self.reboot_btn.setStyleSheet("""
             QPushButton {
+                text-align: center;
+                padding-bottom: 4px;
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(200, 30, 0, 0.4), stop:1 rgba(150, 10, 0, 0.4));
                 color: #ffcccc;
                 border-radius: 6px;
@@ -158,6 +161,8 @@ class SettingsWidget(QWidget):
         self.reboot_btn.clicked.connect(self._reboot_ecosystem)
         self.reboot_btn.hide()
         self.layout.addWidget(self.reboot_btn)
+        
+        self.tabs.currentChanged.connect(self._on_tab_changed)
         
         self._check_for_updates()
         
@@ -342,6 +347,8 @@ class SettingsWidget(QWidget):
         add_net_btn.setFixedHeight(28)
         add_net_btn.setStyleSheet("""
             QPushButton {
+                text-align: center;
+                padding-bottom: 4px;
                 background-color: rgba(40, 25, 10, 200);
                 color: #ffaa00;
                 border: 1px dashed rgba(255, 170, 0, 120);
@@ -367,6 +374,23 @@ class SettingsWidget(QWidget):
         spot_layout.addWidget(self._create_line_edit("SPOTIPY_CLIENT_SECRET", "Client Secret", self.env_loader.get("SPOTIPY_CLIENT_SECRET"), True, self._update_env))
         spot_layout.addWidget(self._create_line_edit("SPOTIPY_REDIRECT_URI", "Redirect URI", self.env_loader.get("SPOTIPY_REDIRECT_URI"), False, self._update_env))
         spot_layout.addSpacing(20)
+
+        # --- TAB 4: UPDATES ---
+        updates_scroll, updates_layout = self._create_scroll_tab()
+        self.tabs.addTab(updates_scroll, "Updates")
+        
+        updates_layout.addWidget(self._create_section_label("Update Settings"))
+        
+        # Load update mode from core.json
+        current_mode = "confirm"
+        try:
+            cfg = self.loader.load("core.json")
+            current_mode = cfg.get("settings", {}).get("update_mode", "confirm")
+        except:
+            pass
+            
+        updates_layout.addWidget(self._create_dropdown("update_mode", "Update Mode", ["confirm", "direct"], current_mode, self._change_update_mode))
+        updates_layout.addSpacing(20)
 
     def _load_devices_json(self):
         if os.path.exists(self.devices_json_path):
@@ -417,7 +441,7 @@ class SettingsWidget(QWidget):
             del_net_btn = QPushButton("Remove Network")
             del_net_btn.setFixedHeight(20)
             del_net_btn.setStyleSheet("""
-                QPushButton { background-color: rgba(180, 30, 30, 120); color: #ffaaaa; border-radius: 3px; font-size: 7.5pt; font-weight: bold; padding: 2px 6px; }
+                QPushButton { text-align: center; padding-bottom: 4px; background-color: rgba(180, 30, 30, 120); color: #ffaaaa; border-radius: 3px; font-size: 7.5pt; font-weight: bold; padding: 2px 6px; }
                 QPushButton:hover { background-color: rgba(220, 40, 40, 200); color: #ffffff; }
             """)
             del_net_btn.clicked.connect(lambda _, n=net_name: self._remove_wifi_network(n))
@@ -452,7 +476,7 @@ class SettingsWidget(QWidget):
                 del_btn = QPushButton("Remove Light")
                 del_btn.setFixedHeight(24)
                 del_btn.setStyleSheet("""
-                    QPushButton { background-color: rgba(180, 30, 30, 150); color: #ffcccc; border-radius: 4px; font-size: 8pt; font-weight: bold; }
+                    QPushButton { text-align: center; padding-bottom: 4px; background-color: rgba(180, 30, 30, 150); color: #ffcccc; border-radius: 4px; font-size: 8pt; font-weight: bold; }
                     QPushButton:hover { background-color: rgba(220, 40, 40, 220); color: #ffffff; }
                 """)
                 del_btn.clicked.connect(lambda _, n=net_name, ln=l_name: self._remove_light(n, ln))
@@ -470,7 +494,7 @@ class SettingsWidget(QWidget):
             add_l_btn = QPushButton(f"+ Add Light to {net_name}")
             add_l_btn.setFixedHeight(24)
             add_l_btn.setStyleSheet("""
-                QPushButton { background-color: rgba(30, 20, 5, 180); color: #ffbb44; border: 1px solid rgba(255, 170, 0, 60); border-radius: 4px; font-size: 8pt; }
+                QPushButton { text-align: center; padding-bottom: 4px; background-color: rgba(30, 20, 5, 180); color: #ffbb44; border: 1px solid rgba(255, 170, 0, 60); border-radius: 4px; font-size: 8pt; }
                 QPushButton:hover { background-color: rgba(60, 40, 10, 220); color: #ffffff; border: 1px solid #ffaa00; }
             """)
             add_l_btn.clicked.connect(lambda _, n=net_name: self._add_light(n))
@@ -661,18 +685,24 @@ class SettingsWidget(QWidget):
         is_silent = (state == 2)
         self._update_core_json("silent_mode", is_silent)
         action = "silent_mode_on" if is_silent else "silent_mode_off"
-        publish.single("jarvis/sys/daemon_control", json.dumps({"action": action}), hostname="localhost", qos=0)
+        self.router.dispatch("state.daemon", action=action)
+
+    def _change_update_mode(self, value):
+        def update_cb(core):
+            if "settings" not in core: core["settings"] = {}
+            core["settings"]["update_mode"] = value
+        self.loader.update_json_atomic("core.json", update_cb)
 
     def _toggle_followup(self, state):
         is_followup = (state == 2)
         self._update_core_json("enable_followup", is_followup)
         action = "followup_on" if is_followup else "followup_off"
-        publish.single("jarvis/sys/daemon_control", json.dumps({"action": action}), hostname="localhost", qos=0)
+        self.router.dispatch("state.daemon", action=action)
 
     def _change_ecosystem_mode(self, value):
         self._update_core_json("ecosystem_state", value)
         self._update_core_json("mode", value.upper(), category="ecosystem")
-        publish.single("jarvis/sys/state_change", json.dumps({"action": value}), hostname="localhost", qos=0)
+        self.router.dispatch("state.change", action=value)
 
     def _change_stt_model(self, value):
         self._update_core_json("stt_model", value)
@@ -686,7 +716,30 @@ class SettingsWidget(QWidget):
         self.needs_reboot = True
         self.reboot_btn.show()
 
+    def _on_tab_changed(self, index):
+        if index == 1:
+            self.reboot_btn.setText("Save & Reboot Smart Lights")
+        elif index == 2:
+            self.reboot_btn.setText("Save & Reboot Spotify")
+        else:
+            self.reboot_btn.setText("Save & Reboot Ecosystem")
+
     def _reboot_ecosystem(self):
-        publish.single("jarvis/sys/manager", json.dumps({"action": "restart_all_modules"}), hostname="localhost", qos=0)
+        # Save UI state before we potentially get terminated by the supervisor
+        p = self.parent()
+        while p is not None:
+            if hasattr(p, 'save_ui_state'):
+                p.save_ui_state()
+                break
+            p = p.parent()
+            
+        btn_text = self.reboot_btn.text()
+        if btn_text == "Save & Reboot Smart Lights":
+            self.router.dispatch("system.restart_module", target="light")
+        elif btn_text == "Save & Reboot Spotify":
+            self.router.dispatch("system.restart_module", target="music")
+        else:
+            self.router.dispatch("system.restart_all")
+            
         self.reboot_btn.hide()
         self.needs_reboot = False

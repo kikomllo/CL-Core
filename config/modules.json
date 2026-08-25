@@ -2,7 +2,8 @@
   "native": {
     "UI": true,
     "Keybinds": true,
-    "Utilities": true
+    "Utilities": true,
+    "Updater": true
   },
   "docker": {
     "jarvis-whisper": true,

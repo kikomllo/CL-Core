@@ -5,6 +5,8 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButt
 from PyQt6.QtCore import Qt, pyqtSignal, QDate, QTime
 
 class CalendarWidget(QWidget):
+    day_selected_signal = pyqtSignal(datetime)
+    
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setStyleSheet("background-color: rgba(20, 10, 0, 180); border-radius: 10px; border: 1px solid rgba(255, 150, 0, 50);")
@@ -15,9 +17,10 @@ class CalendarWidget(QWidget):
         # --- Top Navigation ---
         self.nav_layout = QHBoxLayout()
         
-        self.btn_back = QPushButton("< Back")
-        self.btn_back.setStyleSheet("""
+        nav_btn_style = """
             QPushButton {
+                text-align: center;
+                padding-bottom: 4px;
                 color: #ffaa00;
                 background: rgba(255, 150, 0, 0.12);
                 border-radius: 6px;
@@ -31,37 +34,25 @@ class CalendarWidget(QWidget):
                 border: 1px solid #ffaa00;
                 color: #ffffff;
             }
-        """)
-        self.btn_back.setFixedSize(65, 28)
-        self.btn_back.clicked.connect(self.navigate_up)
+        """
+        
+        self.btn_left = QPushButton("< Year")
+        self.btn_left.setStyleSheet(nav_btn_style)
+        self.btn_left.setFixedSize(65, 28)
+        self.btn_left.clicked.connect(self.navigate_left)
         
         self.lbl_title = QLabel("Calendar")
         self.lbl_title.setStyleSheet("color: #ffbb33; font-size: 16px; font-weight: 800; border: none; background: transparent; letter-spacing: 0.5px;")
         self.lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
-        self.btn_add_event = QPushButton("+ Event")
-        self.btn_add_event.setStyleSheet("""
-            QPushButton {
-                color: #ffaa00;
-                background: rgba(255, 150, 0, 0.12);
-                border-radius: 6px;
-                padding: 4px 8px;
-                border: 1px solid rgba(255, 150, 0, 0.35);
-                font-weight: bold;
-                font-size: 11px;
-            }
-            QPushButton:hover {
-                background: rgba(255, 150, 0, 0.3);
-                border: 1px solid #ffaa00;
-                color: #ffffff;
-            }
-        """)
-        self.btn_add_event.setFixedSize(65, 28)
-        self.btn_add_event.clicked.connect(self.open_event_input)
+        self.btn_right = QPushButton("Week >")
+        self.btn_right.setStyleSheet(nav_btn_style)
+        self.btn_right.setFixedSize(65, 28)
+        self.btn_right.clicked.connect(self.navigate_right)
         
-        self.nav_layout.addWidget(self.btn_back)
+        self.nav_layout.addWidget(self.btn_left)
         self.nav_layout.addWidget(self.lbl_title)
-        self.nav_layout.addWidget(self.btn_add_event)
+        self.nav_layout.addWidget(self.btn_right)
         
         self.layout.addLayout(self.nav_layout)
         
@@ -91,19 +82,32 @@ class CalendarWidget(QWidget):
         
         self.update_ui()
         
-    def navigate_up(self):
+    def navigate_left(self):
         if self.current_mode == "day": self.current_mode = "week"
         elif self.current_mode == "week": self.current_mode = "month"
         elif self.current_mode == "month": self.current_mode = "year"
         self.update_ui()
 
+    def navigate_right(self):
+        if self.current_mode == "year": self.current_mode = "month"
+        elif self.current_mode == "month": self.current_mode = "week"
+        elif self.current_mode == "week": self.current_mode = "day"
+        self.update_ui()
+
     def update_ui(self):
         if self.current_mode == "year":
             self.lbl_title.setText(self.current_date.strftime("%Y"))
+            self.btn_left.hide()
+            self.btn_right.setText("Month >")
+            self.btn_right.show()
             self.stack.setCurrentWidget(self.year_view)
             self.render_year()
         elif self.current_mode == "month":
             self.lbl_title.setText(self.current_date.strftime("%B %Y"))
+            self.btn_left.setText("< Year")
+            self.btn_left.show()
+            self.btn_right.setText("Week >")
+            self.btn_right.show()
             self.stack.setCurrentWidget(self.month_view)
             self.render_month()
         elif self.current_mode == "week":
@@ -111,10 +115,17 @@ class CalendarWidget(QWidget):
             start_week = self.current_date - timedelta(days=self.current_date.weekday())
             end_week = start_week + timedelta(days=6)
             self.lbl_title.setText(f"{start_week.strftime('%b %d')} - {end_week.strftime('%b %d, %Y')}")
+            self.btn_left.setText("< Month")
+            self.btn_left.show()
+            self.btn_right.setText("Day >")
+            self.btn_right.show()
             self.stack.setCurrentWidget(self.week_view)
             self.render_week()
         elif self.current_mode == "day":
             self.lbl_title.setText(self.current_date.strftime("%A, %B %d, %Y"))
+            self.btn_left.setText("< Week")
+            self.btn_left.show()
+            self.btn_right.hide()
             self.stack.setCurrentWidget(self.day_view)
             self.render_day()
 
@@ -196,7 +207,10 @@ class CalendarWidget(QWidget):
                     dots_layout.addWidget(dot)
                 btn_layout.addLayout(dots_layout)
                 
-            if day == datetime.now().day and self.current_date.month == datetime.now().month and self.current_date.year == datetime.now().year:
+            is_today = (day == datetime.now().day and self.current_date.month == datetime.now().month and self.current_date.year == datetime.now().year)
+            is_selected = (day == self.current_date.day)
+
+            if is_selected:
                 lbl_day.setStyleSheet("background: transparent; border: none; color: #ffffff; font-size: 13px; font-weight: 900;")
                 btn.setStyleSheet("""
                     QPushButton {
@@ -206,6 +220,19 @@ class CalendarWidget(QWidget):
                     }
                     QPushButton:hover {
                         background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ffa01a, stop:1 #ff701a);
+                    }
+                """)
+            elif is_today:
+                lbl_day.setStyleSheet("background: transparent; border: none; color: #ffaa00; font-size: 13px; font-weight: 900;")
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background: rgba(255, 150, 0, 0.2);
+                        border-radius: 6px;
+                        border: 1px solid rgba(255, 170, 0, 0.5);
+                    }
+                    QPushButton:hover {
+                        background: rgba(255, 150, 0, 0.4);
+                        border: 1px solid #ffaa00;
                     }
                 """)
             else:
@@ -232,8 +259,8 @@ class CalendarWidget(QWidget):
 
     def go_to_day(self, day):
         self.current_date = self.current_date.replace(day=day)
-        self.current_mode = "day"
-        self.update_ui()
+        self.update_ui() # Re-render to show selected day (highlight)
+        self.day_selected_signal.emit(self.current_date)
 
     def init_week_view(self):
         self.week_layout = QHBoxLayout(self.week_view)
@@ -379,24 +406,24 @@ class CalendarWidget(QWidget):
             self.event_dialog = QDialog(self)
             self.event_dialog.setWindowTitle("Create Event")
             self.event_dialog.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
-            self.event_dialog.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            self.event_dialog.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
             self.event_dialog.setStyleSheet("""
                 QDialog {
-                    background-color: #160a02;
-                    border: 2px solid #ff7700;
+                    background-color: rgba(20, 10, 0, 240);
+                    border: 1px solid rgba(255, 120, 0, 100);
                     border-radius: 12px;
                 }
                 QLineEdit, QDateEdit, QTimeEdit {
-                    background-color: #251205;
+                    background-color: rgba(25, 12, 3, 255);
                     color: #ffe6cc;
-                    border: 1px solid rgba(255, 119, 0, 0.5);
+                    border: 1px solid rgba(255, 180, 0, 150);
                     border-radius: 6px;
                     padding: 6px;
                     font-size: 10pt;
                     font-weight: 600;
                 }
                 QLineEdit:focus, QDateEdit:focus, QTimeEdit:focus {
-                    border: 1px solid #ff7700;
+                    border: 1px solid #ffaa00;
                 }
                 QDateEdit::up-button, QTimeEdit::up-button,
                 QDateEdit::down-button, QTimeEdit::down-button {
@@ -405,21 +432,22 @@ class CalendarWidget(QWidget):
                     border: none;
                 }
                 QLabel {
-                    color: #ff7700;
+                    color: #ffaa00;
                     font-weight: bold;
                     font-size: 10pt;
                 }
                 QPushButton {
-                    background: #2a1506;
-                    color: #ff7700;
-                    border: 1px solid #ff7700;
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(255, 150, 0, 0.25), stop:1 rgba(255, 100, 0, 0.25));
+                    color: #ffbb33;
                     border-radius: 6px;
-                    padding: 6px;
+                    border: 1px solid rgba(255, 160, 0, 0.5);
                     font-weight: bold;
+                    padding: 6px;
                 }
                 QPushButton:hover {
-                    background: #3d1f0a;
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(255, 160, 0, 0.45), stop:1 rgba(255, 110, 0, 0.45));
                     color: #ffffff;
+                    border: 1px solid #ffaa00;
                 }
             """)
             
@@ -479,6 +507,10 @@ class CalendarWidget(QWidget):
             self.btn_dialog_delete.clicked.connect(self.submit_delete)
             
             btn_cancel = QPushButton("Cancel")
+            btn_cancel.setStyleSheet("""
+                QPushButton { background: rgba(255, 255, 255, 0.05); color: #aaaaaa; border: 1px solid rgba(255, 255, 255, 0.2); }
+                QPushButton:hover { background: rgba(255, 255, 255, 0.1); color: #ffffff; }
+            """)
             btn_cancel.clicked.connect(self.event_dialog.hide)
             
             btn_save = QPushButton("Save Event")
@@ -491,8 +523,22 @@ class CalendarWidget(QWidget):
             
             self.input_title.returnPressed.connect(self.submit_event)
             
-        pos = self.btn_add_event.mapToGlobal(self.btn_add_event.rect().bottomLeft())
-        self.event_dialog.setGeometry(pos.x() - 190, pos.y() + 5, 270, 220)
+        # Center dialog on the widget
+        dlg_width = 270
+        dlg_height = 220
+        self.event_dialog.resize(dlg_width, dlg_height)
+        
+        # Map to global properly for popup
+        if self.parentWidget():
+            global_pos = self.parentWidget().mapToGlobal(self.pos())
+            cx = global_pos.x() + (self.width() - dlg_width) // 2
+            cy = global_pos.y() + (self.height() - dlg_height) // 2
+            self.event_dialog.move(cx, cy)
+        else:
+            global_pos = self.mapToGlobal(self.pos())
+            cx = global_pos.x() + (self.width() - dlg_width) // 2
+            cy = global_pos.y() + (self.height() - dlg_height) // 2
+            self.event_dialog.move(cx, cy)
         self.input_title.clear()
         
         if event_data:

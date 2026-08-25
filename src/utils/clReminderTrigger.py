@@ -26,13 +26,53 @@ def get_volume():
 
 def boot_ecosystem_if_offline() -> bool:
     try:
-        ps_out = subprocess.check_output(["ps", "-ef"]).decode()
-        if "python3 clJarvis.py" not in ps_out and "python clJarvis.py" not in ps_out:
+        import socket
+        lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            lock_socket.bind(("127.0.0.1", 64000))
+            is_offline = True
+            lock_socket.close()
+        except socket.error:
+            is_offline = False
+
+        if is_offline:
             logging.info("Jarvis ecosystem is offline. Booting it up!")
-            jarvis_path = os.path.abspath(os.path.join(BASE_DIR, "..", "..", "clJarvis.py"))
+            boot_path = os.path.abspath(os.path.join(BASE_DIR, "..", "..", "boot.py"))
             # Launch in a new session so it outlives this script    
-            subprocess.Popen(["python3", jarvis_path], cwd=os.path.dirname(jarvis_path), start_new_session=True)
-            time.sleep(3.5)
+            if sys.platform == 'win32':
+                subprocess.Popen([sys.executable, boot_path], cwd=os.path.dirname(boot_path), creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+            else:
+                subprocess.Popen([sys.executable, boot_path], cwd=os.path.dirname(boot_path), start_new_session=True)
+            
+            import paho.mqtt.client as mqtt
+            ecosystem_ready = False
+            
+            def on_msg(client, userdata, msg):
+                nonlocal ecosystem_ready
+                if msg.topic == "jarvis/sys/ecosystem_online":
+                    ecosystem_ready = True
+                    
+            for _ in range(30):
+                time.sleep(1)
+                try:
+                    c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+                    c.on_message = on_msg
+                    c.connect("localhost")
+                    c.subscribe("jarvis/sys/ecosystem_online")
+                    c.loop_start()
+                    
+                    # Wait up to 30 seconds for the ecosystem to announce itself
+                    wait_time = 0
+                    while not ecosystem_ready and wait_time < 30:
+                        time.sleep(1)
+                        wait_time += 1
+                        
+                    c.loop_stop()
+                    c.disconnect()
+                    break
+                except Exception:
+                    pass
+                
             return True
     except Exception as e:
         logging.error(f"Failed to boot ecosystem: {e}")
@@ -62,14 +102,16 @@ def main():
     logging.info(f"Triggering reminder {reminder_id}. System volume is {vol}%.")
     
     # 1. Unconditionally send desktop notification
-    env = os.environ.copy()
-    env.setdefault("DISPLAY", ":0")
-    env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{os.getuid()}/bus")
-    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
-    try:
-        subprocess.run(["notify-send", "Jarvis Reminder", text, "-i", "dialog-information"], env=env)
-    except Exception as e:
-        logging.error(f"Failed to send notification: {e}")
+    if sys.platform != 'win32':
+        env = os.environ.copy()
+        env.setdefault("DISPLAY", ":0")
+        if hasattr(os, "getuid"):
+            env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{os.getuid()}/bus")
+            env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+        try:
+            subprocess.run(["notify-send", "Jarvis Reminder", text, "-i", "dialog-information"], env=env)
+        except Exception as e:
+            logging.error(f"Failed to send notification: {e}")
     
     # 2. Play audio if volume is adequate
     if vol >= 5:
@@ -77,13 +119,29 @@ def main():
             logging.info("Sending TTS and Reminder Audio to centralized queue...")
             try:
                 import paho.mqtt.client as mqtt
+                import time
+                tts_done_count = 0
+                
+                def on_message(client, userdata, msg):
+                    nonlocal tts_done_count
+                    if msg.topic == "jarvis/sys/tts_done":
+                        tts_done_count += 1
+                        
                 c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+                c.on_message = on_message
                 c.connect("localhost")
+                c.subscribe("jarvis/sys/tts_done")
+                c.loop_start()
+                
                 # Route the playback through the centralized TTS queue to serialize audio access
-                msg1 = c.publish("jarvis/sys/speak", json.dumps({"text": "Playing reminder.", "skip_ducking": True}))
-                msg2 = c.publish("jarvis/sys/play_audio", json.dumps({"path": audio_path}))
-                msg1.wait_for_publish()
-                msg2.wait_for_publish()
+                c.publish("jarvis/sys/speak", json.dumps({"text": "Playing reminder.", "skip_ducking": True}))
+                c.publish("jarvis/sys/play_audio", json.dumps({"path": audio_path}))
+                
+                start_time = time.time()
+                while tts_done_count < 2 and time.time() - start_time < 20.0:
+                    time.sleep(0.1)
+                    
+                c.loop_stop()
                 c.disconnect()
             except Exception as e:
                 logging.error(f"Failed to trigger reminder audio: {e}")

@@ -2,7 +2,7 @@ import os
 import logging
 import json
 from datetime import datetime
-import paho.mqtt.publish as publish
+from utils.clActionRouter import ActionRouter
 from PyQt6.QtWidgets import QWidget, QPushButton
 from PyQt6.QtCore import QTimer, QFileSystemWatcher, Qt, QRectF
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont
@@ -10,6 +10,7 @@ from PyQt6.QtGui import QPainter, QColor, QPen, QFont
 class ReminderWidget(QWidget):
     def __init__(self, parent=None, grid_mode=False):
         super().__init__(parent)
+        self.router = ActionRouter()
         self.grid_mode = grid_mode
         self.reminders = []
         self.current_idx = 0
@@ -31,6 +32,8 @@ class ReminderWidget(QWidget):
         
         btn_arrow_style = """
             QPushButton {
+                text-align: center;
+                padding-bottom: 4px;
                 background-color: transparent;
                 color: #ffaa00;
                 border: none;
@@ -45,6 +48,8 @@ class ReminderWidget(QWidget):
         
         btn_delete_style = """
             QPushButton {
+                text-align: center;
+                padding-bottom: 4px;
                 background-color: rgba(20, 10, 0, 180);
                 color: #ffaa00;
                 border-radius: 4px;
@@ -255,13 +260,13 @@ class ReminderWidget(QWidget):
     def cancel_reminder(self):
         if not self.reminders: return
         rem_id = self.reminders[self.current_idx]["id"]
-        publish.single("jarvis/sys/reminder/control", json.dumps({"action": "delete", "id": rem_id}), hostname="localhost", qos=1)
+        self.router.dispatch("reminder.delete", id=rem_id)
 
     def cancel_grid_reminder(self, slot_idx):
         idx = self.current_page * 4 + slot_idx
         if 0 <= idx < len(self.reminders):
             rem_id = self.reminders[idx]["id"]
-            publish.single("jarvis/sys/reminder/control", json.dumps({"action": "delete", "id": rem_id}), hostname="localhost", qos=1)
+            self.router.dispatch("reminder.delete", id=rem_id)
 
     def paintEvent(self, event):
         painter = QPainter(self)

@@ -30,6 +30,10 @@ def setup_logging(module_name: str) -> None:
         datefmt="%H:%M:%S",
         force=True
     )
+    
+    # Silence noisy third-party debug logs
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 def update_log_level(mode_str: str) -> None:
     level = get_log_level_for_mode(mode_str)

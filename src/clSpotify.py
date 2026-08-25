@@ -39,7 +39,9 @@ class SpotifyManager:
         
         if not all([self.client_id, self.client_secret, self.redirect_uri]):
             logging.critical("Spotify credentials missing in .env file!")
-            sys.exit(1)
+            # Block forever so the supervisor doesn't infinitely resurrect an unconfigured service
+            while True:
+                time.sleep(3600)
 
         self.scope: str = "user-read-playback-state user-modify-playback-state playlist-read-private playlist-read-collaborative"
         self.sp: spotipy.Spotify = spotipy.Spotify(
@@ -627,6 +629,7 @@ async def mqtt_service_listener(manager: SpotifyManager) -> None:
             async with aiomqtt.Client("localhost") as mqtt_client:
                 await mqtt_client.subscribe("pc/spotify/control")
                 await mqtt_client.subscribe("jarvis/sys/ui_control")
+                await mqtt_client.publish("jarvis/sys/module_ready", json.dumps({"module": "music"}))
                 
                 async for message in mqtt_client.messages:
                     try:

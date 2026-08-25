@@ -8,6 +8,7 @@ import random
 import edge_tts
 import av
 import numpy as np
+os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 from pygame import mixer
 import aiomqtt
 from typing import Dict, Any
@@ -63,19 +64,25 @@ class TTSManager:
         except Exception as e:
             logging.error(f"Failed to clean TTS cache: {e}")
 
-    def get_audio_rms(self, file_path):
+    def get_audio_rms(self, file_path, suppress_log=False):
         try:
             container = av.open(file_path)
             rms_list = []
             for frame in container.decode(audio=0):
                 arr = frame.to_ndarray()
                 if arr.size > 0:
-                    rms_list.append(float(np.sqrt(np.mean(arr**2))))
+                    arr_f = arr.astype(np.float32)
+                    if arr.dtype == np.int16:
+                        arr_f /= 32768.0
+                    elif arr.dtype == np.int32:
+                        arr_f /= 2147483648.0
+                    rms_list.append(float(np.sqrt(np.mean(arr_f**2))))
                 else:
                     rms_list.append(0.0)
             return rms_list
         except Exception as e:
-            logging.error(f"Failed to extract RMS: {e}")
+            if not suppress_log:
+                logging.error(f"Failed to extract RMS: {e}")
             return []
 
     async def generate_and_play(self, client, text, voice="en-GB-RyanNeural", ignore_silent=False, abort_count=0) -> None:
@@ -113,17 +120,36 @@ class TTSManager:
                     mixer.music.play()
                     while mixer.music.get_busy(): await asyncio.sleep(0.02)
                 
+                loaded = False
                 for _ in range(5):
                     try:
                         mixer.music.load(temp_file)
+                        loaded = True
                         break
                     except Exception: await asyncio.sleep(0.2)
                 
-                rms_list = self.get_audio_rms(temp_file)
+                if not loaded:
+                    logging.warning(f"Mixer failed to load TTS audio. Deleting corrupted cache: {temp_file}")
+                    try: os.remove(temp_file)
+                    except Exception: pass
+                    return
+                
+                rms_list = []
+                for attempt in range(5):
+                    rms_list = self.get_audio_rms(temp_file, suppress_log=(attempt < 4))
+                    if rms_list:
+                        break
+                    await asyncio.sleep(0.2)
+                    
+                if not rms_list:
+                    logging.warning(f"Failed to extract RMS. Deleting corrupted cache: {temp_file}")
+                    try: os.remove(temp_file)
+                    except Exception: pass
+                    return
                 frame_duration = 0.024
                 
                 # --- SILENCE TRUNCATION ALGORITHM ---
-                scaled_rms = [min(100, int(r * 500)) for r in rms_list]
+                scaled_rms = [0 if np.isnan(r) else min(100, int(r * 500)) for r in rms_list]
                 last_valid_idx = 0
                 for i in range(len(scaled_rms) - 1, -1, -1):
                     if scaled_rms[i] > 0:
@@ -183,17 +209,28 @@ class TTSManager:
                     except Exception: await asyncio.sleep(0.2)
                     
                 rms_list = self.get_audio_rms(file_path)
-                frame_duration = 0.024
                 
-                scaled_rms = [min(100, int(r * 500)) for r in rms_list]
-                last_valid_idx = 0
-                for i in range(len(scaled_rms) - 1, -1, -1):
-                    if scaled_rms[i] > 0:
-                        last_valid_idx = i
-                        break
+                try:
+                    import av
+                    with av.open(file_path) as container:
+                        true_duration = float(container.duration) / av.time_base
+                except Exception:
+                    true_duration = len(rms_list) * 0.024
+                    
+                frame_duration = true_duration / max(1, len(rms_list))
                 
-                cutoff_time = (last_valid_idx + 4) * frame_duration
-                if cutoff_time < 0.5: cutoff_time = 10.0 # fallback
+                scaled_rms = [0 if np.isnan(r) else min(100, int(r * 500)) for r in rms_list]
+                
+                if file_path.endswith('.wav'):
+                    cutoff_time = true_duration + 1.0 # Never truncate user WAV recordings
+                else:
+                    last_valid_idx = 0
+                    for i in range(len(scaled_rms) - 1, -1, -1):
+                        if scaled_rms[i] > 0:
+                            last_valid_idx = i
+                            break
+                    cutoff_time = (last_valid_idx + 4) * frame_duration
+                    if cutoff_time < 0.5: cutoff_time = 10.0 # fallback
                 
                 mixer.music.play()
                 start_time = asyncio.get_event_loop().time()
@@ -265,8 +302,8 @@ async def run_tts_service():
                 await client.subscribe("jarvis/sys/tts_request")
                 await client.subscribe("jarvis/sys/silent_mode")
                 await client.subscribe("jarvis/sys/play_audio")
-                
                 logging.info("TTS Microservice initialized. Listening on MQTT topics...")
+                await client.publish("jarvis/sys/module_ready", json.dumps({"module": "tts"}))
                 
                 async for message in client.messages:
                     topic = message.topic.value
@@ -291,7 +328,7 @@ async def run_tts_service():
                             asyncio.create_task(manager.generate_and_play(
                                 client, 
                                 payload.get("text", ""), 
-                                ignore_silent=payload.get("ignore_silent", False) or payload.get("skip_ducking", False),
+                                ignore_silent=payload.get("ignore_silent", False),
                                 abort_count=manager.abort_counter
                             ))
                         except json.JSONDecodeError:

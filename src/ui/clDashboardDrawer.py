@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QStackedWidget, QFrame, QScrollArea
-from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QStackedWidget, QFrame, QScrollArea, QSizePolicy
+from PyQt6.QtCore import Qt, pyqtSignal
 
 from clCalendarWidget import CalendarWidget
 from ui.clTodoWidget import TodoWidget
@@ -9,6 +9,8 @@ from ui.clMediaWidget import MediaWidget
 from ui.clLightControlWidget import LightControlWidget
 
 class UpNextWidget(QFrame):
+    add_event_signal = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("UpNextContainer")
@@ -23,10 +25,35 @@ class UpNextWidget(QFrame):
         self.layout.setContentsMargins(12, 10, 12, 10)
         self.layout.setSpacing(6)
         
+        self.header_layout = QHBoxLayout()
+        self.header_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.btn_back = QPushButton("< Back")
+        self.btn_back.setStyleSheet("QPushButton { color: #ffaa00; background: transparent; border: none; font-weight: bold; font-size: 10px; } QPushButton:hover { color: #ffffff; }")
+        self.btn_back.clicked.connect(self.reset_to_upcoming)
+        self.btn_back.hide()
+        
         self.lbl_title = QLabel("UP NEXT")
         self.lbl_title.setStyleSheet("color: #ffaa00; font-size: 10px; font-weight: 800; letter-spacing: 1px; border: none; background: transparent;")
-        self.layout.addWidget(self.lbl_title)
+        self.lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
+        self.btn_add_event = QPushButton("+ Event")
+        self.btn_add_event.setStyleSheet("QPushButton { color: #ffaa00; background: rgba(255,150,0,0.15); border: 1px solid rgba(255,150,0,0.4); border-radius: 4px; padding: 2px 6px; font-weight: bold; font-size: 10px; } QPushButton:hover { background: rgba(255,150,0,0.3); color: #ffffff; }")
+        self.btn_add_event.clicked.connect(self.add_event_signal.emit)
+        self.btn_add_event.hide()
+        
+        self.header_layout.addWidget(self.btn_back)
+        self.header_layout.addStretch()
+        self.header_layout.addWidget(self.lbl_title)
+        self.header_layout.addStretch()
+        self.header_layout.addWidget(self.btn_add_event)
+        
+        self.layout.addLayout(self.header_layout)
+        
+        self.mode = "upcoming"
+        self.selected_date = None
+        self.current_events_data = {}
+
         # Scroll Area for events
         self.scroll = QScrollArea(self)
         self.scroll.setWidgetResizable(True)
@@ -48,6 +75,26 @@ class UpNextWidget(QFrame):
         self.layout.addWidget(self.scroll)
         
     def load_events(self, events_data):
+        self.current_events_data = events_data
+        self.render_events()
+        
+    def set_specific_day(self, date):
+        self.mode = "day"
+        self.selected_date = date
+        self.lbl_title.setText(date.strftime("EVENTS FOR %b %d").upper())
+        self.btn_back.show()
+        self.btn_add_event.show()
+        self.render_events()
+        
+    def reset_to_upcoming(self):
+        self.mode = "upcoming"
+        self.selected_date = None
+        self.lbl_title.setText("UP NEXT")
+        self.btn_back.hide()
+        self.btn_add_event.hide()
+        self.render_events()
+
+    def render_events(self):
         # Clear existing event cards
         while self.events_layout.count():
             item = self.events_layout.takeAt(0)
@@ -55,25 +102,30 @@ class UpNextWidget(QFrame):
             if widget:
                 widget.deleteLater()
                 
-        events = events_data.get('events', [])
+        events = self.current_events_data.get('events', [])
         now = datetime.now()
-        future_events = []
+        display_events = []
         for ev in events:
             dt = datetime.fromisoformat(ev['start']['dateTime'])
             dt = dt.replace(tzinfo=None)
-            if dt > now:
-                future_events.append((ev, dt))
+            
+            if self.mode == "upcoming":
+                if dt > now:
+                    display_events.append((ev, dt))
+            elif self.mode == "day":
+                if dt.date() == self.selected_date.date():
+                    display_events.append((ev, dt))
                 
-        if not future_events:
-            lbl = QLabel("No upcoming events")
+        if not display_events:
+            lbl = QLabel("No events" if self.mode == "day" else "No upcoming events")
             lbl.setStyleSheet("color: rgba(255, 200, 150, 0.6); font-style: italic; font-size: 11px; border: none; background: transparent;")
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.events_layout.addWidget(lbl)
             return
             
-        future_events.sort(key=lambda x: x[1])
+        display_events.sort(key=lambda x: x[1])
         
-        for ev, dt in future_events:
+        for ev, dt in display_events:
             time_str = dt.strftime('%I:%M %p')
             if dt.date() == now.date():
                 day_str = "Today"
@@ -144,6 +196,8 @@ class WidgetCarousel(QWidget):
         
         btn_style = """
             QPushButton {
+                text-align: center;
+                padding-bottom: 4px;
                 background: transparent;
                 color: #ffaa00;
                 font-weight: bold;
@@ -239,3 +293,7 @@ class DashboardDrawer(QWidget):
         self.layout.addWidget(self.up_next, stretch=1)
         self.layout.addWidget(divider)
         self.layout.addWidget(self.carousel, stretch=1)
+        
+        # Connect Signals
+        self.calendar.day_selected_signal.connect(self.up_next.set_specific_day)
+        self.up_next.add_event_signal.connect(self.calendar.open_event_input)

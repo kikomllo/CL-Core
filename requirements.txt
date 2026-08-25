@@ -83,3 +83,9 @@ typing_extensions==4.15.0
 urllib3==2.7.0
 yarl==1.24.2
 PyQt6
+pynput
+dateparser
+nvidia-cublas-cu12
+nvidia-cudnn-cu12
+pystray
+Pillow

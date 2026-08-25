@@ -1,57 +1,12 @@
 {
-  "drawer_open": true,
+  "drawer_open": false,
   "carousel_tab": 0,
   "reminder_widget": {
     "visible": false,
     "pos": [
-      1680,
-      925
+      0,
+      0
     ]
   },
-  "active_widgets": {
-    "widget_media_controls": {
-      "visible": true,
-      "pos": [
-        288,
-        815
-      ],
-      "size": [
-        212,
-        194
-      ]
-    },
-    "widget_light_controls": {
-      "visible": true,
-      "pos": [
-        15,
-        38
-      ],
-      "size": [
-        340,
-        146
-      ]
-    },
-    "widget_todo_list": {
-      "visible": true,
-      "pos": [
-        30,
-        626
-      ],
-      "size": [
-        250,
-        381
-      ]
-    },
-    "widget_settings": {
-      "visible": false,
-      "pos": [
-        805,
-        309
-      ],
-      "size": [
-        325,
-        464
-      ]
-    }
-  }
+  "active_widgets": {}
 }

@@ -1,0 +1,7 @@
+{
+  "id": "1786469817",
+  "time": "2026-08-11T18:37:57.220702",
+  "challenge_type": "phrase",
+  "expected_answer": "turn off alarm",
+  "tts_prompt": "Wake up, sir! Alarm activated. Please speak the deactivation code to dismiss."
+}

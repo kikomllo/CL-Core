@@ -1,7 +1,5 @@
 {
   "light_on": {
-    "target_topic": "home/room/desk_light/set",
-    "action_override": "on",
     "priority_words": [
       "on",
       "activate",
@@ -17,11 +15,13 @@
       "turn the {light_target} on",
       "power on the {light_target}",
       "turn on {light_target}"
-    ]
+    ],
+    "action_id": "light.set",
+    "action_args": {
+      "action": "on"
+    }
   },
   "light_off": {
-    "target_topic": "home/room/desk_light/set",
-    "action_override": "off",
     "priority_words": [
       "off",
       "deactivate",
@@ -40,11 +40,13 @@
       "kill the {light_target}",
       "power off the {light_target}",
       "turn off {light_target}"
-    ]
+    ],
+    "action_id": "light.set",
+    "action_args": {
+      "action": "off"
+    }
   },
   "light_toggle": {
-    "target_topic": "home/room/desk_light/set",
-    "action_override": "toggle",
     "priority_words": [
       "toggle",
       "switch"
@@ -56,11 +58,13 @@
       "toggle the {light_target}",
       "toggle {light_target}",
       "switch the {light_target}"
-    ]
+    ],
+    "action_id": "light.set",
+    "action_args": {
+      "action": "toggle"
+    }
   },
   "light_color": {
-    "target_topic": "home/room/desk_light/set",
-    "action_override": "on",
     "priority_words": [
       "color",
       "change"
@@ -74,11 +78,13 @@
       "set the {light_target} to {color}",
       "change the {light_target} to {color}",
       "set {light_target} to {color}"
-    ]
+    ],
+    "action_id": "light.set",
+    "action_args": {
+      "action": "on"
+    }
   },
   "light_dim": {
-    "target_topic": "home/room/desk_light/set",
-    "action_override": "on",
     "priority_words": [
       "brightness",
       "dim",
@@ -93,11 +99,13 @@
       "set {light_target} to {lum} percent",
       "dim the {light_target} to {lum} percent",
       "make the {light_target} {lum} percent"
-    ]
+    ],
+    "action_id": "light.set",
+    "action_args": {
+      "action": "on"
+    }
   },
   "spotify_play_generic": {
-    "target_topic": "pc/spotify/control",
-    "action_override": "play",
     "priority_words": [
       "resume",
       "start",
@@ -110,11 +118,13 @@
       "start playing",
       "continue playback",
       "play spotify"
-    ]
+    ],
+    "action_id": "spotify.control",
+    "action_args": {
+      "action": "play"
+    }
   },
   "spotify_play_playlist": {
-    "target_topic": "pc/spotify/control",
-    "action_override": "play",
     "priority_words": [
       "playlist"
     ],
@@ -124,11 +134,13 @@
       "put on my {playlist_name} playlist",
       "play my playlist {playlist_name}",
       "my playlist {playlist_name}"
-    ]
+    ],
+    "action_id": "spotify.control",
+    "action_args": {
+      "action": "play"
+    }
   },
   "spotify_play_specific": {
-    "target_topic": "pc/spotify/control",
-    "action_override": "play",
     "priority_words": [
       "play",
       "song",
@@ -149,11 +161,13 @@
       "play {track_name} by artist {artist_name}",
       "play music {track_name} by artist {artist_name}",
       "play the song {track_name}"
-    ]
+    ],
+    "action_id": "spotify.control",
+    "action_args": {
+      "action": "play"
+    }
   },
   "spotify_pause": {
-    "target_topic": "pc/spotify/control",
-    "action_override": "pause",
     "priority_words": [
       "pause",
       "stop"
@@ -164,11 +178,13 @@
       "pause playback",
       "stop the music",
       "pause spotify"
-    ]
+    ],
+    "action_id": "spotify.control",
+    "action_args": {
+      "action": "pause"
+    }
   },
   "spotify_next": {
-    "target_topic": "pc/spotify/control",
-    "action_override": "next",
     "priority_words": [
       "skip",
       "next"
@@ -180,11 +196,13 @@
       "play the next song",
       "skip music",
       "next"
-    ]
+    ],
+    "action_id": "spotify.control",
+    "action_args": {
+      "action": "next"
+    }
   },
   "spotify_prev": {
-    "target_topic": "pc/spotify/control",
-    "action_override": "prev",
     "priority_words": [
       "previous",
       "back"
@@ -195,11 +213,13 @@
       "play the previous song",
       "go back",
       "last song"
-    ]
+    ],
+    "action_id": "spotify.control",
+    "action_args": {
+      "action": "prev"
+    }
   },
   "spotify_volume": {
-    "target_topic": "pc/spotify/control",
-    "action_override": "volume",
     "priority_words": [
       "volume"
     ],
@@ -208,11 +228,13 @@
       "change volume to {volume} percent",
       "set music volume to {volume} percent",
       "music volume {volume} percent"
-    ]
+    ],
+    "action_id": "spotify.control",
+    "action_args": {
+      "action": "volume"
+    }
   },
   "spotify_status_track": {
-    "target_topic": "pc/spotify/control",
-    "action_override": "status_track",
     "priority_words": [
       "playing",
       "song",
@@ -230,11 +252,13 @@
       "artist's name",
       "artist name",
       "give me the track name"
-    ]
+    ],
+    "action_id": "spotify.control",
+    "action_args": {
+      "action": "status_track"
+    }
   },
   "spotify_status_playlist": {
-    "target_topic": "pc/spotify/control",
-    "action_override": "status_playlist",
     "priority_words": [
       "playlist",
       "context",
@@ -247,11 +271,13 @@
       "what is this playlist",
       "what radio is this",
       "what is the context"
-    ]
+    ],
+    "action_id": "spotify.control",
+    "action_args": {
+      "action": "status_playlist"
+    }
   },
   "spotify_status_queue": {
-    "target_topic": "pc/spotify/control",
-    "action_override": "status_queue",
     "priority_words": [
       "queue",
       "up next"
@@ -263,22 +289,26 @@
       "what is playing next",
       "up next",
       "what's the next song"
-    ]
+    ],
+    "action_id": "spotify.control",
+    "action_args": {
+      "action": "status_queue"
+    }
   },
   "spotify_status_full": {
-    "target_topic": "pc/spotify/control",
-    "action_override": "status_full",
     "priority_words": [
       "status"
     ],
     "templates": [
       "spotify status",
       "music status"
-    ]
+    ],
+    "action_id": "spotify.control",
+    "action_args": {
+      "action": "status_full"
+    }
   },
   "system_discovery": {
-    "target_topic": "system/discovery",
-    "action_override": "discover",
     "priority_words": [
       "discovery",
       "scan",
@@ -293,11 +323,13 @@
       "scan the network",
       "find new hardware",
       "discovery mode"
-    ]
+    ],
+    "action_id": "system.discovery",
+    "action_args": {
+      "action": "discover"
+    }
   },
   "system_restart_all": {
-    "target_topic": "jarvis/sys/manager",
-    "action_override": "restart_all_modules",
     "priority_words": [
       "restart all",
       "reboot all",
@@ -307,6 +339,7 @@
       "restart all modules",
       "reboot all modules",
       "reboot the system",
+      "reboot the whole system",
       "restart the system",
       "restart the framework",
       "reboot the framework",
@@ -314,11 +347,10 @@
       "reboot everything",
       "restart all services",
       "reboot all services"
-    ]
+    ],
+    "action_id": "system.restart_all"
   },
   "system_restart_module": {
-    "target_topic": "jarvis/sys/manager",
-    "action_override": "restart_module",
     "priority_words": [
       "module",
       "service"
@@ -332,11 +364,10 @@
       "restart the {target} service",
       "restart {target}",
       "reboot {target}"
-    ]
+    ],
+    "action_id": "system.restart_module"
   },
   "system_attention_on": {
-    "target_topic": "jarvis/sys/mic_control",
-    "action_override": "attention_on",
     "priority_words": [
       "attention",
       "focus"
@@ -350,11 +381,13 @@
       "start working",
       "i need to focus",
       "focus mode"
-    ]
+    ],
+    "action_id": "mic.state",
+    "action_args": {
+      "action": "attention_on"
+    }
   },
   "system_attention_off": {
-    "target_topic": "jarvis/sys/mic_control",
-    "action_override": "attention_off",
     "priority_words": [
       "attention",
       "rest",
@@ -377,11 +410,72 @@
       "im done working",
       "normal mode",
       "chill mode"
-    ]
+    ],
+    "action_id": "mic.state",
+    "action_args": {
+      "action": "attention_off"
+    }
+  },
+  "system_check_updates": {
+    "priority_words": [
+      "check",
+      "search",
+      "updates"
+    ],
+    "templates": [
+      "check for updates",
+      "search for updates",
+      "are there any updates",
+      "look for updates",
+      "do i have updates"
+    ],
+    "action_id": "updates.check"
+  },
+  "system_update_all": {
+    "priority_words": [
+      "update",
+      "everything",
+      "all"
+    ],
+    "templates": [
+      "update everything",
+      "update all",
+      "install all updates",
+      "do all updates"
+    ],
+    "action_id": "updates.force_all"
+  },
+  "system_update_apps": {
+    "priority_words": [
+      "update",
+      "apps",
+      "software",
+      "programs"
+    ],
+    "templates": [
+      "update my apps",
+      "update my software",
+      "update my programs",
+      "install app updates"
+    ],
+    "action_id": "unknown"
+  },
+  "system_update_drivers": {
+    "priority_words": [
+      "update",
+      "drivers",
+      "hardware",
+      "windows"
+    ],
+    "templates": [
+      "update my drivers",
+      "update windows",
+      "install driver updates",
+      "check my drivers"
+    ],
+    "action_id": "unknown"
   },
   "system_mode_debug": {
-    "target_topic": "jarvis/sys/state_change",
-    "action_override": "debug",
     "priority_words": [
       "debug",
       "mode"
@@ -390,11 +484,13 @@
       "change to debug mode",
       "set mode to debug",
       "debug mode"
-    ]
+    ],
+    "action_id": "state.change",
+    "action_args": {
+      "action": "debug"
+    }
   },
   "system_mode_normal": {
-    "target_topic": "jarvis/sys/state_change",
-    "action_override": "normal",
     "priority_words": [
       "normal",
       "mode",
@@ -404,11 +500,13 @@
       "change to normal mode",
       "set mode to normal",
       "normal mode"
-    ]
+    ],
+    "action_id": "state.change",
+    "action_args": {
+      "action": "normal"
+    }
   },
   "system_mode_background": {
-    "target_topic": "jarvis/sys/state_change",
-    "action_override": "background",
     "priority_words": [
       "background",
       "mode",
@@ -421,11 +519,13 @@
       "background mode",
       "stealth mode",
       "silent mode"
-    ]
+    ],
+    "action_id": "state.change",
+    "action_args": {
+      "action": "background"
+    }
   },
   "jarvis_reminder_set": {
-    "target_topic": "jarvis/sys/reminder/create",
-    "action_override": "create",
     "priority_words": [
       "remind",
       "reminder",
@@ -447,51 +547,42 @@
       "remember me in {time}",
       "remember {task} for {time}",
       "remember {task} in {time}"
-    ]
+    ],
+    "action_id": "reminder.create"
   },
   "system_followup_on": {
-    "target_topic": "jarvis/sys/control",
-    "action_override": "followup_on",
     "priority_words": [
-      "enable",
+      "follow",
       "followup",
-      "conversational",
-      "mode"
+      "follow-up"
     ],
     "templates": [
-      "enable conversational mode",
-      "enable followup mode",
-      "turn on followup mode",
-      "enable followups",
-      "conversational mode on",
-      "start followups"
-    ]
+      "enable followup",
+      "turn on followups",
+      "enable follow ups"
+    ],
+    "action_id": "state.daemon",
+    "action_args": {
+      "action": "followup_on"
+    }
   },
   "system_followup_off": {
-    "target_topic": "jarvis/sys/control",
-    "action_override": "followup_off",
     "priority_words": [
-      "disable",
+      "follow",
       "followup",
-      "conversational",
-      "mode",
-      "off"
+      "follow-up"
     ],
     "templates": [
-      "disable conversational mode",
-      "disable followup mode",
-      "follow up disabled",
-      "follow up off",
-      "follow ups off",
-      "turn off followup mode",
-      "disable followups",
-      "conversational mode off",
-      "stop followups"
-    ]
+      "disable follow up",
+      "turn off follow up",
+      "disable followups"
+    ],
+    "action_id": "state.daemon",
+    "action_args": {
+      "action": "followup_off"
+    }
   },
   "system_silent_mode_on": {
-    "target_topic": "jarvis/sys/control",
-    "action_override": "silent_mode_on",
     "priority_words": [
       "silent",
       "silence",
@@ -516,11 +607,13 @@
       "mute responses",
       "silent mode on",
       "silence mode on"
-    ]
+    ],
+    "action_id": "state.daemon",
+    "action_args": {
+      "action": "silent_mode_on"
+    }
   },
   "system_silent_mode_off": {
-    "target_topic": "jarvis/sys/control",
-    "action_override": "silent_mode_off",
     "priority_words": [
       "silent",
       "silence",
@@ -546,11 +639,13 @@
       "unmute responses",
       "silent mode off",
       "silence mode off"
-    ]
+    ],
+    "action_id": "state.daemon",
+    "action_args": {
+      "action": "silent_mode_off"
+    }
   },
   "system_silent_mode_toggle": {
-    "target_topic": "jarvis/sys/control",
-    "action_override": "toggle_silent_mode",
     "priority_words": [
       "toggle",
       "silent",
@@ -561,11 +656,13 @@
       "toggle silence mode",
       "silent mode",
       "silence mode"
-    ]
+    ],
+    "action_id": "state.daemon",
+    "action_args": {
+      "action": "toggle_silent_mode"
+    }
   },
   "system_light_list": {
-    "target_topic": "system/discovery",
-    "action_override": "list_saved",
     "priority_words": [
       "list",
       "saved",
@@ -581,11 +678,13 @@
       "list the lights",
       "list lights",
       "what are the saved lights"
-    ]
+    ],
+    "action_id": "system.discovery",
+    "action_args": {
+      "action": "list_saved"
+    }
   },
   "system_light_rename": {
-    "target_topic": "system/discovery",
-    "action_override": "intent_rename_light",
     "priority_words": [
       "rename",
       "change"
@@ -595,11 +694,13 @@
       "rename light {target_str}",
       "change {target_str}",
       "change light {target_str}"
-    ]
+    ],
+    "action_id": "system.discovery",
+    "action_args": {
+      "action": "intent_rename_light"
+    }
   },
   "system_light_delete": {
-    "target_topic": "system/discovery",
-    "action_override": "intent_remove_light",
     "priority_words": [
       "delete light",
       "remove light",
@@ -611,11 +712,13 @@
       "forget light {target_str}",
       "delete device {target_str}",
       "remove device {target_str}"
-    ]
+    ],
+    "action_id": "system.discovery",
+    "action_args": {
+      "action": "intent_remove_light"
+    }
   },
   "system_light_default": {
-    "target_topic": "system/discovery",
-    "action_override": "intent_set_default_light",
     "priority_words": [
       "set",
       "default"
@@ -626,11 +729,13 @@
       "make default {target_str}",
       "make default light {target_str}",
       "set default light to {target_str}"
-    ]
+    ],
+    "action_id": "system.discovery",
+    "action_args": {
+      "action": "intent_set_default_light"
+    }
   },
   "system_reminder_list": {
-    "target_topic": "jarvis/sys/reminder/control",
-    "action_override": "list",
     "priority_words": [
       "list",
       "show",
@@ -641,11 +746,10 @@
       "show my reminders",
       "what are my reminders",
       "do i have any reminders"
-    ]
+    ],
+    "action_id": "reminder.list"
   },
   "system_reminder_delete": {
-    "target_topic": "jarvis/sys/reminder/control",
-    "action_override": "intent_delete_reminder",
     "priority_words": [
       "delete",
       "remove",
@@ -655,39 +759,10 @@
       "delete reminder",
       "cancel reminder",
       "remove reminder"
-    ]
-  },
-  "system_followup_on": {
-    "target_topic": "jarvis/sys/daemon_control",
-    "action_override": "followup_on",
-    "priority_words": [
-      "follow",
-      "followup",
-      "follow-up"
     ],
-    "templates": [
-      "enable followup",
-      "turn on followups",
-      "enable follow ups"
-    ]
-  },
-  "system_followup_off": {
-    "target_topic": "jarvis/sys/daemon_control",
-    "action_override": "followup_off",
-    "priority_words": [
-      "follow",
-      "followup",
-      "follow-up"
-    ],
-    "templates": [
-      "disable follow up",
-      "turn off follow up",
-      "disable followups"
-    ]
+    "action_id": "reminder.delete"
   },
   "ui_fullscreen": {
-    "target_topic": "jarvis/sys/ui_control",
-    "action_override": "set_fullscreen",
     "priority_words": [
       "fullscreen",
       "maximize"
@@ -703,11 +778,10 @@
       "maximize",
       "turn on full screen mode",
       "turn on fullscreen mode"
-    ]
+    ],
+    "action_id": "ui.fullscreen"
   },
   "ui_overlay": {
-    "target_topic": "jarvis/sys/ui_control",
-    "action_override": "set_overlay",
     "priority_words": [
       "overlay",
       "minimize"
@@ -720,11 +794,10 @@
       "return to overlay",
       "switch to overlay",
       "switch to overlay mode"
-    ]
+    ],
+    "action_id": "ui.overlay"
   },
   "alarm_create": {
-    "target_topic": "jarvis/sys/alarm/create",
-    "action_override": "create",
     "priority_words": [
       "alarm",
       "wake"
@@ -743,11 +816,10 @@
       "alarm at {time_str}",
       "wake me up at {time_str}",
       "wake me up in {time_str}"
-    ]
+    ],
+    "action_id": "alarm.create"
   },
   "alarm_cancel": {
-    "target_topic": "jarvis/sys/alarm/control",
-    "action_override": "intent_delete_alarm",
     "priority_words": [
       "delete alarm"
     ],
@@ -756,11 +828,13 @@
       "delete my alarm",
       "delete alarm",
       "remove alarm"
-    ]
+    ],
+    "action_id": "alarm.control",
+    "action_args": {
+      "action": "delete"
+    }
   },
   "alarm_list": {
-    "target_topic": "jarvis/sys/alarm/control",
-    "action_override": "list",
     "priority_words": [
       "alarms",
       "show alarms"
@@ -771,11 +845,13 @@
       "what are my alarms",
       "show alarms",
       "list alarms"
-    ]
+    ],
+    "action_id": "alarm.control",
+    "action_args": {
+      "action": "list"
+    }
   },
   "alarm_delete_all": {
-    "target_topic": "jarvis/sys/alarm/control",
-    "action_override": "delete_all",
     "priority_words": [
       "delete all alarms",
       "cancel all alarms",
@@ -790,11 +866,13 @@
       "clear all my alarms",
       "remove all alarms",
       "remove all my alarms"
-    ]
+    ],
+    "action_id": "alarm.control",
+    "action_args": {
+      "action": "delete_all"
+    }
   },
   "alarm_deactivate": {
-    "target_topic": "jarvis/sys/alarm/deactivate",
-    "action_override": "stop",
     "priority_words": [
       "stop alarm",
       "turn off alarm",
@@ -809,11 +887,13 @@
       "dismiss alarm",
       "deactivate alarm",
       "i am awake"
-    ]
+    ],
+    "action_id": "alarm.control",
+    "action_args": {
+      "action": "stop"
+    }
   },
   "todo_add": {
-    "target_topic": "jarvis/sys/todo/create",
-    "action_override": "create",
     "priority_words": [
       "add to todo list",
       "add to to-do list",
@@ -827,11 +907,10 @@
       "add {task} to the to-do list",
       "add to the todo list {task}",
       "add to my todo list {task}"
-    ]
+    ],
+    "action_id": "todo.create"
   },
   "todo_list": {
-    "target_topic": "jarvis/sys/todo/control",
-    "action_override": "list",
     "priority_words": [
       "todo list",
       "to-do list",
@@ -842,11 +921,10 @@
       "what is on my todo list",
       "read my todo list",
       "list my todos"
-    ]
+    ],
+    "action_id": "todo.list"
   },
   "calendar_add": {
-    "target_topic": "jarvis/sys/calendar/create",
-    "action_override": "create",
     "priority_words": [
       "schedule",
       "add to calendar",
@@ -858,11 +936,10 @@
       "schedule {event} for {time_str}",
       "add an event for {time_str}",
       "schedule {event}"
-    ]
+    ],
+    "action_id": "calendar.create"
   },
   "calendar_read": {
-    "target_topic": "jarvis/sys/calendar/request",
-    "action_override": "read",
     "priority_words": [
       "my schedule",
       "on the calendar",
@@ -874,6 +951,23 @@
       "what do i have today",
       "read my schedule",
       "do i have any events today"
+    ],
+    "action_id": "calendar.read"
+  },
+  "system_show_logs": {
+    "action_id": "system.show_logs",
+    "templates": [
+      "show the logs",
+      "open the logs",
+      "show me the logs",
+      "open logs",
+      "view live logs",
+      "show live logs",
+      "display logs",
+      "debug logs"
+    ],
+    "priority_words": [
+      "logs"
     ]
   }
 }

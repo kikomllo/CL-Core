@@ -11,6 +11,9 @@ import dateparser.search
 import re
 
 import sys
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..' if 'src' in __file__ else 'src'))
 from utils.clLogging import setup_logging
 setup_logging('CLUTILITIES')
@@ -34,6 +37,20 @@ class JarvisUtilities:
         time_str = scheduled_time.strftime('%Y-%m-%d %H:%M:%S')
         trigger_script = os.path.abspath(os.path.join(BASE_DIR, "utils", script_name))
         
+        if sys.platform == 'win32':
+            sleep_sec = max(0.0, (scheduled_time - datetime.now()).total_seconds())
+            cmd = [
+                sys.executable, "-c",
+                f"import time, subprocess, sys; time.sleep({sleep_sec}); subprocess.run([sys.executable, {repr(trigger_script)}, {repr(item_id)}])"
+            ]
+            try:
+                subprocess.Popen(cmd, creationflags=subprocess.CREATE_NO_WINDOW)
+                logging.info(f"Windows background timer scheduled for {time_str} (ID: {item_id})")
+                return True
+            except Exception as e:
+                logging.error(f"Failed to schedule Windows timer: {e}")
+                return False
+
         cmd = [
             "systemd-run", 
             "--user", 
@@ -65,6 +82,7 @@ class JarvisUtilities:
                     await client.subscribe("jarvis/sys/calendar/create")
                     await client.subscribe("jarvis/sys/calendar/request")
                     await client.subscribe("jarvis/sys/calendar/control")
+                    await client.publish("jarvis/sys/module_ready", json.dumps({"module": "utilities"}))
                     
                     async for message in client.messages:
                         topic = message.topic.value
@@ -304,11 +322,29 @@ class JarvisUtilities:
             
         reminder_id = payload.get("reminder_id", str(int(time.time())))
         
-        audio_dest = os.path.abspath(tmp_audio_path) if tmp_audio_path else ""
-        if audio_dest and os.path.exists(audio_dest):
-            logging.info(f"Verified reminder audio at {audio_dest}")
-        else:
-            audio_dest = os.path.join(REMINDERS_DIR, f"{reminder_id}.mp3")
+        audio_dest = os.path.join(REMINDERS_DIR, f"{reminder_id}.mp3")
+        copied_user_audio = False
+        fallback_reason = "No audio_path provided in payload"
+        
+        if tmp_audio_path:
+            if os.path.exists(tmp_audio_path):
+                ext = os.path.splitext(tmp_audio_path)[1]
+                if ext:
+                    audio_dest = os.path.join(REMINDERS_DIR, f"{reminder_id}{ext}")
+                try:
+                    import shutil
+                    shutil.copy2(tmp_audio_path, audio_dest)
+                    logging.info(f"Copied user audio from {tmp_audio_path} to {audio_dest}")
+                    copied_user_audio = True
+                except Exception as e:
+                    fallback_reason = f"Failed to copy user audio: {e}"
+                    logging.error(fallback_reason)
+                    audio_dest = os.path.join(REMINDERS_DIR, f"{reminder_id}.mp3")
+            else:
+                fallback_reason = f"Provided audio_path does not exist: {tmp_audio_path}"
+        
+        if not copied_user_audio:
+            logging.info(f"[TTS FALLBACK] Generating TTS for reminder. Reason: {fallback_reason}")
             try:
                 import edge_tts
                 tts_text = f"Sir, reminder: {reminder_text}"
@@ -354,6 +390,7 @@ class JarvisUtilities:
         todo_data = {
             "id": todo_id,
             "task": task,
+            "list_name": payload.get("list_name", "My To-Do List"),
             "time_created": datetime.now().isoformat(),
             "completed": False
         }
