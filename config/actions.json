@@ -1,0 +1,223 @@
+{
+  "system": {
+    "abort": {
+      "topic": "jarvis/sys/abort",
+      "payload": {"action": "abort"}
+    },
+    "shutdown": {
+      "topic": "jarvis/sys/manager",
+      "payload": {"action": "shutdown"}
+    },
+    "show_logs": {
+      "topic": "jarvis/sys/ui_control",
+      "payload": {"action": "show_logs"}
+    },
+    "restart_module": {
+      "topic": "jarvis/sys/manager",
+      "payload": {"action": "restart_module"},
+      "schema": {
+        "target": {"type": "string", "required": true}
+      }
+    },
+    "restart_all": {
+      "topic": "jarvis/sys/manager",
+      "payload": {"action": "restart_all_modules"}
+    },
+    "speak": {
+      "topic": "jarvis/sys/speak",
+      "schema": {
+        "text": {"type": "string", "required": true},
+        "skip_ducking": {"type": "boolean", "default": false},
+        "request_reply": {"type": "boolean", "default": false}
+      }
+    },
+    "play_audio": {
+      "topic": "jarvis/sys/play_audio",
+      "schema": {
+        "path": {"type": "string", "required": true}
+      }
+    }
+  },
+  "ui": {
+    "fullscreen": {
+      "topic": "jarvis/sys/ui_control",
+      "payload": {"action": "set_fullscreen"}
+    },
+    "overlay": {
+      "topic": "jarvis/sys/ui_control",
+      "payload": {"action": "set_overlay"}
+    },
+    "options": {
+      "topic": "jarvis/sys/ui_options",
+      "schema": {
+        "title": {"type": "string", "required": true},
+        "options": {"type": "array", "required": true},
+        "context": {"type": "object", "required": true}
+      }
+    }
+  },
+  "mic": {
+    "ptt_start": {
+      "topic": "jarvis/sys/mic_control",
+      "payload": {"action": "ptt_start"}
+    },
+    "ptt_stop": {
+      "topic": "jarvis/sys/mic_control",
+      "payload": {"action": "ptt_stop"}
+    },
+    "state": {
+      "topic": "jarvis/sys/mic_control",
+      "schema": {
+        "action": {"type": "string", "required": true}
+      }
+    }
+  },
+  "todo": {
+    "list": {
+      "topic": "jarvis/sys/todo/request",
+      "payload": {"action": "list"}
+    },
+    "create": {
+      "topic": "jarvis/sys/todo/create",
+      "schema": {
+        "task": {"type": "string", "required": true},
+        "list_name": {"type": "string", "default": "My To-Do List"}
+      }
+    },
+    "complete": {
+      "topic": "jarvis/sys/todo/control",
+      "payload": {"action": "complete"},
+      "schema": {
+        "id": {"type": "string", "required": true}
+      }
+    },
+    "delete": {
+      "topic": "jarvis/sys/todo/control",
+      "payload": {"action": "delete"},
+      "schema": {
+        "id": {"type": "string", "required": true}
+      }
+    }
+  },
+  "light": {
+    "set": {
+      "topic": "home/room/all/set",
+      "schema": {
+        "action": {"type": "string", "required": true},
+        "light_target": {"type": "string", "default": "all"},
+        "silent": {"type": "boolean", "default": false},
+        "target_str": {"type": "string"},
+        "color": {"type": "string"},
+        "lum": {"type": "integer"}
+      }
+    }
+  },
+  "spotify": {
+    "control": {
+      "topic": "pc/spotify/control",
+      "schema": {
+        "action": {"type": "string", "required": true},
+        "silent": {"type": "boolean", "default": false},
+        "track_name": {"type": "string"},
+        "artist_name": {"type": "string"},
+        "playlist_name": {"type": "string"},
+        "search_query": {"type": "string"},
+        "volume": {"type": "integer"}
+      }
+    }
+  },
+  "updates": {
+    "check": {
+      "topic": "jarvis/sys/updates",
+      "payload": {"action": "check"}
+    },
+    "force_all": {
+      "topic": "jarvis/sys/updates",
+      "payload": {"action": "force_all"}
+    },
+    "individual": {
+      "topic": "jarvis/sys/updates",
+      "payload": {"action": "update_individual"},
+      "schema": {
+        "id": {"type": "string", "required": true}
+      }
+    }
+  },
+  "state": {
+    "daemon": {
+      "topic": "jarvis/sys/daemon_control",
+      "schema": { "action": {"type": "string", "required": true} }
+    },
+    "change": {
+      "topic": "jarvis/sys/state_change",
+      "schema": { "action": {"type": "string", "required": true} }
+    }
+  },
+  "calendar": {
+    "read": {
+      "topic": "jarvis/sys/calendar/request",
+      "payload": {"action": "read"}
+    },
+    "create": {
+      "topic": "jarvis/sys/calendar/create",
+      "schema": {
+        "title": {"type": "string"},
+        "time": {"type": "string"},
+        "am_pm": {"type": "string"},
+        "day": {"type": "string"},
+        "date": {"type": "string"}
+      }
+    },
+    "delete": {
+      "topic": "jarvis/sys/calendar/control",
+      "payload": {"action": "delete"},
+      "schema": { "id": {"type": "string", "required": true} }
+    }
+  },
+  "reminder": {
+    "create": {
+      "topic": "jarvis/sys/reminder/create",
+      "schema": {
+        "text": {"type": "string"},
+        "time": {"type": "string"},
+        "am_pm": {"type": "string"},
+        "audio_path": {"type": "string"}
+      }
+    },
+    "delete": {
+      "topic": "jarvis/sys/reminder/control",
+      "payload": {"action": "delete"},
+      "schema": { "id": {"type": "string", "required": true} }
+    }
+  },
+  "voice": {
+    "submit": {
+      "topic": "jarvis/sensor/voice",
+      "schema": {
+        "text": {"type": "string", "required": true}
+      }
+    }
+  },
+  "alarm": {
+    "create": {
+      "topic": "jarvis/sys/alarm/create",
+      "schema": {
+        "time_str": {"type": "string", "required": true},
+        "am_pm": {"type": "string"}
+      }
+    },
+    "control": {
+      "topic": "jarvis/sys/alarm/control",
+      "schema": {
+        "action": {"type": "string", "required": true},
+        "id": {"type": "string"}
+      }
+    },
+    "ring": {
+      "topic": "jarvis/sys/alarm/ring",
+      "schema": {
+        "id": {"type": "string", "required": true}
+      }
+    }
+  }
+}

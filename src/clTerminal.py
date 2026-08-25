@@ -367,6 +367,7 @@ async def mqtt_service_listener(manager: TerminalManager) -> None:
         try:
             async with aiomqtt.Client("localhost") as mqtt_client:
                 await mqtt_client.subscribe("pc/system/control")
+                await mqtt_client.publish("jarvis/sys/module_ready", json.dumps({"module": "terminal"}))
                 async for message in mqtt_client.messages:
                     try:
                         payload = json.loads(message.payload.decode('utf-8'))
@@ -437,18 +438,6 @@ def main():
 
         try:
             asyncio.run(main_loop())
-        except KeyboardInterrupt:
-            logging.info("Exiting Service Mode.")
-
-if __name__ == "__main__":
-    main()ync def run_services():
-            await asyncio.gather(
-                mqtt_service_listener(manager),
-                poll_media_status(manager)
-            )
-            
-        try:
-            asyncio.run(run_services())
         except KeyboardInterrupt:
             logging.info("Exiting Service Mode.")
 

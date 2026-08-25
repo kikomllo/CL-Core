@@ -135,13 +135,22 @@
     "Can i put my balls in your jaws": {
       "action": "play",
       "target_topic": "pc/spotify/control",
-      "track_name": "Balls In Your Jaws",
-      "artist_name": "Billy Sick"
+      "payload": {
+        "search_query": "Balls In Your Jaws - Billy Sick"
+      }
     },
     "you know what time it is": "Its time to smoke bay b",
     "is arthur gay": "Yes, he is very gay",
     "call lucy": "How about I call your mother instead, Uhm? If it's you Estriga, scratch my balls",
     "scratch my balls": "Beginning the scratching in 3... 2... 1... Scratching in progress sir, hope you like it.",
-    "get ready to work": "Locked and loaded sir, what can I do for you"
+    "get ready to work": "Locked and loaded sir, what can I do for you",
+    "roll me a joint": {
+      "action": "play",
+      "target_topic": "pc/spotify/control",
+      "payload": {
+        "search_query": "Snoop Dogg - Smoke Weed Everyday"
+      },
+      "text": "Rolling it up right now sir."
+    }
   }
 }

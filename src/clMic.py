@@ -59,9 +59,9 @@ class VoiceSensor:
     CHUNK: int = 1280
     MAX_RECORD_SECONDS: int = 10
     INITIAL_SILENCE_SECONDS: float = 3.0
-    SILENCE_LIMIT_SECONDS: float = 0.8
+    SILENCE_LIMIT_SECONDS: float = 2.5
 
-    MIN_BASELINE: int = 850              
+    MIN_BASELINE: int = 100              
     VOICE_ACT_BUFFER: float = 1.40  
     SILENCE_CUT_BUFFER: float = 1.25    
     MAX_CEILING_BUFFER: float = 3.00        
@@ -242,14 +242,31 @@ class VoiceSensor:
     def _calculate_thresholds(self) -> Tuple[float, float, float]:
         if len(self.ambient_noise_buffer) > 10:
             true_background = list(self.ambient_noise_buffer)[:-5]
-            baseline = float(np.percentile(true_background, 75))
+            raw_baseline = float(np.percentile(true_background, 75))
+            noise_std = float(np.std(true_background))
         else:
-            baseline = float(np.percentile(self.ambient_noise_buffer, 75)) if self.ambient_noise_buffer else float(self.MIN_BASELINE)
+            raw_baseline = float(np.percentile(self.ambient_noise_buffer, 75)) if self.ambient_noise_buffer else float(self.MIN_BASELINE)
+            noise_std = 0.0
             
-        baseline = max(baseline, self.MIN_BASELINE)
+        baseline = max(raw_baseline, self.MIN_BASELINE)
         
-        act_mod = self.VOICE_ACT_BUFFER
-        sil_mod = self.SILENCE_CUT_BUFFER
+        # Dynamic gap scaling based on how loud the mic naturally is
+        # Quiet mics get tighter gaps so they can still capture audio.
+        # Loud mics scale up to the user's custom high buffers to prevent random noise.
+        loudness_factor = min(max((raw_baseline - 300.0) / 1700.0, 0.0), 1.0)
+        
+        base_act_mod = 1.15
+        base_sil_mod = 1.05
+        
+        act_mod = base_act_mod + (loudness_factor * (self.VOICE_ACT_BUFFER - base_act_mod))
+        sil_mod = base_sil_mod + (loudness_factor * (self.SILENCE_CUT_BUFFER - base_sil_mod))
+        
+        # Increase gap slightly if the background noise is erratic (high variance)
+        cv = (noise_std / raw_baseline) if raw_baseline > 0 else 0
+        if cv > 0.1:
+            act_mod += min((cv - 0.1) * 0.5, 0.2)
+            sil_mod += min((cv - 0.1) * 0.3, 0.15)
+            
         ceil_mod = self.MAX_CEILING_BUFFER
         
         if self.attention_mode:
@@ -404,6 +421,7 @@ class VoiceSensor:
             time.sleep(0.2)
         
         logging.info(f"--- SYSTEM READY: Listening for '{self.target_word}' ---")
+        self._publish("jarvis/sys/module_ready", {"module": "mic"})
 
         while True:
             if self.tts_busy:

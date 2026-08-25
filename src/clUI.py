@@ -10,6 +10,7 @@ from datetime import datetime
 import paho.mqtt.publish as publish
 from PyQt6.QtGui import QPainter, QColor, QPen, QPainterPath, QRadialGradient, QBrush, QLinearGradient
 from PyQt6.QtGui import QPainter, QColor, QPen, QPainterPath, QRadialGradient, QBrush, QLinearGradient
+from utils.clActionRouter import ActionRouter
 
 from ui.clMediaWidget import MediaWidget
 from ui.clLightControlWidget import LightControlWidget
@@ -17,8 +18,22 @@ from ui.clReminderWidget import ReminderWidget
 from ui.clTodoWidget import TodoWidget
 from ui.clDashboardDrawer import DashboardDrawer
 from ui.clSettingsWidget import SettingsWidget
+from ui.clUpdateWidget import UpdateWidget
+from ui.clLogWidget import LogWidget
 
-os.environ["QT_QPA_PLATFORM"] = "xcb"
+import platform
+if platform.system() != "Windows":
+    os.environ["QT_QPA_PLATFORM"] = "xcb"
+else:
+    import ctypes
+    from ctypes import wintypes
+    class RECT(ctypes.Structure):
+        _fields_ = [
+            ("left", wintypes.LONG),
+            ("top", wintypes.LONG),
+            ("right", wintypes.LONG),
+            ("bottom", wintypes.LONG),
+        ]
 
 import logging
 from utils.clLogging import setup_logging
@@ -45,8 +60,10 @@ class MqttThread(QThread):
     todo_status_signal = pyqtSignal(dict)
     calendar_status_signal = pyqtSignal(dict)
     
-    def __init__(self):
+    def __init__(self, mode="overlay"):
         super().__init__()
+        self.router = ActionRouter()
+        self.mode = mode
         self.tts_active = False
         self.mic_active = "IDLE"
         self.processing_active = False
@@ -104,6 +121,7 @@ class MqttThread(QThread):
         client.subscribe("jarvis/feedback")
         client.subscribe("jarvis/sys/todo/status")
         client.subscribe("jarvis/sys/calendar/status")
+        client.publish("jarvis/sys/module_ready", json.dumps({"module": "ui"}), retain=False)
         
     def on_message(self, client, userdata, msg):
         topic = msg.topic
@@ -575,16 +593,21 @@ class JarvisVisualizer(QWidget):
 class JarvisUI(QWidget):
     def __init__(self):
         super().__init__()
+        self.router = ActionRouter()
         
-        self.setWindowFlags(
+        flags = (
             Qt.WindowType.FramelessWindowHint | 
             Qt.WindowType.WindowStaysOnTopHint | 
-            Qt.WindowType.Tool |
-            Qt.WindowType.WindowTransparentForInput
+            Qt.WindowType.Tool
         )
+        if sys.platform != "win32":
+            flags |= Qt.WindowType.WindowTransparentForInput
+            
+        self.setWindowFlags(flags)
         
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        if sys.platform != "win32":
+            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         
         primary_screen = QApplication.primaryScreen()
@@ -606,6 +629,12 @@ class JarvisUI(QWidget):
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_animation)
         self.timer.start(1000 // 60)
+        
+        if sys.platform == "win32":
+            self.occlusion_timer = QTimer(self)
+            self.occlusion_timer.timeout.connect(self._check_occlusion)
+            self.occlusion_timer.start(250)
+            self._last_fg_hwnd = 0
         
         self.pending_options = None
         self.options_debounce_timer = QTimer(self)
@@ -658,13 +687,13 @@ class JarvisUI(QWidget):
 
         self.btn_media = QPushButton("MUSIC", self)
         self.btn_media.setStyleSheet(btn_style)
-        self.btn_media.setFixedSize(80, 35)
+        self.btn_media.setFixedSize(100, 35)
         self.btn_media.clicked.connect(self._toggle_media)
         self.btn_media.hide()
         
         self.btn_lights = QPushButton("LIGHTS", self)
         self.btn_lights.setStyleSheet(btn_style)
-        self.btn_lights.setFixedSize(80, 35)
+        self.btn_lights.setFixedSize(100, 35)
         self.btn_lights.clicked.connect(self._toggle_lights)
         self.btn_lights.hide()
         
@@ -676,15 +705,27 @@ class JarvisUI(QWidget):
         
         self.btn_todos = QPushButton("TODOS", self)
         self.btn_todos.setStyleSheet(btn_style)
-        self.btn_todos.setFixedSize(80, 35)
+        self.btn_todos.setFixedSize(100, 35)
         self.btn_todos.clicked.connect(self._toggle_todos)
         self.btn_todos.hide()
         
         self.btn_settings = QPushButton("SETTINGS", self)
         self.btn_settings.setStyleSheet(btn_style)
-        self.btn_settings.setFixedSize(90, 35)
+        self.btn_settings.setFixedSize(100, 35)
         self.btn_settings.clicked.connect(self._toggle_settings)
         self.btn_settings.hide()
+        
+        self.btn_updates = QPushButton("UPDATES", self)
+        self.btn_updates.setStyleSheet(btn_style)
+        self.btn_updates.setFixedSize(100, 35)
+        self.btn_updates.clicked.connect(self._toggle_updates)
+        self.btn_updates.hide()
+        
+        self.btn_debug = QPushButton("DEBUG", self)
+        self.btn_debug.setStyleSheet(btn_style)
+        self.btn_debug.setFixedSize(100, 35)
+        self.btn_debug.clicked.connect(self._toggle_debug)
+        self.btn_debug.hide()
         
         self.btn_calendar = QPushButton("❮", self)
         self.btn_calendar.setStyleSheet("QPushButton { background-color: rgba(255, 150, 0, 40); color: #ffaa00; border-radius: 5px; font-weight: bold; border: 1px solid rgba(255, 150, 0, 80); } QPushButton:hover { background-color: rgba(255, 150, 0, 80); }")
@@ -717,6 +758,41 @@ class JarvisUI(QWidget):
         self.mqtt_thread.todo_status_signal.connect(self._handle_todo_status)
         self.mqtt_thread.calendar_status_signal.connect(self._handle_calendar_data)
         self.mqtt_thread.start()
+
+    def _check_occlusion(self):
+        if not getattr(self, 'is_fullscreen', False):
+            return
+            
+        import time
+        import ctypes
+        user32 = ctypes.windll.user32
+        
+        hwnd = user32.GetForegroundWindow()
+        if hwnd == 0:
+            return
+            
+        if time.time() < getattr(self, '_occlusion_disabled_until', 0):
+            self._last_fg_hwnd = hwnd
+            return
+            
+        if hwnd == int(self.winId()):
+            self._last_fg_hwnd = hwnd
+            return
+            
+        if hwnd == getattr(self, '_last_fg_hwnd', 0):
+            return
+            
+        rect = RECT()
+        if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            fg_rect = QRect(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
+            # Windows 10/11 maximized windows bleed ~8 pixels into adjacent monitors to hide borders.
+            # We shrink the foreground rect by 15 pixels to prevent cross-monitor false positives.
+            shrunk_rect = fg_rect.adjusted(15, 15, -15, -15)
+            if self.geometry().intersects(shrunk_rect):
+                self._last_fg_hwnd = hwnd
+                self.set_ui_mode("set_overlay")
+            else:
+                self._last_fg_hwnd = hwnd
 
     def _handle_feedback(self, data):
         device = data.get("device")
@@ -751,12 +827,7 @@ class JarvisUI(QWidget):
             if widget_id not in self.active_widgets:
                 light_widget = LightControlWidget()
                 self.spawn_widget(widget_id, "Smart Lights", light_widget)
-                import paho.mqtt.publish as publish
-                import json
-                try:
-                    publish.single("home/room/all/set", json.dumps({"action": "refresh_lights", "light_target": "all"}), hostname="localhost", qos=0)
-                except:
-                    pass
+                self.router.dispatch("light.set", action="refresh_lights", light_target="all")
             else:
                 w = self.active_widgets[widget_id]
                 if w.isHidden():
@@ -804,6 +875,36 @@ class JarvisUI(QWidget):
                 else:
                     self.close_draggable_widget(widget_id)
 
+    def _toggle_updates(self):
+        if getattr(self, 'is_fullscreen', False):
+            widget_id = "widget_updates"
+            if widget_id not in self.active_widgets:
+                update_widget = UpdateWidget()
+                self.spawn_widget(widget_id, "System Updates", update_widget)
+            else:
+                w = self.active_widgets[widget_id]
+                if w.isHidden():
+                    w.show()
+                    w.raise_()
+                    self.save_ui_state()
+                else:
+                    self.close_draggable_widget(widget_id)
+
+    def _toggle_debug(self):
+        widget_id = "widget_debug_logs"
+        if widget_id not in self.active_widgets:
+            parent = self if getattr(self, 'is_fullscreen', False) else None
+            log_widget = LogWidget(parent)
+            self.spawn_widget(widget_id, "Live Logs", log_widget)
+        else:
+            w = self.active_widgets[widget_id]
+            if w.isHidden():
+                w.show()
+                w.raise_()
+                self.save_ui_state()
+            else:
+                self.close_draggable_widget(widget_id)
+
     def _toggle_calendar(self):
         if not getattr(self, 'is_fullscreen', False):
             return
@@ -838,10 +939,8 @@ class JarvisUI(QWidget):
             
             self.calendar_is_open = True
             
-            import paho.mqtt.publish as publish
-            import json
             try:
-                publish.single("jarvis/sys/calendar/request", json.dumps({"action": "read"}), hostname="localhost", qos=0)
+                self.router.dispatch("calendar.read")
             except: pass
         else:
             # Close drawer
@@ -903,6 +1002,22 @@ class JarvisUI(QWidget):
                 wrapper = self.active_widgets["widget_todo_list"]
                 if hasattr(wrapper, "content_widget") and hasattr(wrapper.content_widget, "task_input"):
                     wrapper.content_widget.task_input.hide()
+                    
+            if sys.platform == "win32":
+                import ctypes
+                from PyQt6.QtCore import QRect
+                user32 = ctypes.windll.user32
+                hwnd = user32.GetForegroundWindow()
+                if hwnd != 0 and hwnd != int(self.winId()):
+                    class RECT(ctypes.Structure):
+                        _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+                    rect = RECT()
+                    if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                        fg_rect = QRect(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
+                        shrunk_rect = fg_rect.adjusted(15, 15, -15, -15)
+                        if self.geometry().intersects(shrunk_rect):
+                            self._last_fg_hwnd = hwnd
+                            self.set_ui_mode("set_overlay")
         else:
             self.text_input.show()
             self.text_input.activateWindow()
@@ -912,6 +1027,11 @@ class JarvisUI(QWidget):
     def update_ecosystem_state(self, new_state):
         global ECOSYSTEM_STATE
         ECOSYSTEM_STATE = new_state
+        if getattr(self, 'is_fullscreen', False) and hasattr(self, 'btn_debug'):
+            if ECOSYSTEM_STATE == "debug":
+                self.btn_debug.show()
+            else:
+                self.btn_debug.hide()
         self.update()
         
     def resizeEvent(self, event):
@@ -1013,13 +1133,23 @@ class JarvisUI(QWidget):
                 w.show()
                 w.raise_()
             return
-            
-        wrapper = DraggableWidget(widget_id, title, content_widget, closable=True, parent=self)
+        is_standalone = not self.is_fullscreen
+        parent = None if is_standalone else self
+        wrapper = DraggableWidget(widget_id, title, content_widget, closable=True, parent=parent)
         
         # Position in center of screen by default
-        cx = (self.width() - content_widget.sizeHint().width()) // 2
-        cy = (self.height() - content_widget.sizeHint().height()) // 2
-        wrapper.move(cx, cy)
+        if is_standalone:
+            wrapper.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+            wrapper.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            
+            screen_geom = self.screen().geometry()
+            cx = screen_geom.x() + (screen_geom.width() - content_widget.sizeHint().width()) // 2
+            cy = screen_geom.y() + (screen_geom.height() - content_widget.sizeHint().height()) // 2
+            wrapper.move(cx, cy)
+        else:
+            cx = (self.width() - content_widget.sizeHint().width()) // 2
+            cy = (self.height() - content_widget.sizeHint().height()) // 2
+            wrapper.move(cx, cy)
         
         self.active_widgets[widget_id] = wrapper
         self.save_ui_state()
@@ -1029,13 +1159,14 @@ class JarvisUI(QWidget):
             wrapper.show()
             wrapper.raise_()
         else:
-            if widget_id.startswith("list_"):
-                if hasattr(wrapper, "title_bar"):
+            if widget_id.startswith("list_") or widget_id == "widget_debug_logs":
+                if hasattr(wrapper, "title_bar") and widget_id.startswith("list_"):
                     wrapper.title_bar.hide()
                 wrapper.adjustSize()
-                new_cx = (self.width() - wrapper.width()) // 2
-                new_cy = (self.height() // 2) - wrapper.height() - 120
-                wrapper.move(new_cx, new_cy)
+                if widget_id.startswith("list_"):
+                    new_cx = (self.width() - wrapper.width()) // 2
+                    new_cy = (self.height() // 2) - wrapper.height() - 120
+                    wrapper.move(new_cx, new_cy)
                 wrapper.show()
                 wrapper.raise_()
             else:
@@ -1052,43 +1183,66 @@ class JarvisUI(QWidget):
 
     def mousePressEvent(self, event):
         super().mousePressEvent(event)
-        if getattr(self, 'is_fullscreen', False) and getattr(self, 'text_input', None) is not None:
-            self.text_input.show()
-            self.text_input.activateWindow()
-            self.text_input.raise_()
-            self.text_input.setFocus()
-
     def submit_text_command(self):
         if getattr(self, 'text_input', None) is None: return
         text = self.text_input.text().strip()
         if text:
-            import paho.mqtt.publish as publish
-            try:
-                publish.single("jarvis/sensor/voice", text, hostname="localhost", qos=1)
-            except Exception as e:
-                logging.error(f"Failed to publish text command: {e}")
+            if text:
+                self.router.dispatch("voice.submit", text=text)
             self.text_input.clear()
             self.text_input.setFocus()
 
     def set_ui_mode(self, mode):
+        if mode == "save_state":
+            self.save_ui_state()
+            return
+            
+        if mode == "show_logs":
+            self._toggle_debug()
+            return
+            
         if mode == "set_fullscreen":
+            screens = QApplication.screens()
+            is_monitor_swap = getattr(self, 'is_fullscreen', False)
+            old_geom = None
+            
+            if is_monitor_swap:
+                old_geom = screens[getattr(self, 'current_monitor_idx', 0)].geometry()
+                self.current_monitor_idx = (getattr(self, 'current_monitor_idx', 0) + 1) % len(screens)
+            else:
+                if not hasattr(self, 'current_monitor_idx'):
+                    primary = QApplication.primaryScreen()
+                    self.current_monitor_idx = screens.index(primary) if primary in screens else 0
+                
+                if self.current_monitor_idx >= len(screens):
+                    primary = QApplication.primaryScreen()
+                    self.current_monitor_idx = screens.index(primary) if primary in screens else 0
+
+            if is_monitor_swap:
+                widget_visibility = {wid: w.isVisible() for wid, w in self.active_widgets.items()}
+
             self.is_fullscreen = True
+            
+            if sys.platform == "win32":
+                import time
+                self._occlusion_disabled_until = time.time() + 1.0
             
             self.hide()
             QApplication.processEvents()
             
             self.setWindowFlags(
                 Qt.WindowType.Window | 
-                Qt.WindowType.FramelessWindowHint
+                Qt.WindowType.FramelessWindowHint |
+                Qt.WindowType.WindowStaysOnTopHint
             )
             
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+            if sys.platform != "win32":
+                self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
             self.clearMask()
-            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
+            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
             
-            primary_screen = QApplication.primaryScreen()
-            geom = primary_screen.geometry()
+            geom = screens[self.current_monitor_idx].geometry()
             
             self.setMinimumSize(0, 0)
             self.setMaximumSize(16777215, 16777215)
@@ -1100,11 +1254,19 @@ class JarvisUI(QWidget):
             self.state = "IDLE"
             self.visualizer.set_state("IDLE", True)
             
-            self.btn_media.setGeometry(30, geom.height() - 65, 80, 35)
-            self.btn_lights.setGeometry(120, geom.height() - 65, 80, 35)
-            self.btn_reminders.setGeometry(210, geom.height() - 65, 100, 35)
-            self.btn_todos.setGeometry(320, geom.height() - 65, 80, 35)
-            self.btn_settings.setGeometry(410, geom.height() - 65, 90, 35)
+            self.visualizer.lower()
+            
+            # Row 1
+            self.btn_media.setGeometry(30, geom.height() - 65, 120, 35)
+            self.btn_lights.setGeometry(145, geom.height() - 65, 120, 35)
+            
+            self.btn_reminders.setGeometry(260, geom.height() - 65, 120, 35)
+            self.btn_todos.setGeometry(375, geom.height() - 65, 120, 35)
+            
+            self.btn_settings.setGeometry(30, geom.height() - 115, 120, 35)
+            self.btn_updates.setGeometry(145, geom.height() - 115, 120, 35)
+            
+            self.btn_debug.setGeometry(260, geom.height() - 115, 120, 35)
             
             # Position calendar toggle on right edge
             self.btn_calendar.setGeometry(geom.width() - 30, int(geom.height() / 2) - 40, 30, 80)
@@ -1118,7 +1280,13 @@ class JarvisUI(QWidget):
             self.btn_reminders.show()
             self.btn_todos.show()
             self.btn_settings.show()
+            self.btn_updates.show()
             self.btn_calendar.show()
+            
+            if ECOSYSTEM_STATE == "debug":
+                self.btn_debug.show()
+            else:
+                self.btn_debug.hide()
             
             rw_w, rw_h = 220, 135
             self.reminder_widget.setGeometry(geom.width() - rw_w - 20, geom.height() - rw_h - 20, rw_w, rw_h)
@@ -1129,16 +1297,51 @@ class JarvisUI(QWidget):
             for wid, w in self.active_widgets.items():
                 if hasattr(w, "title_bar"):
                     w.title_bar.show()
-                w.show()
+                if is_monitor_swap:
+                    if widget_visibility.get(wid, False):
+                        w.show()
+                        if old_geom:
+                            geom = screens[self.current_monitor_idx].geometry()
+                            new_x = int((w.x() / old_geom.width()) * geom.width()) if old_geom.width() > 0 else w.x()
+                            new_y = int((w.y() / old_geom.height()) * geom.height()) if old_geom.height() > 0 else w.y()
+                            w.move(new_x, new_y)
+                else:
+                    w.show()
             
-            # Load and restore persistent UI state across sessions
-            self.load_ui_state()
+            if not is_monitor_swap:
+                # Load and restore persistent UI state across sessions
+                self.load_ui_state()
 
             # Refresh states for modules to sync UI
             if getattr(self, "calendar_is_open", False):
-                publish.single("jarvis/sys/calendar/request", json.dumps({"action": "read"}), hostname="localhost", qos=0)
+                self.router.dispatch("calendar.read")
 
             self.showFullScreen()
+            
+            if sys.platform == "win32":
+                import ctypes
+                hwnd = int(self.winId())
+                user32 = ctypes.windll.user32
+                if sys.maxsize > 2**32:
+                    GetWindowLong = user32.GetWindowLongPtrW
+                    GetWindowLong.argtypes = [ctypes.c_void_p, ctypes.c_int]
+                    GetWindowLong.restype = ctypes.c_void_p
+                    SetWindowLong = user32.SetWindowLongPtrW
+                    SetWindowLong.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+                    SetWindowLong.restype = ctypes.c_void_p
+                else:
+                    GetWindowLong = user32.GetWindowLongW
+                    SetWindowLong = user32.SetWindowLongW
+                
+                style = GetWindowLong(hwnd, -20)
+                if style is not None:
+                    logging.info(f"[DEBUG UI] Before ctypes: GWL_EXSTYLE = {hex(style)}")
+                    new_style = style & ~0x00000020
+                    SetWindowLong(hwnd, -20, new_style)
+                    user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0023) # SWP_NOMOVE|SWP_NOSIZE|SWP_FRAMECHANGED
+                    final_style = GetWindowLong(hwnd, -20)
+                    logging.info(f"[DEBUG UI] After ctypes: GWL_EXSTYLE = {hex(final_style)}")
+                
             self.raise_()
             self.activateWindow() 
             self.setFocus()
@@ -1169,6 +1372,7 @@ class JarvisUI(QWidget):
             self.btn_reminders.hide()
             self.btn_todos.hide()
             self.btn_settings.hide()
+            self.btn_updates.hide()
             self.btn_calendar.hide()
             self.calendar_drawer.hide()
             self.reminder_widget.hide()
@@ -1186,14 +1390,18 @@ class JarvisUI(QWidget):
             
             self.hide()
             
-            self.setWindowFlags(
+            flags = (
                 Qt.WindowType.FramelessWindowHint | 
                 Qt.WindowType.WindowStaysOnTopHint | 
-                Qt.WindowType.Tool |
-                Qt.WindowType.WindowTransparentForInput
+                Qt.WindowType.Tool
             )
+            if sys.platform != "win32":
+                flags |= Qt.WindowType.WindowTransparentForInput
+                
+            self.setWindowFlags(flags)
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            if sys.platform != "win32":
+                self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
             
             primary_screen = QApplication.primaryScreen()
@@ -1202,9 +1410,29 @@ class JarvisUI(QWidget):
             x_pos = screen_geom.right() - width - 20
             y_pos = screen_geom.bottom() - height - 20
             
+            self.showNormal()
             self.setFixedSize(width, height)
             self.setGeometry(x_pos, y_pos, width, height)
-            self.showNormal()
+            
+            if sys.platform == "win32":
+                import ctypes
+                hwnd = int(self.winId())
+                user32 = ctypes.windll.user32
+                if sys.maxsize > 2**32:
+                    GetWindowLong = user32.GetWindowLongPtrW
+                    GetWindowLong.argtypes = [ctypes.c_void_p, ctypes.c_int]
+                    GetWindowLong.restype = ctypes.c_void_p
+                    SetWindowLong = user32.SetWindowLongPtrW
+                    SetWindowLong.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+                    SetWindowLong.restype = ctypes.c_void_p
+                else:
+                    GetWindowLong = user32.GetWindowLongW
+                    SetWindowLong = user32.SetWindowLongW
+                
+                style = GetWindowLong(hwnd, -20)
+                if style is not None:
+                    SetWindowLong(hwnd, -20, style | 0x00000020)
+                    user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0023)
 
     def _generate_honeycomb(self, w, h):
         from PyQt6.QtGui import QPixmap, QPolygonF
@@ -1287,7 +1515,8 @@ class JarvisUI(QWidget):
                 "drawer_open": getattr(self, 'calendar_is_open', False),
                 "carousel_tab": carousel_idx,
                 "reminder_widget": reminder_data,
-                "active_widgets": active_widgets_data
+                "active_widgets": active_widgets_data,
+                "current_monitor_idx": getattr(self, 'current_monitor_idx', 0)
             }
             
             os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
@@ -1312,11 +1541,13 @@ class JarvisUI(QWidget):
                     self.calendar_drawer.carousel.update_indicator()
                     
             # 2. Drawer open/closed state
-            drawer_open = state.get("drawer_open", False)
-            if drawer_open and not getattr(self, 'calendar_is_open', False):
+            drawer_state = state.get("drawer_open", False)
+            if drawer_state and not self.calendar_is_open:
                 self._toggle_calendar()
                 
-            # 3. Floating Reminder Widget
+            self.current_monitor_idx = state.get("current_monitor_idx", 0)
+                
+            widgets_state = state.get("active_widgets", {})
             rem_state = state.get("reminder_widget", {})
             if hasattr(self, 'reminder_widget'):
                 pos = rem_state.get("pos")
@@ -1347,6 +1578,14 @@ class JarvisUI(QWidget):
                     if widget_id not in self.active_widgets:
                         todo_widget = TodoWidget()
                         self.spawn_widget(widget_id, "To-Do List", todo_widget)
+                elif widget_id == "widget_settings":
+                    if widget_id not in self.active_widgets:
+                        settings_widget = SettingsWidget()
+                        self.spawn_widget(widget_id, "System Settings", settings_widget)
+                elif widget_id == "widget_updates":
+                    if widget_id not in self.active_widgets:
+                        update_widget = UpdateWidget()
+                        self.spawn_widget(widget_id, "System Updates", update_widget)
                         
                 if widget_id in self.active_widgets:
                     w = self.active_widgets[widget_id]

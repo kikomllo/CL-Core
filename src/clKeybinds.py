@@ -6,7 +6,7 @@ import sys
 import threading
 import select
 from pynput import keyboard
-import paho.mqtt.publish as publish
+from utils.clActionRouter import ActionRouter
 
 # Optional Linux evdev support for Wayland background keylogging
 try:
@@ -17,21 +17,6 @@ except ImportError:
     EVDEV_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [KEYBINDS] %(message)s", datefmt="%H:%M:%S")
-
-def publish_mqtt(topic, payload):
-    try:
-        publish.single(topic, json.dumps(payload), hostname="localhost")
-    except Exception as e:
-        logging.error(f"Failed to publish to MQTT: {e}")
-
-def on_abort():
-    publish_mqtt("jarvis/sys/abort", {"action": "abort"})
-
-def on_fullscreen():
-    publish_mqtt("jarvis/sys/ui_control", {"action": "set_fullscreen"})
-
-def on_overlay():
-    publish_mqtt("jarvis/sys/ui_control", {"action": "set_overlay"})
 
 def is_debug():
     config_path = os.path.join("config", "core.json")
@@ -51,7 +36,7 @@ def load_keybinds():
     except Exception as e:
         logging.error(f"Failed to load keybinds.json: {e}")
         return {
-            "abort": "<ctrl>+<alt>+<shift>+j",
+            "abort": "<ctrl>+<alt>+<shift>+a",
             "ui_fullscreen": "<ctrl>+<alt>+<shift>+f",
             "ui_overlay": "<ctrl>+<alt>+<shift>+o",
             "push_to_talk": "KEY_RIGHTALT"
@@ -68,6 +53,7 @@ def evdev_listener():
     ptt_key_str = keybinds.get("push_to_talk", "KEY_RIGHTALT")
     ptt_ecode = getattr(ecodes, ptt_key_str, ecodes.KEY_RIGHTALT)
     ptt_active = False
+    router = ActionRouter()
     
     while True:
         keyboards = []
@@ -111,17 +97,18 @@ def evdev_listener():
                                 if event.value == 1 and not ptt_active: # Press
                                     ptt_active = True
                                     logging.info("Push-to-Talk (Mic Opened via Hardware)")
-                                    publish_mqtt("jarvis/sys/mic_control", {"action": "ptt_start"})
+                                    router.dispatch("mic.ptt_start")
                                 elif event.value == 0 and ptt_active: # Release
                                     ptt_active = False
                                     logging.info("Push-to-Talk (Mic Closed via Hardware)")
-                                    publish_mqtt("jarvis/sys/mic_control", {"action": "ptt_stop"})
+                                    router.dispatch("mic.ptt_stop")
         except Exception as e:
             logging.warning(f"Evdev device disconnected or error ({e}). Rescanning devices...")
             time.sleep(2)
 
 def main():
     keybinds = load_keybinds()
+    router = ActionRouter()
     
     logging.info("Starting global keybind listener (Configs loaded from keybinds.json)...")
     logging.info("Active Keybinds:")
@@ -152,19 +139,34 @@ def main():
         if not EVDEV_PTT_READY and _is_ptt_key(key) and not ptt_active:
             ptt_active = True
             logging.info("Push-to-Talk (Mic Opened via pynput)")
-            publish_mqtt("jarvis/sys/mic_control", {"action": "ptt_start"})
+            router.dispatch("mic.ptt_start")
 
     def on_release(key):
         nonlocal ptt_active
         if not EVDEV_PTT_READY and _is_ptt_key(key) and ptt_active:
             ptt_active = False
             logging.info("Push-to-Talk (Mic Closed via pynput)")
-            publish_mqtt("jarvis/sys/mic_control", {"action": "ptt_stop"})
+            router.dispatch("mic.ptt_stop")
 
+    # Dynamic Hotkey Assignment
     hotkey_dict = {}
-    if keybinds.get("abort"): hotkey_dict[keybinds["abort"]] = on_abort
-    if keybinds.get("ui_fullscreen"): hotkey_dict[keybinds["ui_fullscreen"]] = on_fullscreen
-    if keybinds.get("ui_overlay"): hotkey_dict[keybinds["ui_overlay"]] = on_overlay
+    LEGACY_MAP = {
+        "abort": "system.abort",
+        "ui_fullscreen": "ui.fullscreen",
+        "ui_overlay": "ui.overlay",
+    }
+    
+    for action_key, hotkey_str in keybinds.items():
+        if not hotkey_str or action_key == "push_to_talk":
+            continue
+            
+        actual_action = LEGACY_MAP.get(action_key, action_key)
+        
+        if router._get_action_def(actual_action):
+            # Using default argument to capture current value of actual_action in the loop
+            hotkey_dict[hotkey_str] = lambda act=actual_action: router.dispatch(act)
+        else:
+            logging.warning(f"Unknown action '{action_key}' (mapped to '{actual_action}') in keybinds.json")
 
     h = keyboard.GlobalHotKeys(hotkey_dict)
     
@@ -172,6 +174,9 @@ def main():
     
     h.start()
     l.start()
+    
+    import paho.mqtt.publish as publish
+    publish.single("jarvis/sys/module_ready", json.dumps({"module": "keybinds"}), hostname="localhost")
     
     try:
         h.join()

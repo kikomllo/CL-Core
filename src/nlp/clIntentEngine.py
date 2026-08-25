@@ -32,8 +32,8 @@ class IntentEngine:
                         
                     self.template_to_intent[clean_template].append({
                         "intent_name": intent_name,
-                        "target_topic": config.get("target_topic"),
-                        "action_override": config.get("action_override"),
+                        "action_id": config.get("action_id"),
+                        "action_args": config.get("action_args", {}),
                         "original_template": template,
                         "priority_words": p_words 
                     })
@@ -67,7 +67,7 @@ class IntentEngine:
 
     def extract_variables(self, chunk: str, intent_match: Dict[str, Any]) -> Dict[str, Any]:
         """Fuzzy-friendly slot extraction supporting single and multi-variable templates."""
-        payload = {"action": intent_match["action_override"]}
+        payload = intent_match.get("action_args", {}).copy()
         template = intent_match["original_template"]
         
         var_names = re.findall(r'\{(\w+)\}', template)
@@ -162,13 +162,17 @@ class IntentEngine:
             clean_key = re.sub(r'[^\w\s]', '', key.lower()).strip()
             if clean_key in clean_phrase:
                 if isinstance(response, str):
-                    return {"text": response, "action": "conversational", "target_topic": "jarvis/sys/control"}
+                    return {"text": response, "action": "speak", "action_id": "system.speak"}
                 elif isinstance(response, dict):
-                    return {
+                    cmd = {
                         "text": response.get("text", ""),
-                        "action": response.get("action", "conversational"),
-                        "target_topic": response.get("target_topic", "jarvis/sys/control")
+                        "action": response.get("action", "speak"),
+                        "action_id": response.get("action_id", "system.speak")
                     }
+                    payload = response.get("payload", {})
+                    if isinstance(payload, dict):
+                        cmd.update(payload)
+                    return cmd
                 return None
                 
         return None
@@ -241,9 +245,9 @@ class IntentEngine:
             valid_matches = [m for m in scored_matches if m[3] >= 80]
             
             if valid_matches:
-                valid_matches.sort(key=lambda x: (x[3], len(x[0])), reverse=True)
+                valid_matches.sort(key=lambda x: (x[3], len(x[1]["original_template"])), reverse=True)
                 best_match = valid_matches[0]
-                executed_intents.append((best_match[2], best_match[1]["target_topic"]))
+                executed_intents.append((best_match[2], best_match[1]["action_id"]))
             else:
                 # --- DEBUG LOGGING FOR FAILED INTENTS ---
                 if scored_matches:
@@ -260,7 +264,7 @@ class IntentEngine:
             if convo_response:
                 logging.info(f"[NLP CONVERSATION MATCH] Passing to daemon for routing.")
                 
-                target_topic = convo_response.pop("target_topic", "jarvis/sys/control")
-                executed_intents.append((convo_response, target_topic))
+                action_id = convo_response.pop("action_id", "system.speak")
+                executed_intents.append((convo_response, action_id))
                 
         return executed_intents

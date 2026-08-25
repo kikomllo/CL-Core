@@ -576,6 +576,7 @@ async def mqtt_service_listener(manager: LightManager) -> None:
             async with aiomqtt.Client("localhost") as mqtt_client:
                 await mqtt_client.subscribe("home/room/+/set") 
                 await mqtt_client.subscribe("system/discovery")
+                await mqtt_client.publish("jarvis/sys/module_ready", json.dumps({"module": "light"}))
                 
                 async for message in mqtt_client.messages:
                     try:

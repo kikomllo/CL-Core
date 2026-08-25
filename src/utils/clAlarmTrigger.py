@@ -15,11 +15,22 @@ ALARM_SOUND_PATH = os.path.join(ASSETS_DIR, "alarm.wav")
 
 def boot_ecosystem_if_offline() -> bool:
     try:
-        ps_out = subprocess.check_output(["ps", "-ef"]).decode()
-        if "python3 clJarvis.py" not in ps_out and "python clJarvis.py" not in ps_out:
+        import socket
+        lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            lock_socket.bind(("127.0.0.1", 64000))
+            is_offline = True
+            lock_socket.close()
+        except socket.error:
+            is_offline = False
+
+        if is_offline:
             logging.info("[ALARM TRIGGER] Jarvis ecosystem is offline. Booting up for alarm!")
-            jarvis_path = os.path.abspath(os.path.join(BASE_DIR, "..", "..", "clJarvis.py"))
-            subprocess.Popen(["python3", jarvis_path], cwd=os.path.dirname(jarvis_path), start_new_session=True)
+            boot_path = os.path.abspath(os.path.join(BASE_DIR, "..", "..", "boot.py"))
+            if sys.platform == 'win32':
+                subprocess.Popen([sys.executable, boot_path], cwd=os.path.dirname(boot_path), creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+            else:
+                subprocess.Popen([sys.executable, boot_path], cwd=os.path.dirname(boot_path), start_new_session=True)
             time.sleep(3.5)
             return True
     except Exception as e:
