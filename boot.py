@@ -105,6 +105,8 @@ def main():
     if is_windows:
         sys.exit(subprocess.run([python_exe, "clJarvis.py"], env=env).returncode)
     else:
+        # Prevent the lock socket from closing during os.execve
+        os.set_inheritable(lock_socket.fileno(), True)
         os.execve(python_exe, [python_exe, "clJarvis.py"], env)
 
 if __name__ == "__main__":

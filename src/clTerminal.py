@@ -341,7 +341,15 @@ async def poll_media_status(manager: TerminalManager) -> None:
                         }
                         
                         if status in ["Playing", "Paused"]:
-                            if current_state != last_state:
+                            state_changed = False
+                            if not last_state:
+                                state_changed = True
+                            elif current_state["title"] != last_state.get("title") or \
+                                 current_state["artist"] != last_state.get("artist") or \
+                                 current_state["status"] != last_state.get("status"):
+                                state_changed = True
+                                
+                            if state_changed:
                                 await mqtt_client.publish("jarvis/sys/media_status", json.dumps(current_state))
                                 last_state = current_state
                             

@@ -2,57 +2,77 @@ import os
 import sys
 import json
 import logging
-import threading
-import paho.mqtt.client as mqtt
 import subprocess
+import paho.mqtt.client as mqtt
 
 try:
-    import pystray
-    from pystray import MenuItem as item
-    from PIL import Image, ImageDraw, ImageFont
+    from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
+    from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont
+    from PyQt6.QtCore import Qt
 except ImportError as e:
-    print(f"[TRAY] Missing dependencies (pystray, Pillow). Cannot start. Error: {e}")
+    print(f"[TRAY] Missing dependencies (PyQt6). Cannot start. Error: {e}")
     sys.exit(1)
 
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [TRAY] %(message)s', datefmt='%H:%M:%S')
 
-def create_image():
-    # Generate an icon with a 'J' for Jarvis
-    width = 64
-    height = 64
-    color1 = (0, 0, 0)
-    color2 = (0, 200, 255)
+def create_qt_icon():
+    pixmap = QPixmap(64, 64)
+    pixmap.fill(QColor("transparent"))
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     
-    image = Image.new('RGB', (width, height), color1)
-    dc = ImageDraw.Draw(image)
+    color1 = QColor(0, 0, 0)
+    color2 = QColor(0, 200, 255)
     
-    # Draw a simple circle
-    dc.ellipse([8, 8, width-8, height-8], outline=color2, width=4)
+    painter.setBrush(color1)
     
-    # Try to draw a J
-    try:
-        font = ImageFont.truetype("arial.ttf", 36)
-        dc.text((22, 12), "J", fill=color2, font=font)
-    except Exception:
-        # Fallback if arial is missing
-        dc.rectangle([width//2-4, 20, width//2+4, height-24], fill=color2)
-        dc.rectangle([width//2-16, height-28, width//2+4, height-20], fill=color2)
-        
-    return image
+    pen = painter.pen()
+    pen.setColor(color2)
+    pen.setWidth(4)
+    painter.setPen(pen)
+    painter.drawEllipse(4, 4, 56, 56)
+    
+    font = QFont("Arial", 28, QFont.Weight.Bold)
+    painter.setFont(font)
+    painter.setPen(color2)
+    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "J")
+    
+    painter.end()
+    return QIcon(pixmap)
 
 class TrayApp:
     def __init__(self):
-        self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+        self.app = QApplication(sys.argv)
+        self.app.setQuitOnLastWindowClosed(False)
+        
+        self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         self.mqtt_client.on_connect = self.on_connect
-        self.icon = None
+        
+        self.tray = QSystemTrayIcon()
+        self.tray.setIcon(create_qt_icon())
+        
+        self.menu = QMenu()
+        
+        view_logs_action = self.menu.addAction("View Live Logs")
+        view_logs_action.triggered.connect(self.on_view_logs)
+        
+        shutdown_action = self.menu.addAction("Shutdown Ecosystem")
+        shutdown_action.triggered.connect(self.on_shutdown_ecosystem)
+        
+        self.menu.addSeparator()
+        
+        exit_action = self.menu.addAction("Exit Tray")
+        exit_action.triggered.connect(self.on_exit)
+        
+        self.tray.setContextMenu(self.menu)
 
-    def on_connect(self, client, userdata, flags, rc):
-        if rc == 0:
+    def on_connect(self, client, userdata, flags, reason_code, properties):
+        if reason_code == 0:
             logging.info("Connected to MQTT Broker.")
         else:
-            logging.warning(f"Failed to connect to MQTT Broker. Code: {rc}")
+            logging.warning(f"Failed to connect to MQTT Broker. Code: {reason_code}")
 
-    def on_view_logs(self, icon, item):
+    def on_view_logs(self):
         logging.info("Requested View Logs.")
         base_dir = os.path.dirname(os.path.abspath(__file__))
         log_path = os.path.abspath(os.path.join(base_dir, "..", "logs", "latest_run.log"))
@@ -61,18 +81,32 @@ class TrayApp:
         if sys.platform == "win32":
             subprocess.Popen(["cmd", "/c", "start", "cmd", "/k", sys.executable, tail_script, log_path])
         else:
-            subprocess.Popen(["x-terminal-emulator", "-e", f"tail -f {log_path}"])
+            import shutil
+            terminals = [
+                ("qterminal", ["qterminal", "-e", f"bash -c 'tail -f {log_path}'"]),
+                ("gnome-terminal", ["gnome-terminal", "--", "bash", "-c", f"tail -f {log_path}"]),
+                ("konsole", ["konsole", "-e", f"tail -f {log_path}"]),
+                ("xfce4-terminal", ["xfce4-terminal", "-e", f"tail -f {log_path}"]),
+                ("x-terminal-emulator", ["x-terminal-emulator", "-e", f"tail -f {log_path}"])
+            ]
+            for cmd, args in terminals:
+                if shutil.which(cmd):
+                    subprocess.Popen(args)
+                    break
+            else:
+                logging.error("No supported terminal emulator found to show logs.")
 
-    def on_shutdown_ecosystem(self, icon, item):
+    def on_shutdown_ecosystem(self):
         logging.info("Dispatching ecosystem shutdown command...")
         try:
             self.mqtt_client.publish("jarvis/sys/manager", json.dumps({"action": "shutdown"}))
         except Exception as e:
             logging.error(f"Failed to publish shutdown command: {e}")
 
-    def on_exit(self, icon, item):
+    def on_exit(self):
         logging.info("Exiting tray application.")
-        self.icon.stop()
+        self.tray.hide()
+        self.app.quit()
 
     def run(self):
         try:
@@ -81,17 +115,9 @@ class TrayApp:
         except Exception as e:
             logging.error(f"Failed to connect to MQTT broker: {e}")
 
-        menu = pystray.Menu(
-            item('View Live Logs', self.on_view_logs),
-            item('Shutdown Ecosystem', self.on_shutdown_ecosystem),
-            pystray.Menu.SEPARATOR,
-            item('Exit Tray', self.on_exit)
-        )
-        
-        self.icon = pystray.Icon("jarvis_tray", create_image(), "Jarvis Ecosystem", menu)
-        
-        logging.info("Starting System Tray Icon...")
-        self.icon.run()
+        logging.info("Starting System Tray Icon (PyQt6)...")
+        self.tray.show()
+        self.app.exec()
         
         self.mqtt_client.loop_stop()
         self.mqtt_client.disconnect()

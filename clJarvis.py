@@ -108,23 +108,22 @@ def load_modules_config():
     except Exception:
         cfg = {"native": {"UI": True, "Keybinds": True, "Utilities": True}, "docker": {}}
         
-    if platform.system() == "Windows":
-        # Force hardware-dependent and linux-dependent Docker services to run natively on Windows
-        docker_to_native = {
-            "jarvis-whisper": ("Whisper", "src/clWhisper.py"),
-            "jarvis-brain": ("Brain", "src/clDaemon.py"),
-            "jarvis-music": ("Music", "src/clSpotify.py"),
-            "jarvis-tts": ("TTS", "src/clTTS.py"),
-            "jarvis-light": ("Light", "src/clControl.py"),
-            "jarvis-mic": ("Mic", "src/clMic.py"),
-            "jarvis-terminal": ("Terminal", "src/clTerminal.py"),
-        }
-        for d_key, (n_desc, n_script) in docker_to_native.items():
-            if cfg.get("docker", {}).get(d_key, False):
-                cfg["native"][n_desc] = True
-                if (n_desc, n_script) not in NATIVE_SERVICES:
-                    NATIVE_SERVICES.append((n_desc, n_script))
-                cfg["docker"][d_key] = False
+    # Force Docker services to run natively (Docker scrapped)
+    docker_to_native = {
+        "jarvis-whisper": ("Whisper", "src/clWhisper.py"),
+        "jarvis-brain": ("Brain", "src/clDaemon.py"),
+        "jarvis-music": ("Music", "src/clSpotify.py"),
+        "jarvis-tts": ("TTS", "src/clTTS.py"),
+        "jarvis-light": ("Light", "src/clControl.py"),
+        "jarvis-mic": ("Mic", "src/clMic.py"),
+        "jarvis-terminal": ("Terminal", "src/clTerminal.py"),
+    }
+    for d_key, (n_desc, n_script) in docker_to_native.items():
+        if cfg.get("docker", {}).get(d_key, False):
+            cfg["native"][n_desc] = True
+            if (n_desc, n_script) not in NATIVE_SERVICES:
+                NATIVE_SERVICES.append((n_desc, n_script))
+            cfg["docker"][d_key] = False
                 
     return cfg
 
@@ -363,9 +362,15 @@ def main():
 
     # 1. Start Docker ecosystem (This boots the Mosquitto Broker)
     # (Removed - Mosquitto is now run natively)
+    import subprocess
+    try:
+        subprocess.run(["mosquitto", "-d"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print("[SUPERVISOR] Checked Mosquitto Broker status.")
+    except Exception:
+        pass
 
     # 2. Connect global MQTT supervisor
-    client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION1)
+    client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION2)
     client.on_message = on_message
     try:
         client.connect("localhost", 1883, 60)

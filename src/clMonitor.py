@@ -19,7 +19,7 @@ class PresenceMonitor:
         self.exit_threshold = -70
 
         # --- PERSISTENT MQTT CONNECTION ---
-        self.mqtt = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION1)
+        self.mqtt = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION2)
         try:
             self.mqtt.connect("localhost", 1883, 60)
             self.mqtt.loop_start()  # Starts the background network thread

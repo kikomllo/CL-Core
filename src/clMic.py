@@ -137,7 +137,7 @@ class VoiceSensor:
             return Model(wakeword_model_paths=[jarvis_path])
 
     def _init_mqtt(self) -> mqtt_client.Client:
-        client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION1)
+        client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION2)
         client.on_message = self._on_mqtt_message
         
         try:

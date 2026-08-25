@@ -36,10 +36,10 @@ def load_keybinds():
     except Exception as e:
         logging.error(f"Failed to load keybinds.json: {e}")
         return {
-            "abort": "<ctrl>+<alt>+<shift>+a",
-            "ui_fullscreen": "<ctrl>+<alt>+<shift>+f",
-            "ui_overlay": "<ctrl>+<alt>+<shift>+o",
-            "push_to_talk": "KEY_RIGHTALT"
+            "abort": {"key": "<ctrl>+<alt>+<shift>+a", "mode": "single"},
+            "ui_fullscreen": {"key": "<ctrl>+<alt>+<shift>+f", "mode": "single"},
+            "ui_overlay": {"key": "<ctrl>+<alt>+<shift>+o", "mode": "single"},
+            "push_to_talk": {"key": "KEY_RIGHTALT", "mode": "continuous"}
         }
 
 DEBUG_MODE = is_debug()
@@ -50,7 +50,7 @@ def evdev_listener():
     global EVDEV_PTT_READY
     
     keybinds = load_keybinds()
-    ptt_key_str = keybinds.get("push_to_talk", "KEY_RIGHTALT")
+    ptt_key_str = keybinds.get("push_to_talk", {}).get("key", "KEY_RIGHTALT")
     ptt_ecode = getattr(ecodes, ptt_key_str, ecodes.KEY_RIGHTALT)
     ptt_active = False
     router = ActionRouter()
@@ -122,7 +122,7 @@ def main():
         time.sleep(0.5)
     
     ptt_active = False
-    ptt_key_str = keybinds.get("push_to_talk", "KEY_RIGHTALT")
+    ptt_key_str = keybinds.get("push_to_talk", {}).get("key", "KEY_RIGHTALT")
 
     def _is_ptt_key(key):
         if "RIGHTALT" in ptt_key_str:
@@ -132,58 +132,98 @@ def main():
             if key == keyboard.Key.alt_l or key == keyboard.Key.alt: return True
         return False
 
-    def on_press(key):
-        nonlocal ptt_active
-            
-        # Only use pynput for PTT if evdev didn't successfully hook the hardware (e.g., X11 or Windows)
-        if not EVDEV_PTT_READY and _is_ptt_key(key) and not ptt_active:
-            ptt_active = True
-            logging.info("Push-to-Talk (Mic Opened via pynput)")
-            router.dispatch("mic.ptt_start")
-
-    def on_release(key):
-        nonlocal ptt_active
-        if not EVDEV_PTT_READY and _is_ptt_key(key) and ptt_active:
-            ptt_active = False
-            logging.info("Push-to-Talk (Mic Closed via pynput)")
-            router.dispatch("mic.ptt_stop")
-
-    # Dynamic Hotkey Assignment
-    hotkey_dict = {}
     LEGACY_MAP = {
         "abort": "system.abort",
         "ui_fullscreen": "ui.fullscreen",
         "ui_overlay": "ui.overlay",
     }
     
-    for action_key, hotkey_str in keybinds.items():
+    # Custom HotKey tracking
+    hotkeys = []
+    active_actions = set()
+    last_triggered = {}
+
+    for action_key, bind_info in keybinds.items():
+        hotkey_str = bind_info.get("key", "")
+        mode = bind_info.get("mode", "single")
+        
         if not hotkey_str or action_key == "push_to_talk":
             continue
             
         actual_action = LEGACY_MAP.get(action_key, action_key)
         
         if router._get_action_def(actual_action):
-            # Using default argument to capture current value of actual_action in the loop
-            hotkey_dict[hotkey_str] = lambda act=actual_action: router.dispatch(act)
+            try:
+                hk = keyboard.HotKey(keyboard.HotKey.parse(hotkey_str), lambda: None)
+                hotkeys.append({
+                    "hk": hk,
+                    "action": actual_action,
+                    "mode": mode
+                })
+            except Exception as e:
+                logging.error(f"Failed to parse hotkey '{hotkey_str}': {e}")
         else:
             logging.warning(f"Unknown action '{action_key}' (mapped to '{actual_action}') in keybinds.json")
 
-    h = keyboard.GlobalHotKeys(hotkey_dict)
-    
+    def on_press(key):
+        nonlocal ptt_active
+        canonical_key = l.canonical(key)
+        
+        # PTT Logic
+        if not EVDEV_PTT_READY and _is_ptt_key(key) and not ptt_active:
+            ptt_active = True
+            logging.info("Push-to-Talk (Mic Opened via pynput)")
+            router.dispatch("mic.ptt_start")
+
+        # Custom HotKey logic
+        for hk_def in hotkeys:
+            hk = hk_def["hk"]
+            action = hk_def["action"]
+            mode = hk_def["mode"]
+            
+            hk.press(canonical_key)
+            if hk._state == hk._keys: # This indicates the hotkey combination is fully met
+                if mode == "single":
+                    if action not in active_actions:
+                        now = time.time()
+                        if now - last_triggered.get(action, 0) > 0.2:
+                            active_actions.add(action)
+                            router.dispatch(action)
+                            last_triggered[action] = now
+                else:
+                    # continuous mode triggers every OS key-repeat
+                    router.dispatch(action)
+
+    def on_release(key):
+        nonlocal ptt_active
+        canonical_key = l.canonical(key)
+        
+        # PTT Logic
+        if not EVDEV_PTT_READY and _is_ptt_key(key) and ptt_active:
+            ptt_active = False
+            logging.info("Push-to-Talk (Mic Closed via pynput)")
+            router.dispatch("mic.ptt_stop")
+
+        # Custom HotKey logic
+        for hk_def in hotkeys:
+            hk = hk_def["hk"]
+            action = hk_def["action"]
+            
+            hk.release(canonical_key)
+            if hk._state != hk._keys: # Combination broken
+                if action in active_actions:
+                    active_actions.remove(action)
+
     l = keyboard.Listener(on_press=on_press, on_release=on_release)
-    
-    h.start()
     l.start()
     
     import paho.mqtt.publish as publish
     publish.single("jarvis/sys/module_ready", json.dumps({"module": "keybinds"}), hostname="localhost")
     
     try:
-        h.join()
         l.join()
     except KeyboardInterrupt:
         logging.info("Shutting down keybind listener.")
-        h.stop()
         l.stop()
 
 if __name__ == '__main__':
