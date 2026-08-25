@@ -94,6 +94,44 @@ def run_pswindowsupdate_check():
         print(f"[UPDATER] Windows Update check failed: {e}")
         return []
 
+def run_apt_check():
+    try:
+        print("[UPDATER] [DEBUG] Executing Apt upgrade check...")
+        result = subprocess.run(["apt", "list", "--upgradable"], capture_output=True, text=True)
+        lines = result.stdout.split('\n')
+        updates = []
+        for line in lines:
+            if "upgradable from" in line and "/" in line:
+                name = line.split("/")[0].strip()
+                if name:
+                    updates.append({"type": "app", "name": name, "id": f"APP:{name}"})
+        return updates
+    except Exception as e:
+        print(f"[UPDATER] Apt check failed: {e}")
+        return []
+
+def install_apt_update(client, app_id):
+    print(f"[UPDATER] Installing apt update: {app_id}")
+    publish_log(client, f"--- Starting Apt Update: {app_id} ---")
+    
+    if app_id == "ALL":
+        publish_log(client, "ERROR: Bulk updates are strictly prohibited by security policy.")
+        return False
+        
+    cmd = ["pkexec", "apt", "install", "--only-upgrade", "-y", app_id]
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        for line in iter(proc.stdout.readline, ''):
+            clean_line = line.strip()
+            if clean_line:
+                publish_log(client, clean_line)
+        proc.wait()
+        publish_log(client, f"--- Apt Update Finished (Code: {proc.returncode}) ---")
+        return proc.returncode == 0
+    except Exception as e:
+        publish_log(client, f"Apt Update Error: {e}")
+        return False
+
 CACHE_TIMESTAMP = 0
 CACHED_UPDATES = []
 
@@ -112,8 +150,12 @@ def check_updates_task(client, force_check=False):
         
     publish_status(client, "checking")
     print("[UPDATER] Checking for updates...")
-    apps = run_winget_check()
-    drivers = run_pswindowsupdate_check()
+    if sys.platform == "win32":
+        apps = run_winget_check()
+        drivers = run_pswindowsupdate_check()
+    else:
+        apps = run_apt_check()
+        drivers = []
     CACHED_UPDATES = apps + drivers
     CACHE_TIMESTAMP = time.time()
     publish_status(client, "ready", CACHED_UPDATES)
@@ -253,7 +295,11 @@ def update_task(client, target, target_id=None):
         global CACHED_UPDATES
         if target == "individual" and target_id:
             if target_id.startswith("APP:"):
-                success = install_app_update(client, target_id.replace("APP:", ""))
+                clean_id = target_id.replace("APP:", "")
+                if sys.platform == "win32":
+                    success = install_app_update(client, clean_id)
+                else:
+                    success = install_apt_update(client, clean_id)
                 if success:
                     CACHED_UPDATES = [u for u in CACHED_UPDATES if u["id"] != target_id]
             elif target_id.startswith("DRV:"):
@@ -264,8 +310,8 @@ def update_task(client, target, target_id=None):
         IS_UPDATING = False
         check_updates_task(client, force_check=False)
 
-def on_connect(client, userdata, flags, rc):
-    print(f"[UPDATER] Connected to Supervisor (Code: {rc})")
+def on_connect(client, userdata, flags, reason_code, properties):
+    print(f"[UPDATER] Connected to Supervisor (Code: {reason_code})")
     client.subscribe("jarvis/sys/updates")
     client.publish("jarvis/sys/module_ready", json.dumps({"module": "updater"}), qos=1)
 
@@ -287,7 +333,7 @@ def on_message(client, userdata, msg):
 
 if __name__ == "__main__":
     time.sleep(1) # Let broker start
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     client.on_connect = on_connect
     client.on_message = on_message
     

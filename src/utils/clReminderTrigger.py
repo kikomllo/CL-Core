@@ -55,7 +55,7 @@ def boot_ecosystem_if_offline() -> bool:
             for _ in range(30):
                 time.sleep(1)
                 try:
-                    c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+                    c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
                     c.on_message = on_msg
                     c.connect("localhost")
                     c.subscribe("jarvis/sys/ecosystem_online")
@@ -127,7 +127,7 @@ def main():
                     if msg.topic == "jarvis/sys/tts_done":
                         tts_done_count += 1
                         
-                c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+                c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
                 c.on_message = on_message
                 c.connect("localhost")
                 c.subscribe("jarvis/sys/tts_done")
@@ -158,7 +158,7 @@ def main():
                     if msg.topic == "jarvis/sys/tts_done":
                         tts_finished = True
                         
-                c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+                c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
                 c.on_message = on_message
                 c.connect("localhost")
                 c.subscribe("jarvis/sys/tts_done")
@@ -192,7 +192,7 @@ def main():
         time.sleep(1.0)
         try:
             import paho.mqtt.client as mqtt
-            c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+            c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
             c.connect("localhost")
             msg = c.publish("jarvis/sys/manager", json.dumps({"action": "shutdown"}))
             msg.wait_for_publish()

@@ -127,7 +127,27 @@ class TodoWidget(QWidget):
         self.bottom_layout.setSpacing(10)
         self.bottom_layout.addWidget(self.bottom_stack, stretch=1)
         
-
+        self.btn_delete_list = QPushButton("X")
+        self.btn_delete_list.setFixedSize(32, 32)
+        self.btn_delete_list.setToolTip("Delete List")
+        self.btn_delete_list.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: rgba(255, 150, 0, 180);
+                font-weight: bold;
+                border: 1px solid rgba(255, 150, 0, 50);
+                border-radius: 8px;
+                font-size: 10pt;
+            }
+            QPushButton:hover {
+                color: #ff5500;
+                background-color: rgba(255, 150, 0, 20);
+                border: 1px solid rgba(255, 150, 0, 100);
+            }
+        """)
+        
+        self.btn_delete_list.clicked.connect(self.delete_current_list)
+        self.bottom_layout.addWidget(self.btn_delete_list)
         
         self.layout.addWidget(self.bottom_container)
         
@@ -311,36 +331,7 @@ class TodoWidget(QWidget):
         page_layout.setContentsMargins(0, 0, 0, 0)
         page_layout.setSpacing(0)
         
-        # Header for the list with delete button
-        header_layout = QHBoxLayout()
-        header_layout.setContentsMargins(0, 8, 15, 0)
-        header_layout.addStretch()
-        
-        btn_delete_list = QPushButton("X")
-        btn_delete_list.setFixedSize(26, 24)
-        btn_delete_list.setToolTip("Delete List")
-        btn_delete_list.setStyleSheet("""
-            QPushButton { 
-                text-align: center; 
-                padding-bottom: 4px; 
-                background-color: rgba(255, 150, 0, 20); 
-                color: #ffaa00; 
-                border-radius: 5px; 
-                border: 1px solid rgba(255,150,0,50); 
-                font-size: 11pt; 
-                font-weight: bold; 
-                font-family: monospace; 
-            } 
-            QPushButton:hover { 
-                background-color: rgba(255, 150, 0, 60); 
-                color: #ffffff; 
-            }
-        """)
-        btn_delete_list.clicked.connect(self.delete_current_list)
-        header_layout.addWidget(btn_delete_list)
-        
-        page_layout.addLayout(header_layout)
-        
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)

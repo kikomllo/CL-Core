@@ -11,7 +11,7 @@ setup_logging('DEBUG')
 
 def main():
     # Setup persistent MQTT connection
-    client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION1)
+    client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION2)
     
     try:
         client.connect("localhost", 1883, 60)

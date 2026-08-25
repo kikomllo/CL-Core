@@ -1,6 +1,18 @@
 {
-  "abort": "<ctrl>+<alt>+<shift>+a",
-  "ui_fullscreen": "<ctrl>+<alt>+<shift>+f",
-  "ui_overlay": "<ctrl>+<alt>+<shift>+o",
-  "push_to_talk": "KEY_RIGHTALT"
+  "abort": {
+    "key": "<ctrl>+<alt>+<shift>+a",
+    "mode": "single"
+  },
+  "ui_fullscreen": {
+    "key": "<ctrl>+<alt>+<shift>+f",
+    "mode": "single"
+  },
+  "ui_overlay": {
+    "key": "<ctrl>+<alt>+<shift>+o",
+    "mode": "single"
+  },
+  "push_to_talk": {
+    "key": "KEY_RIGHTALT",
+    "mode": "continuous"
+  }
 }

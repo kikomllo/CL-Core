@@ -92,7 +92,7 @@ class UpdateWidget(QWidget):
         self.log_signal.connect(self._on_log_message)
         
         # Start MQTT listener for status updates
-        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         self.client.on_message = self._on_message
         try:
             self.client.connect("localhost", 1883, 60)
@@ -134,7 +134,7 @@ class UpdateWidget(QWidget):
     def _update_individual(self, update_id):
         self.status_lbl.setText(f"Updating {update_id}...")
         try:
-            self.router.dispatch("updates.update_individual", {"id": update_id})
+            self.router.dispatch("updates.individual", id=update_id)
         except Exception as e:
             self.status_lbl.setText(f"Error: {e}")
 

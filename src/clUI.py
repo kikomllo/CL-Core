@@ -263,6 +263,8 @@ class DraggableWidget(QWidget):
         self.widget_id = widget_id
         self.closable = closable
         
+        print(f"[DEBUG DraggableWidget] widget_id={widget_id}, title={repr(title)}, closable={closable}")
+        
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.layout.setSpacing(0)
@@ -604,7 +606,6 @@ class JarvisUI(QWidget):
             flags |= Qt.WindowType.WindowTransparentForInput
             
         self.setWindowFlags(flags)
-        
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         if sys.platform != "win32":
             self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
@@ -630,11 +631,10 @@ class JarvisUI(QWidget):
         self.timer.timeout.connect(self.update_animation)
         self.timer.start(1000 // 60)
         
-        if sys.platform == "win32":
-            self.occlusion_timer = QTimer(self)
-            self.occlusion_timer.timeout.connect(self._check_occlusion)
-            self.occlusion_timer.start(250)
-            self._last_fg_hwnd = 0
+        self.occlusion_timer = QTimer(self)
+        self.occlusion_timer.timeout.connect(self._check_occlusion)
+        self.occlusion_timer.start(250)
+        self._last_fg_hwnd = 0
         
         self.pending_options = None
         self.options_debounce_timer = QTimer(self)
@@ -764,35 +764,42 @@ class JarvisUI(QWidget):
             return
             
         import time
-        import ctypes
-        user32 = ctypes.windll.user32
-        
-        hwnd = user32.GetForegroundWindow()
-        if hwnd == 0:
-            return
-            
         if time.time() < getattr(self, '_occlusion_disabled_until', 0):
-            self._last_fg_hwnd = hwnd
             return
             
-        if hwnd == int(self.winId()):
-            self._last_fg_hwnd = hwnd
-            return
+        if sys.platform == "win32":
+            import ctypes
+            user32 = ctypes.windll.user32
             
-        if hwnd == getattr(self, '_last_fg_hwnd', 0):
-            return
-            
-        rect = RECT()
-        if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-            fg_rect = QRect(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
-            # Windows 10/11 maximized windows bleed ~8 pixels into adjacent monitors to hide borders.
-            # We shrink the foreground rect by 15 pixels to prevent cross-monitor false positives.
-            shrunk_rect = fg_rect.adjusted(15, 15, -15, -15)
-            if self.geometry().intersects(shrunk_rect):
+            hwnd = user32.GetForegroundWindow()
+            if hwnd == 0:
+                return
+                
+            if hwnd == int(self.winId()):
                 self._last_fg_hwnd = hwnd
+                return
+                
+            if hwnd == getattr(self, '_last_fg_hwnd', 0):
+                return
+                
+            from ctypes.wintypes import RECT
+            rect = RECT()
+            if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                from PyQt6.QtCore import QRect
+                fg_rect = QRect(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
+                # Windows 10/11 maximized windows bleed ~8 pixels into adjacent monitors to hide borders.
+                # We shrink the foreground rect by 15 pixels to prevent cross-monitor false positives.
+                shrunk_rect = fg_rect.adjusted(15, 15, -15, -15)
+                if self.geometry().intersects(shrunk_rect):
+                    self._last_fg_hwnd = hwnd
+                    self.set_ui_mode("set_overlay")
+                else:
+                    self._last_fg_hwnd = hwnd
+        else:
+            # On Linux/X11, when the user clicks another application, our application loses active focus.
+            active_win = QApplication.activeWindow()
+            if active_win is None:
                 self.set_ui_mode("set_overlay")
-            else:
-                self._last_fg_hwnd = hwnd
 
     def _handle_feedback(self, data):
         device = data.get("device")
@@ -1125,8 +1132,9 @@ class JarvisUI(QWidget):
                 cy = (self.height() // 2) - w.height() - 120
                 w.move(cx, cy)
 
-    def spawn_widget(self, widget_id, title, content_widget):
+    def spawn_widget(self, widget_id, title, content_widget, closable=True):
         """API to spawn or bring-to-front a dashboard widget"""
+        print(f"[DEBUG spawn_widget] widget_id={widget_id}, title={repr(title)}, closable={closable}")
         if widget_id in self.active_widgets:
             w = self.active_widgets[widget_id]
             if self.is_fullscreen:
@@ -1135,7 +1143,7 @@ class JarvisUI(QWidget):
             return
         is_standalone = not self.is_fullscreen
         parent = None if is_standalone else self
-        wrapper = DraggableWidget(widget_id, title, content_widget, closable=True, parent=parent)
+        wrapper = DraggableWidget(widget_id, title, content_widget, closable=closable, parent=parent)
         
         # Position in center of screen by default
         if is_standalone:
@@ -1230,11 +1238,10 @@ class JarvisUI(QWidget):
             self.hide()
             QApplication.processEvents()
             
-            self.setWindowFlags(
-                Qt.WindowType.Window | 
-                Qt.WindowType.FramelessWindowHint |
-                Qt.WindowType.WindowStaysOnTopHint
-            )
+            flags = Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
+            if sys.platform == "win32":
+                flags |= Qt.WindowType.WindowStaysOnTopHint
+            self.setWindowFlags(flags)
             
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
             if sys.platform != "win32":

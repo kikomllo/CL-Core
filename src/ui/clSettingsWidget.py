@@ -392,6 +392,98 @@ class SettingsWidget(QWidget):
         updates_layout.addWidget(self._create_dropdown("update_mode", "Update Mode", ["confirm", "direct"], current_mode, self._change_update_mode))
         updates_layout.addSpacing(20)
 
+        # --- TAB 5: KEYBINDS ---
+        keybinds_scroll, keybinds_layout = self._create_scroll_tab()
+        self.tabs.addTab(keybinds_scroll, "Keybinds")
+        
+        keybinds_layout.addWidget(self._create_section_label("Global Shortcuts"))
+        
+        try:
+            keybinds_data = self.loader.load_json("keybinds.json")
+            for action_key, bind_info in keybinds_data.items():
+                if isinstance(bind_info, dict):
+                    current_key = bind_info.get("key", "")
+                    current_mode = bind_info.get("mode", "single")
+                else:
+                    current_key = str(bind_info)
+                    current_mode = "single"
+
+                # Container for this keybind entry
+                entry_widget = QWidget()
+                entry_layout = QHBoxLayout(entry_widget)
+                entry_layout.setContentsMargins(0, 0, 0, 0)
+                
+                lbl = QLabel(action_key)
+                lbl.setStyleSheet("color: #ffe6cc; font-size: 9.5pt;")
+                
+                # Line Edit for key string
+                key_edit = QLineEdit(current_key)
+                key_edit.setStyleSheet("""
+                    QLineEdit {
+                        background-color: rgba(25, 12, 3, 240);
+                        color: #ffe6cc;
+                        border: 1px solid rgba(255, 180, 0, 100);
+                        border-radius: 4px;
+                        padding: 3px 6px;
+                        font-family: 'Courier New';
+                        font-size: 9pt;
+                    }
+                    QLineEdit:focus { border: 1px solid #ffaa00; background-color: rgba(35, 18, 5, 255); }
+                """)
+                key_edit.editingFinished.connect(lambda ak=action_key, le=key_edit: self._update_keybind(ak, "key", le.text()))
+                
+                # Dropdown for mode
+                mode_combo = QComboBox()
+                mode_combo.addItems(["single", "continuous"])
+                mode_combo.setCurrentText(current_mode)
+                mode_combo.setFixedWidth(100)
+                mode_combo.setStyleSheet("""
+                    QComboBox {
+                        background-color: rgba(25, 12, 3, 240); color: #ffe6cc;
+                        border: 1px solid rgba(255, 180, 0, 100); border-radius: 4px; padding: 3px 6px; font-size: 9pt;
+                    }
+                    QComboBox::drop-down { border: none; }
+                """)
+                mode_combo.currentTextChanged.connect(lambda text, ak=action_key: self._update_keybind(ak, "mode", text))
+                
+                entry_layout.addWidget(lbl, 1)
+                entry_layout.addWidget(key_edit, 2)
+                entry_layout.addWidget(mode_combo)
+                
+                keybinds_layout.addWidget(entry_widget)
+                
+            keybinds_layout.addSpacing(15)
+            
+            refresh_btn = QPushButton("Refresh Keybinds")
+            refresh_btn.setFixedHeight(30)
+            refresh_btn.setStyleSheet("""
+                QPushButton { background-color: rgba(40, 25, 10, 200); color: #ffaa00; border: 1px dashed rgba(255, 170, 0, 120); border-radius: 4px; font-weight: bold; font-size: 9pt; }
+                QPushButton:hover { background-color: rgba(70, 45, 15, 255); border: 1px solid #ffaa00; }
+            """)
+            refresh_btn.clicked.connect(self._refresh_keybinds)
+            keybinds_layout.addWidget(refresh_btn)
+            
+        except Exception as e:
+            err_lbl = QLabel(f"Failed to load keybinds: {e}")
+            err_lbl.setStyleSheet("color: red;")
+            keybinds_layout.addWidget(err_lbl)
+            
+        keybinds_layout.addSpacing(20)
+
+    def _update_keybind(self, action_key, field, new_value):
+        def _mutator(data):
+            if action_key not in data:
+                data[action_key] = {"key": "", "mode": "single"}
+            elif not isinstance(data[action_key], dict):
+                data[action_key] = {"key": str(data[action_key]), "mode": "single"}
+                
+            data[action_key][field] = new_value
+            
+        self.loader.update_json_atomic("keybinds.json", _mutator)
+        
+    def _refresh_keybinds(self):
+        self.router.dispatch("system.restart_module", target="keybinds")
+
     def _load_devices_json(self):
         if os.path.exists(self.devices_json_path):
             try:

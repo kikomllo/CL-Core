@@ -8,8 +8,8 @@
             "pt"
         ],
         "stt_model": "small",
-        "stt_processing_mode": "parallel",
-        "hardware": "cuda",
+        "stt_processing_mode": "sequential",
+        "hardware": "cpu",
         "enable_followup": false,
         "silent_mode": true,
         "last_light_target": "all",

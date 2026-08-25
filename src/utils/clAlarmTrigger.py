@@ -60,7 +60,7 @@ def main():
     
     try:
         import paho.mqtt.client as mqtt
-        c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+        c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         
         is_deactivated = False
         mic_is_active = False
@@ -154,7 +154,7 @@ def main():
         if was_offline:
             logging.info("[ALARM TRIGGER] Jarvis was offline before alarm. Triggering ecosystem shutdown.")
             try:
-                c2 = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+                c2 = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
                 c2.connect("localhost")
                 c2.publish("jarvis/sys/speak", json.dumps({"text": "Alarm dismissed. Shutting down.", "skip_ducking": True}))
                 time.sleep(2.0)
