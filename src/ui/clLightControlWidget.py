@@ -120,6 +120,12 @@ class LightControlWidget(QWidget):
         elif getattr(self, '_empty_lbl', None) is not None:
             self._empty_lbl.deleteLater()
             self._empty_lbl = None
+
+        new_targets = {l.get("name", "").lower().replace(" ", "_") for l in lights}
+        for old_target in list(self.light_rows.keys()):
+            if old_target not in new_targets:
+                self.light_rows[old_target]["widget"].deleteLater()
+                del self.light_rows[old_target]
             
         for l in lights:
             target_name = l.get("name", "").lower().replace(" ", "_")
