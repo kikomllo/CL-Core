@@ -57,19 +57,20 @@ def main():
     print(f"[BOOT] Launching Ecosystem Supervisor ({'Windows' if is_windows else 'Linux'} Native)...")
     env = os.environ.copy()
     
-    # 4. Single Instance Lock
+    # 4. Single Instance Lock & Cleanup
     import socket
     import time
-    import json
+    
     lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    is_locked = False
     try:
         lock_socket.bind(("127.0.0.1", 64000))
     except socket.error:
-        print("[BOOT] Existing Jarvis instance detected. Attempting to shut it down...")
+        is_locked = True
+        
+    if is_locked:
+        print("[BOOT] Existing Jarvis instance detected. Attempting graceful shutdown...")
         try:
-            # We must add venv/lib to path if we want to import paho directly without running in the venv
-            # But wait, boot.py is run manually by user with `python boot.py`. It may or may not be in venv.
-            # Let's run a small inline python script inside the venv to publish the message.
             shutdown_script = "import paho.mqtt.publish as p; import json; p.single('jarvis/sys/manager', json.dumps({'action': 'shutdown'}), hostname='localhost')"
             subprocess.run([python_exe, "-c", shutdown_script], check=False)
             
@@ -80,25 +81,34 @@ def main():
                     lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     lock_socket.bind(("127.0.0.1", 64000))
                     print("[BOOT] Old instance successfully shut down.")
+                    is_locked = False
                     break
                 except socket.error:
                     pass
-            else:
-                print("[BOOT] Graceful shutdown failed. Force killing...")
-                if is_windows:
-                    subprocess.run('wmic process where "name=\'python.exe\' and commandline like \'%clJarvis.py%\'" call terminate', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                else:
-                    subprocess.run(['pkill', '-f', 'clJarvis.py'])
-                
-                time.sleep(2)
-                try:
-                    lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    lock_socket.bind(("127.0.0.1", 64000))
-                except socket.error:
-                    print("[BOOT] FATAL: Port 64000 is still locked. Cannot start.")
-                    sys.exit(1)
         except Exception as e:
-            print(f"[BOOT] FATAL error while terminating old instance: {e}")
+            print(f"[BOOT] Error during graceful shutdown attempt: {e}")
+
+    # FORCE CLEANUP: Always kill any lingering processes to ensure a clean boot
+    print("[BOOT] Sweeping system for any lingering ecosystem processes...")
+    ecosystem_scripts = [
+        "clJarvis.py", "clUI.py", "clKeybinds.py", "clUtilities.py", 
+        "clUpdater.py", "clTrayIcon.py", "clWhisper.py", "clDaemon.py", 
+        "clSpotify.py", "clTTS.py", "clControl.py", "clMic.py", "clTerminal.py"
+    ]
+    for script in ecosystem_scripts:
+        if is_windows:
+            subprocess.run(f'wmic process where "name=\'python.exe\' and commandline like \'%{script}%\'" call terminate', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            subprocess.run(['pkill', '-f', f'python.*{script}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+    time.sleep(1)
+            
+    if is_locked:
+        try:
+            lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            lock_socket.bind(("127.0.0.1", 64000))
+        except socket.error:
+            print("[BOOT] FATAL: Port 64000 is still locked after forceful cleanup. Cannot start.")
             sys.exit(1)
 
     # Execute clJarvis replacing the current process (on Unix) or launching subprocess (on Windows)
