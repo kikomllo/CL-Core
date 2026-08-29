@@ -351,6 +351,8 @@ class DraggableWidget(QWidget):
                 if hasattr(self.content_widget, "on_drag_start"):
                     self.content_widget.on_drag_start()
             self.raise_()
+            if hasattr(self.parent(), "_enforce_z_order"):
+                self.parent()._enforce_z_order()
         super().mousePressEvent(event)
         
     def mouseMoveEvent(self, event):
@@ -830,7 +832,15 @@ class JarvisUI(QWidget):
                     wrapper.content_widget.handle_feedback(data)
                 if self.is_fullscreen:
                     wrapper.show()
-                    wrapper.raise_()
+                    wrapper.raise_(); self._enforce_z_order()
+
+
+    def _enforce_z_order(self):
+        if getattr(self, 'is_fullscreen', False):
+            if hasattr(self, 'calendar_drawer'):
+                self.calendar_drawer.raise_()
+            if getattr(self, 'text_input', None) is not None:
+                self.text_input.raise_()
 
     def _toggle_media(self):
         if getattr(self, 'is_fullscreen', False):
@@ -843,7 +853,7 @@ class JarvisUI(QWidget):
                 w = self.active_widgets[widget_id]
                 if w.isHidden():
                     w.show()
-                    w.raise_()
+                    w.raise_(); self._enforce_z_order()
                 else:
                     self.close_draggable_widget(widget_id)
 
@@ -858,7 +868,7 @@ class JarvisUI(QWidget):
                 w = self.active_widgets[widget_id]
                 if w.isHidden():
                     w.show()
-                    w.raise_()
+                    w.raise_(); self._enforce_z_order()
                 else:
                     self.close_draggable_widget(widget_id)
 
@@ -868,7 +878,7 @@ class JarvisUI(QWidget):
                 self.reminder_widget.hide()
             else:
                 self.reminder_widget.show()
-                self.reminder_widget.raise_()
+                self.reminder_widget.raise_(); self._enforce_z_order()
             self.save_ui_state()
 
     def _toggle_todos(self):
@@ -881,7 +891,7 @@ class JarvisUI(QWidget):
                 w = self.active_widgets[widget_id]
                 if w.isHidden():
                     w.show()
-                    w.raise_()
+                    w.raise_(); self._enforce_z_order()
                     self.save_ui_state()
                 else:
                     self.close_draggable_widget(widget_id)
@@ -896,7 +906,7 @@ class JarvisUI(QWidget):
                 w = self.active_widgets[widget_id]
                 if w.isHidden():
                     w.show()
-                    w.raise_()
+                    w.raise_(); self._enforce_z_order()
                     self.save_ui_state()
                 else:
                     self.close_draggable_widget(widget_id)
@@ -911,7 +921,7 @@ class JarvisUI(QWidget):
                 w = self.active_widgets[widget_id]
                 if w.isHidden():
                     w.show()
-                    w.raise_()
+                    w.raise_(); self._enforce_z_order()
                     self.save_ui_state()
                 else:
                     self.close_draggable_widget(widget_id)
@@ -926,7 +936,7 @@ class JarvisUI(QWidget):
             w = self.active_widgets[widget_id]
             if w.isHidden():
                 w.show()
-                w.raise_()
+                w.raise_(); self._enforce_z_order()
                 self.save_ui_state()
             else:
                 self.close_draggable_widget(widget_id)
@@ -1156,7 +1166,7 @@ class JarvisUI(QWidget):
             w = self.active_widgets[widget_id]
             if self.is_fullscreen:
                 w.show()
-                w.raise_()
+                w.raise_(); self._enforce_z_order()
             return
         is_standalone = not self.is_fullscreen
         parent = None if is_standalone else self
@@ -1182,7 +1192,7 @@ class JarvisUI(QWidget):
             if hasattr(wrapper, "title_bar"):
                 wrapper.title_bar.show()
             wrapper.show()
-            wrapper.raise_()
+            wrapper.raise_(); self._enforce_z_order()
         else:
             if widget_id.startswith("list_") or widget_id == "widget_debug_logs":
                 if hasattr(wrapper, "title_bar") and widget_id.startswith("list_"):
@@ -1193,7 +1203,7 @@ class JarvisUI(QWidget):
                     new_cy = (self.height() // 2) - wrapper.height() - 120
                     wrapper.move(new_cx, new_cy)
                 wrapper.show()
-                wrapper.raise_()
+                wrapper.raise_(); self._enforce_z_order()
             else:
                 wrapper.hide()
 
@@ -1421,7 +1431,8 @@ class JarvisUI(QWidget):
             
             if getattr(self, 'text_input', None) is not None:
                 self.text_input.show()
-                self.text_input.raise_()
+                
+            self._enforce_z_order()
             
         elif mode == "set_overlay":
             self.is_fullscreen = False
@@ -1622,7 +1633,7 @@ class JarvisUI(QWidget):
                     self.reminder_widget.move(pos[0], pos[1])
                 if rem_state.get("visible", False):
                     self.reminder_widget.show()
-                    self.reminder_widget.raise_()
+                    self.reminder_widget.raise_(); self._enforce_z_order()
                 else:
                     self.reminder_widget.hide()
                     
@@ -1665,7 +1676,7 @@ class JarvisUI(QWidget):
                         
                     if is_visible:
                         w.show()
-                        w.raise_()
+                        w.raise_(); self._enforce_z_order()
                     else:
                         w.hide()
         except Exception as e:

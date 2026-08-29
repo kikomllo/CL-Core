@@ -1,5 +1,5 @@
 {
-  "drawer_open": true,
+  "drawer_open": false,
   "carousel_tab": 0,
   "reminder_widget": {
     "visible": true,
@@ -12,8 +12,8 @@
     "widget_todo_list": {
       "visible": true,
       "pos": [
-        1044,
-        50
+        722,
+        44
       ],
       "size": [
         350,
@@ -34,8 +34,8 @@
     "widget_settings": {
       "visible": true,
       "pos": [
-        399,
-        48
+        385,
+        47
       ],
       "size": [
         325,

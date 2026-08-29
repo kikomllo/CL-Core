@@ -408,7 +408,7 @@ class CalendarWidget(QWidget):
             self.event_dialog.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
             self.event_dialog.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
             self.event_dialog.setStyleSheet("""
-                QDialog {
+                #BgFrame {
                     background-color: rgba(20, 10, 0, 240);
                     border: 1px solid rgba(255, 120, 0, 100);
                     border-radius: 12px;
@@ -450,8 +450,15 @@ class CalendarWidget(QWidget):
                     border: 1px solid #ffaa00;
                 }
             """)
-            
-            dlg_layout = QVBoxLayout(self.event_dialog)
+
+            from PyQt6.QtWidgets import QFrame
+            main_layout = QVBoxLayout(self.event_dialog)
+            main_layout.setContentsMargins(0, 0, 0, 0)
+            bg_frame = QFrame()
+            bg_frame.setObjectName("BgFrame")
+            main_layout.addWidget(bg_frame)
+
+            dlg_layout = QVBoxLayout(bg_frame)
             dlg_layout.setContentsMargins(14, 14, 14, 14)
             dlg_layout.setSpacing(10)
             
