@@ -1,5 +1,5 @@
 {
-  "drawer_open": false,
+  "drawer_open": true,
   "carousel_tab": 0,
   "reminder_widget": {
     "visible": true,
@@ -10,10 +10,10 @@
   },
   "active_widgets": {
     "widget_todo_list": {
-      "visible": false,
+      "visible": true,
       "pos": [
-        1037,
-        63
+        1044,
+        50
       ],
       "size": [
         350,
@@ -21,21 +21,21 @@
       ]
     },
     "widget_updates": {
-      "visible": true,
+      "visible": false,
       "pos": [
-        978,
-        25
+        925,
+        30
       ],
       "size": [
-        400,
-        413
+        638,
+        405
       ]
     },
     "widget_settings": {
       "visible": true,
       "pos": [
-        641,
-        24
+        399,
+        48
       ],
       "size": [
         325,
@@ -45,23 +45,23 @@
     "widget_light_controls": {
       "visible": true,
       "pos": [
-        1142,
-        481
+        35,
+        46
       ],
       "size": [
         340,
-        146
+        218
       ]
     },
     "widget_media_controls": {
-      "visible": true,
+      "visible": false,
       "pos": [
-        32,
-        96
+        875,
+        464
       ],
       "size": [
-        170,
-        176
+        150,
+        50
       ]
     }
   },

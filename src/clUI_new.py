@@ -593,31 +593,12 @@ class JarvisVisualizer(QWidget):
             painter.restore()
 
 
-class OverlayWindow(QWidget):
-    def __init__(self, parent_ui):
-        super().__init__()
-        self.parent_ui = parent_ui
-        
-        flags = (
-            Qt.WindowType.FramelessWindowHint | 
-            Qt.WindowType.WindowStaysOnTopHint | 
-            Qt.WindowType.Tool
-        )
-        if sys.platform != "win32":
-            flags |= Qt.WindowType.WindowTransparentForInput
-            
-        self.setWindowFlags(flags)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        if sys.platform != "win32":
-            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self.setFixedSize(200, 400)
+from PyQt6.QtCore import QObject
 
-class JarvisUI(QWidget):
-
+class FullscreenUI(QWidget):
     def __init__(self):
         super().__init__()
-        self.router = ActionRouter()
+        self.manager = manager
         
         flags = (
             Qt.WindowType.FramelessWindowHint | 
@@ -644,31 +625,16 @@ class JarvisUI(QWidget):
         self.setFixedSize(width, height)
         
         self.is_fullscreen = False
-        self.state = "IDLE"
         
         # Dashboard Management
-        self.active_widgets = {}
         
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.update_animation)
-        self.timer.start(1000 // 60)
         
-        self.occlusion_timer = QTimer(self)
-        self.occlusion_timer.timeout.connect(self._check_occlusion)
-        self.occlusion_timer.start(250)
         self._last_fg_hwnd = 0
         
-        self.pending_options = None
-        self.options_debounce_timer = QTimer(self)
-        self.options_debounce_timer.setSingleShot(True)
-        self.options_debounce_timer.timeout.connect(self._apply_pending_options)
         
-        self.overlay_window = OverlayWindow(self)
-        
-        # Core Visualizer is now permanently attached to the background
-        self.visualizer = JarvisVisualizer(self)
-        self.visualizer.resize(self.size())
-        self.visualizer.show()
+        self.manager.options_debounce_timer = QTimer()
+        self.manager.options_debounce_timer.setSingleShot(True)
+        self.manager.options_debounce_timer.timeout.connect(self._apply_pending_options)
         
         # Text Input Workaround - No longer a separate window
         self.text_input = QLineEdit(self)
@@ -686,7 +652,7 @@ class JarvisUI(QWidget):
                 padding: 5px;
             }
         """)
-        self.text_input.returnPressed.connect(self.submit_text_command)
+        self.text_input.returnPressed.connect(self.manager.submit_text_command)
         self.text_input.hide()
         
         btn_style = """
@@ -707,49 +673,49 @@ class JarvisUI(QWidget):
         self.btn_media = QPushButton("MUSIC", self)
         self.btn_media.setStyleSheet(btn_style)
         self.btn_media.setFixedSize(100, 35)
-        self.btn_media.clicked.connect(self._toggle_media)
+        self.btn_media.clicked.connect(self.manager._toggle_media)
         self.btn_media.hide()
         
         self.btn_lights = QPushButton("LIGHTS", self)
         self.btn_lights.setStyleSheet(btn_style)
         self.btn_lights.setFixedSize(100, 35)
-        self.btn_lights.clicked.connect(self._toggle_lights)
+        self.btn_lights.clicked.connect(self.manager._toggle_lights)
         self.btn_lights.hide()
         
         self.btn_reminders = QPushButton("REMINDERS", self)
         self.btn_reminders.setStyleSheet(btn_style)
         self.btn_reminders.setFixedSize(100, 35)
-        self.btn_reminders.clicked.connect(self._toggle_reminders)
+        self.btn_reminders.clicked.connect(self.manager._toggle_reminders)
         self.btn_reminders.hide()
         
         self.btn_todos = QPushButton("TODOS", self)
         self.btn_todos.setStyleSheet(btn_style)
         self.btn_todos.setFixedSize(100, 35)
-        self.btn_todos.clicked.connect(self._toggle_todos)
+        self.btn_todos.clicked.connect(self.manager._toggle_todos)
         self.btn_todos.hide()
         
         self.btn_settings = QPushButton("SETTINGS", self)
         self.btn_settings.setStyleSheet(btn_style)
         self.btn_settings.setFixedSize(100, 35)
-        self.btn_settings.clicked.connect(self._toggle_settings)
+        self.btn_settings.clicked.connect(self.manager._toggle_settings)
         self.btn_settings.hide()
         
         self.btn_updates = QPushButton("UPDATES", self)
         self.btn_updates.setStyleSheet(btn_style)
         self.btn_updates.setFixedSize(100, 35)
-        self.btn_updates.clicked.connect(self._toggle_updates)
+        self.btn_updates.clicked.connect(self.manager._toggle_updates)
         self.btn_updates.hide()
         
         self.btn_debug = QPushButton("DEBUG", self)
         self.btn_debug.setStyleSheet(btn_style)
         self.btn_debug.setFixedSize(100, 35)
-        self.btn_debug.clicked.connect(self._toggle_debug)
+        self.btn_debug.clicked.connect(self.manager._toggle_debug)
         self.btn_debug.hide()
         
         self.btn_calendar = QPushButton("❮", self)
         self.btn_calendar.setStyleSheet("QPushButton { background-color: rgba(255, 150, 0, 40); color: #ffaa00; border-radius: 5px; font-weight: bold; border: 1px solid rgba(255, 150, 0, 80); } QPushButton:hover { background-color: rgba(255, 150, 0, 80); }")
         self.btn_calendar.setFixedSize(30, 80)
-        self.btn_calendar.clicked.connect(self._toggle_calendar)
+        self.btn_calendar.clicked.connect(self.manager._toggle_calendar)
         self.btn_calendar.hide()
         
         # Persistent Dashboard Drawer (hidden off-screen right initially)
@@ -1058,11 +1024,6 @@ class JarvisUI(QWidget):
                 self.btn_debug.hide()
         self.update()
         
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if hasattr(self, 'visualizer'):
-            self.visualizer.resize(self.size())
-
     def set_volume(self, vol):
         self.visualizer.set_volume(vol)
 
@@ -1078,13 +1039,13 @@ class JarvisUI(QWidget):
 
     def set_options(self, options, title="Options"):
         self.pending_options = (options, title)
-        self.options_debounce_timer.start(100)  # 100ms debounce
+        self.manager.options_debounce_timer.start(100)  # 100ms debounce
 
     def _apply_pending_options(self):
         if not self.pending_options:
             return
         options, title = self.pending_options
-        self.pending_options = None
+        
         
         self.visualizer.set_options(options)
         
@@ -1227,229 +1188,91 @@ class JarvisUI(QWidget):
             return
             
         if mode == "set_fullscreen":
-            self.overlay_window.hide()
-            self.visualizer.setParent(self)
-            self.visualizer.resize(self.size())
-            self.visualizer.show()
-            logging.info(f"[DEBUG UI] set_fullscreen triggered. is_fullscreen: {getattr(self, 'is_fullscreen', False)}")
-            screens = QApplication.screens()
-            is_monitor_swap = getattr(self, 'is_fullscreen', False)
-            old_geom = None
-            
-            if is_monitor_swap:
-                old_geom = screens[getattr(self, 'current_monitor_idx', 0)].geometry()
+            if getattr(self, 'is_fullscreen', False):
+                screens = QApplication.screens()
                 self.current_monitor_idx = (getattr(self, 'current_monitor_idx', 0) + 1) % len(screens)
-            else:
-                if not hasattr(self, 'current_monitor_idx'):
-                    primary = QApplication.primaryScreen()
-                    self.current_monitor_idx = screens.index(primary) if primary in screens else 0
-                
-                if self.current_monitor_idx >= len(screens):
-                    primary = QApplication.primaryScreen()
-                    self.current_monitor_idx = screens.index(primary) if primary in screens else 0
+                target_screen = screens[self.current_monitor_idx]
+                if self.fullscreen_ui.windowHandle():
+                    self.fullscreen_ui.windowHandle().setScreen(target_screen)
+                self.fullscreen_ui.hide()
+                self.fullscreen_ui.setGeometry(target_screen.geometry())
+                self.fullscreen_ui.showFullScreen()
+                return
 
-            if is_monitor_swap:
-                widget_visibility = {wid: w.isVisible() for wid, w in self.active_widgets.items()}
-                logging.info("[DEBUG UI] Executing monitor swap showNormal()")
-                self.showNormal()
-                QApplication.processEvents()
-            else:
-                logging.info("[DEBUG UI] Executing initial fullscreen setup.")
-                self.hide()
-                QApplication.processEvents()
-                
-                flags = Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
-                if sys.platform == "win32":
-                    flags |= Qt.WindowType.WindowStaysOnTopHint
-                self.setWindowFlags(flags)
-                logging.info("[DEBUG UI] Window flags set.")
-                
-                self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-                if sys.platform != "win32":
-                    self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
-                self.clearMask()
-                self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
-                
-                logging.info("[DEBUG UI] Calling showNormal() to force Wayland mapping...")
-                self.showNormal()
-                QApplication.processEvents()
-                logging.info(f"[DEBUG UI] After showNormal() -> isVisible: {self.isVisible()}, isActiveWindow: {self.isActiveWindow()}")
-            
             self.is_fullscreen = True
             
-            import time
-            self._occlusion_disabled_until = time.time() + 1.5
-            
+            screens = QApplication.screens()
+            if getattr(self, 'current_monitor_idx', 0) >= len(screens):
+                self.current_monitor_idx = 0
             target_screen = screens[self.current_monitor_idx]
-            if self.windowHandle():
-                self.windowHandle().setScreen(target_screen)
             
-            geom = target_screen.geometry()
+            if self.fullscreen_ui.windowHandle():
+                self.fullscreen_ui.windowHandle().setScreen(target_screen)
             
-            self.setMinimumSize(0, 0)
-            self.setMaximumSize(16777215, 16777215)
-            
-            # Reattach standalone widgets back to dashboard
-            for wid, w in self.active_widgets.items():
-                if w.isVisible():
-                    # Check if w currently has no parent (is top-level)
-                    if w.parent() is None:
-                        local_pos = self.mapFromGlobal(w.pos())
-                        w.setParent(self)
-                        w.move(local_pos)
-                    else:
-                        w.setParent(self)
-                    w.show()
-            
-            self.setGeometry(geom)
-            
-            # Reset visualizer to IDLE before transitioning — prevents stale RECORDING state
-            # from a previous TTS+mic cycle being inherited by the fullscreen view
-            self.state = "IDLE"
-            self.visualizer.set_state("IDLE", True)
-            
-            self.visualizer.lower()
-            
-            # Row 1
-            self.btn_media.setGeometry(30, geom.height() - 65, 120, 35)
-            self.btn_lights.setGeometry(145, geom.height() - 65, 120, 35)
-            
-            self.btn_reminders.setGeometry(260, geom.height() - 65, 120, 35)
-            self.btn_todos.setGeometry(375, geom.height() - 65, 120, 35)
-            
-            self.btn_settings.setGeometry(30, geom.height() - 115, 120, 35)
-            self.btn_updates.setGeometry(145, geom.height() - 115, 120, 35)
-            
-            self.btn_debug.setGeometry(260, geom.height() - 115, 120, 35)
-            
-            # Position calendar toggle on right edge
-            self.btn_calendar.setGeometry(geom.width() - 30, int(geom.height() / 2) - 40, 30, 80)
-            self.btn_calendar.setText("❮")
-            
-            self.calendar_drawer.setGeometry(geom.width(), 0, 380, geom.height())
-            self.calendar_is_open = False
-            
-            self.btn_media.show()
-            self.btn_lights.show()
-            self.btn_reminders.show()
-            self.btn_todos.show()
-            self.btn_settings.show()
-            self.btn_updates.show()
-            self.btn_calendar.show()
-            
-            if ECOSYSTEM_STATE == "debug":
-                self.btn_debug.show()
-            else:
-                self.btn_debug.hide()
-            
-            rw_w, rw_h = 220, 135
-            self.reminder_widget.setGeometry(geom.width() - rw_w - 20, geom.height() - rw_h - 20, rw_w, rw_h)
-            if self.reminder_widget.reminders:
-                self.reminder_widget.show()
-            
-            # Show dashboard widgets
-            for wid, w in self.active_widgets.items():
-                if hasattr(w, "title_bar"):
-                    w.title_bar.show()
-                if is_monitor_swap:
-                    if widget_visibility.get(wid, False):
-                        w.show()
-                        if old_geom:
-                            new_x = int((w.x() / old_geom.width()) * geom.width()) if old_geom.width() > 0 else w.x()
-                            new_y = int((w.y() / old_geom.height()) * geom.height()) if old_geom.height() > 0 else w.y()
-                            w.move(new_x, new_y)
-                else:
-                    w.show()
-            
-            if not is_monitor_swap:
-                # Load and restore persistent UI state across sessions
-                self.load_ui_state()
+            self.fullscreen_ui.setGeometry(target_screen.geometry())
+            self.fullscreen_ui.showFullScreen()
 
-            # Refresh states for modules to sync UI
-            if getattr(self, "calendar_is_open", False):
-                self.router.dispatch("calendar.read")
-
-            logging.info(f"[DEBUG UI] Calling showFullScreen(). Current focus: {self.hasFocus()}")
-            self.showFullScreen()
-            logging.info(f"[DEBUG UI] After showFullScreen() -> isVisible: {self.isVisible()}, isFullScreen: {self.isFullScreen()}")
-            
             def force_focus():
-                self.setWindowState((self.windowState() & ~Qt.WindowState.WindowMinimized) | Qt.WindowState.WindowActive)
-                self.raise_()
-                self.activateWindow() 
-                self.setFocus()
-                logging.info(f"[DEBUG UI] After delayed activate/focus -> isActiveWindow: {self.isActiveWindow()}, hasFocus: {self.hasFocus()}")
+                self.fullscreen_ui.setWindowState((self.fullscreen_ui.windowState() & ~Qt.WindowState.WindowMinimized) | Qt.WindowState.WindowActive)
+                self.fullscreen_ui.raise_()
+                self.fullscreen_ui.activateWindow() 
+                self.fullscreen_ui.setFocus()
             
-            # Delay focus grab slightly on Wayland to allow compositor to map the fullscreen surface
             QTimer.singleShot(150, force_focus)
             
-            if sys.platform == "win32":
-                import ctypes
-                hwnd = int(self.winId())
-                user32 = ctypes.windll.user32
-                if sys.maxsize > 2**32:
-                    GetWindowLong = user32.GetWindowLongPtrW
-                    GetWindowLong.argtypes = [ctypes.c_void_p, ctypes.c_int]
-                    GetWindowLong.restype = ctypes.c_void_p
-                    SetWindowLong = user32.SetWindowLongPtrW
-                    SetWindowLong.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
-                    SetWindowLong.restype = ctypes.c_void_p
-                else:
-                    GetWindowLong = user32.GetWindowLongW
-                    SetWindowLong = user32.SetWindowLongW
-                
-                style = GetWindowLong(hwnd, -20)
-                if style is not None:
-                    logging.info(f"[DEBUG UI] Before ctypes: GWL_EXSTYLE = {hex(style)}")
-                    new_style = style & ~0x00000020
-                    SetWindowLong(hwnd, -20, new_style)
-                    user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0023) # SWP_NOMOVE|SWP_NOSIZE|SWP_FRAMECHANGED
-                    final_style = GetWindowLong(hwnd, -20)
-                    logging.info(f"[DEBUG UI] After ctypes: GWL_EXSTYLE = {hex(final_style)}")
-                
-            self.raise_()
-            self.activateWindow() 
-            self.setFocus()
+            self.visualizer.setParent(self.fullscreen_ui)
+            self.visualizer.setGeometry(0, 0, self.fullscreen_ui.width(), self.fullscreen_ui.height())
+            self.visualizer.show()
             
-            box_width = min(650, geom.width() - 100)
-            box_x = int((geom.width() - box_width) / 2)
-            box_y = geom.height() - 62
-            self.text_input.setGeometry(box_x, box_y, box_width, 30)
+            self.overlay_ui.hide()
             
-            if QApplication.applicationState() == Qt.ApplicationState.ApplicationActive:
-                self._on_app_state_changed(Qt.ApplicationState.ApplicationActive)
+            self.fullscreen_ui.btn_media.show()
+            self.fullscreen_ui.btn_lights.show()
+            self.fullscreen_ui.btn_reminders.show()
+            self.fullscreen_ui.btn_todos.show()
+            self.fullscreen_ui.btn_settings.show()
+            self.fullscreen_ui.btn_updates.show()
+            self.fullscreen_ui.btn_calendar.show()
+            self.fullscreen_ui.calendar_drawer.show()
+            self.fullscreen_ui.reminder_widget.show()
             
-            if getattr(self, 'text_input', None) is not None:
-                self.text_input.show()
-                self.text_input.raise_()
-            
+            if getattr(self.fullscreen_ui, 'text_input', None) is not None:
+                self.fullscreen_ui.text_input.show()
+                self.fullscreen_ui.text_input.raise_()
+
+            for wid, w in self.active_widgets.items():
+                if w.isVisible():
+                    if w.parent() is None:
+                        local_pos = self.fullscreen_ui.mapFromGlobal(w.pos())
+                        w.setParent(self.fullscreen_ui)
+                        w.move(local_pos)
+                    else:
+                        w.setParent(self.fullscreen_ui)
+                    w.show()
+                    w.raise_()
+
         elif mode == "set_overlay":
             self.is_fullscreen = False
             
-            self.hide()
-            QApplication.processEvents()
-            
-            if getattr(self, 'text_input', None) is not None:
-                self.text_input.hide()
+            if getattr(self.fullscreen_ui, 'text_input', None) is not None:
+                self.fullscreen_ui.text_input.hide()
                 
-            # Reset visualizer to IDLE on overlay transition
             self.state = "IDLE"
             self.visualizer.set_state("IDLE", False)
             
-            self.btn_media.hide()
-            self.btn_lights.hide()
-            self.btn_reminders.hide()
-            self.btn_todos.hide()
-            self.btn_settings.hide()
-            self.btn_updates.hide()
-            self.btn_calendar.hide()
-            self.calendar_drawer.hide()
-            self.reminder_widget.hide()
-                
-            # Make visible widgets standalone top-level windows
+            self.fullscreen_ui.btn_media.hide()
+            self.fullscreen_ui.btn_lights.hide()
+            self.fullscreen_ui.btn_reminders.hide()
+            self.fullscreen_ui.btn_todos.hide()
+            self.fullscreen_ui.btn_settings.hide()
+            self.fullscreen_ui.btn_updates.hide()
+            self.fullscreen_ui.btn_calendar.hide()
+            self.fullscreen_ui.calendar_drawer.hide()
+            self.fullscreen_ui.reminder_widget.hide()
+            
             for wid, w in self.active_widgets.items():
                 if w.isVisible():
-                    global_pos = self.mapToGlobal(w.pos())
+                    global_pos = self.fullscreen_ui.mapToGlobal(w.pos())
                     w.setParent(None)
                     w.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
                     w.move(global_pos)
@@ -1460,106 +1283,18 @@ class JarvisUI(QWidget):
                     w.adjustSize()
                     w.setParent(None)
                     w.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
-                    
-                    cx = self.x() + (self.width() - w.width()) // 2
-                    w.move(int(cx), self.y() + 10)
+                    cx = self.fullscreen_ui.x() + (self.fullscreen_ui.width() - w.width()) // 2
+                    w.move(int(cx), self.fullscreen_ui.y() + 10)
                     w.show()
-
+                    
+            self.fullscreen_ui.hide()
             
-            self.hide()
+            self.overlay_ui.position_in_corner(self.current_monitor_idx)
+            self.overlay_ui.showNormal()
             
-            primary_screen = QApplication.primaryScreen()
-            screen_geom = primary_screen.availableGeometry()
-            width, height = 200, 400
-            x_pos = screen_geom.right() - width - 20
-            y_pos = screen_geom.bottom() - height - 20
-            
-            self.overlay_window.setGeometry(x_pos, y_pos, width, height)
-            self.overlay_window.showNormal()
-            
-            self.visualizer.setParent(self.overlay_window)
-            self.visualizer.resize(width, height)
+            self.visualizer.setParent(self.overlay_ui)
+            self.visualizer.setGeometry(0, 0, self.overlay_ui.width(), self.overlay_ui.height())
             self.visualizer.show()
-            
-            if sys.platform == "win32":
-                import ctypes
-                hwnd = int(self.overlay_window.winId())
-                user32 = ctypes.windll.user32
-                if sys.maxsize > 2**32:
-                    GetWindowLong = user32.GetWindowLongPtrW
-                    GetWindowLong.argtypes = [ctypes.c_void_p, ctypes.c_int]
-                    GetWindowLong.restype = ctypes.c_void_p
-                    SetWindowLong = user32.SetWindowLongPtrW
-                    SetWindowLong.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
-                    SetWindowLong.restype = ctypes.c_void_p
-                else:
-                    GetWindowLong = user32.GetWindowLongW
-                    SetWindowLong = user32.SetWindowLongW
-                
-                style = GetWindowLong(hwnd, -20)
-                if style is not None:
-                    SetWindowLong(hwnd, -20, style | 0x00000020)
-                    user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0023)
-
-    def _generate_honeycomb(self, w, h):
-        from PyQt6.QtGui import QPixmap, QPolygonF
-        pix = QPixmap(w, h)
-        pix.fill(Qt.GlobalColor.transparent)
-        p = QPainter(pix)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(QPen(QColor(30, 40, 50, 40), 1))
-        
-        r = 25
-        dx = r * 1.5
-        dy = r * math.sqrt(3)
-        
-        for row in range(-1, int(h / dy) + 2):
-            for col in range(-1, int(w / dx) + 2):
-                x = col * dx
-                y = row * dy
-                if col % 2 == 1:
-                    y += dy / 2
-                
-                poly = QPolygonF()
-                for i in range(6):
-                    angle = i * math.pi / 3
-                    px = x + r * math.cos(angle)
-                    py = y + r * math.sin(angle)
-                    poly.append(QPointF(px, py))
-                p.drawPolygon(poly)
-                
-        p.end()
-        return pix
-
-    def paintEvent(self, event):
-        if not self.is_fullscreen:
-            return
-            
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        cx = self.width() / 2
-        cy = self.height() / 2
-        
-        # Invisible background to prevent alpha-click-passthrough on Linux (alpha=1 is enough to catch clicks)
-        painter.setBrush(QColor(0, 0, 0, 240))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRect(self.rect())
-        
-        if not hasattr(self, 'honeycomb_pixmap') or self.honeycomb_pixmap.width() != self.width():
-            self.honeycomb_pixmap = self._generate_honeycomb(self.width(), self.height())
-            
-        painter.setOpacity(1.0)
-        painter.drawPixmap(0, 0, self.honeycomb_pixmap)
-        
-        v_grad = QRadialGradient(cx, cy, max(self.width(), self.height()) / 1.5)
-        v_grad.setColorAt(0.0, QColor(0, 0, 0, 0))
-        v_grad.setColorAt(1.0, QColor(0, 0, 0, 220))
-        painter.setBrush(v_grad)
-        painter.setPen(Qt.PenStyle.NoPen)
-    def closeEvent(self, event):
-        self.save_ui_state()
-        super().closeEvent(event)
 
     def save_ui_state(self):
         try:
@@ -1610,7 +1345,7 @@ class JarvisUI(QWidget):
             # 2. Drawer open/closed state
             drawer_state = state.get("drawer_open", False)
             if drawer_state and not self.calendar_is_open:
-                self._toggle_calendar()
+                self.manager._toggle_calendar()
                 
             self.current_monitor_idx = state.get("current_monitor_idx", 0)
                 
@@ -1625,6 +1360,369 @@ class JarvisUI(QWidget):
                     self.reminder_widget.raise_()
                 else:
                     self.reminder_widget.hide()
+                    
+            # 4. Draggable Floating Widgets (Media, Lights, To-Do)
+            active_state = state.get("active_widgets", {})
+            for widget_id, info in active_state.items():
+                is_visible = info.get("visible", False)
+                pos = info.get("pos")
+                size = info.get("size")
+                
+                if widget_id == "widget_media_controls":
+                    if widget_id not in self.active_widgets:
+                        media_widget = MediaWidget()
+                        self.spawn_widget(widget_id, "Media Controls", media_widget)
+                elif widget_id == "widget_light_controls":
+                    if widget_id not in self.active_widgets:
+                        light_widget = LightControlWidget()
+                        self.spawn_widget(widget_id, "Smart Lights", light_widget)
+                elif widget_id == "widget_todo_list":
+                    if widget_id not in self.active_widgets:
+                        todo_widget = TodoWidget()
+                        self.spawn_widget(widget_id, "To-Do List", todo_widget)
+                elif widget_id == "widget_settings":
+                    if widget_id not in self.active_widgets:
+                        settings_widget = SettingsWidget()
+                        self.spawn_widget(widget_id, "System Settings", settings_widget)
+                elif widget_id == "widget_updates":
+                    if widget_id not in self.active_widgets:
+                        update_widget = UpdateWidget()
+                        self.spawn_widget(widget_id, "System Updates", update_widget)
+                        
+                if widget_id in self.active_widgets:
+                    w = self.active_widgets[widget_id]
+                    
+                    if pos and len(pos) == 2:
+                        w.move(pos[0], pos[1])
+                        
+                    if size and len(size) == 2:
+                        w.resize(size[0], size[1])
+                        
+                    if is_visible:
+                        w.show()
+                        w.raise_()
+                    else:
+                        w.hide()
+        except Exception as e:
+            logging.error(f"Failed to load UI state: {e}")
+
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = JarvisUI()
+    window.show()
+
+    def _generate_honeycomb(self, w, h):
+        from PyQt6.QtGui import QPixmap, QPolygonF
+        pix = QPixmap(w, h)
+        pix.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(QColor(30, 40, 50, 40), 1))
+        
+        r = 25
+        dx = r * 1.5
+        dy = r * math.sqrt(3)
+        
+        for row in range(-1, int(h / dy) + 2):
+            for col in range(-1, int(w / dx) + 2):
+                x = col * dx
+                y = row * dy
+                if col % 2 == 1:
+                    y += dy / 2
+                
+                poly = QPolygonF()
+                for i in range(6):
+                    angle = i * math.pi / 3
+                    px = x + r * math.cos(angle)
+                    py = y + r * math.sin(angle)
+                    poly.append(QPointF(px, py))
+                p.drawPolygon(poly)
+                
+        p.end()
+        return pix
+
+
+    def paintEvent(self, event):
+        if not self.is_fullscreen:
+            return
+            
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        cx = self.width() / 2
+        cy = self.height() / 2
+        
+        # Invisible background to prevent alpha-click-passthrough on Linux (alpha=1 is enough to catch clicks)
+        painter.setBrush(QColor(0, 0, 0, 240))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRect(self.rect())
+        
+        if not hasattr(self, 'honeycomb_pixmap') or self.honeycomb_pixmap.width() != self.width():
+            self.honeycomb_pixmap = self._generate_honeycomb(self.width(), self.height())
+            
+        painter.setOpacity(1.0)
+        painter.drawPixmap(0, 0, self.honeycomb_pixmap)
+        
+        v_grad = QRadialGradient(cx, cy, max(self.width(), self.height()) / 1.5)
+        v_grad.setColorAt(0.0, QColor(0, 0, 0, 0))
+        v_grad.setColorAt(1.0, QColor(0, 0, 0, 220))
+        painter.setBrush(v_grad)
+        painter.setPen(Qt.PenStyle.NoPen)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if getattr(self.manager, 'visualizer', None) and self.manager.visualizer.parent() == self:
+            self.manager.visualizer.resize(self.size())
+
+
+
+
+class OverlayUI(QWidget):
+    def __init__(self, manager):
+        super().__init__()
+        self.manager = manager
+        self.is_fullscreen = False
+        
+        flags = (
+            Qt.WindowType.FramelessWindowHint | 
+            Qt.WindowType.WindowStaysOnTopHint | 
+            Qt.WindowType.Tool
+        )
+        if sys.platform != "win32":
+            flags |= Qt.WindowType.WindowTransparentForInput
+            
+        self.setWindowFlags(flags)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        if sys.platform != "win32":
+            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        
+    def position_in_corner(self, screen_idx):
+        screens = QApplication.screens()
+        target_screen = screens[screen_idx] if screen_idx < len(screens) else QApplication.primaryScreen()
+        if self.windowHandle():
+            self.windowHandle().setScreen(target_screen)
+        
+        screen_geom = target_screen.geometry()
+        width, height = 200, 400
+        x_pos = screen_geom.right() - width - 20
+        y_pos = screen_geom.bottom() - height - 20
+        self.setFixedSize(width, height)
+        self.setGeometry(x_pos, y_pos, width, height)
+
+class JarvisUI(QObject):
+
+    def __init__(self):
+        super().__init__()
+        self.router = ActionRouter()
+        self.state = "IDLE"
+        self.active_widgets = {}
+        self.is_fullscreen = False
+        self.current_monitor_idx = 0
+        
+        self.overlay_ui = OverlayUI(self)
+        self.fullscreen_ui = FullscreenUI(self)
+        
+        self.visualizer = JarvisVisualizer(self.overlay_ui)
+        self.visualizer.resize(200, 400)
+        self.visualizer.show()
+        
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_animation)
+        self.timer.start(1000 // 60)
+        
+        self.pending_options = None
+        self.options_debounce_timer = QTimer()
+        self.options_debounce_timer.setSingleShot(True)
+        self.options_debounce_timer.timeout.connect(self._apply_pending_options)
+
+    def closeEvent(self, event):
+        self.save_ui_state()
+        super().closeEvent(event)
+
+    def set_ui_mode(self, mode):
+        if mode == "save_state":
+            self.save_ui_state()
+            return
+            
+        if mode == "show_logs":
+            self._toggle_debug()
+            return
+            
+        if mode == "set_fullscreen":
+            if getattr(self, 'is_fullscreen', False):
+                screens = QApplication.screens()
+                self.current_monitor_idx = (getattr(self, 'current_monitor_idx', 0) + 1) % len(screens)
+                target_screen = screens[self.current_monitor_idx]
+                if self.fullscreen_ui.windowHandle():
+                    self.fullscreen_ui.windowHandle().setScreen(target_screen)
+                self.fullscreen_ui.hide()
+                self.fullscreen_ui.setGeometry(target_screen.geometry())
+                self.fullscreen_ui.showFullScreen()
+                return
+
+            self.is_fullscreen = True
+            
+            screens = QApplication.screens()
+            if getattr(self, 'current_monitor_idx', 0) >= len(screens):
+                self.current_monitor_idx = 0
+            target_screen = screens[self.current_monitor_idx]
+            
+            if self.fullscreen_ui.windowHandle():
+                self.fullscreen_ui.windowHandle().setScreen(target_screen)
+            
+            self.fullscreen_ui.setGeometry(target_screen.geometry())
+            self.fullscreen_ui.showFullScreen()
+
+            def force_focus():
+                self.fullscreen_ui.setWindowState((self.fullscreen_ui.windowState() & ~Qt.WindowState.WindowMinimized) | Qt.WindowState.WindowActive)
+                self.fullscreen_ui.raise_()
+                self.fullscreen_ui.activateWindow() 
+                self.fullscreen_ui.setFocus()
+            
+            QTimer.singleShot(150, force_focus)
+            
+            self.visualizer.setParent(self.fullscreen_ui)
+            self.visualizer.setGeometry(0, 0, self.fullscreen_ui.width(), self.fullscreen_ui.height())
+            self.visualizer.show()
+            
+            self.overlay_ui.hide()
+            
+            self.fullscreen_ui.btn_media.show()
+            self.fullscreen_ui.btn_lights.show()
+            self.fullscreen_ui.btn_reminders.show()
+            self.fullscreen_ui.btn_todos.show()
+            self.fullscreen_ui.btn_settings.show()
+            self.fullscreen_ui.btn_updates.show()
+            self.fullscreen_ui.btn_calendar.show()
+            self.fullscreen_ui.calendar_drawer.show()
+            self.fullscreen_ui.reminder_widget.show()
+            
+            if getattr(self.fullscreen_ui, 'text_input', None) is not None:
+                self.fullscreen_ui.text_input.show()
+                self.fullscreen_ui.text_input.raise_()
+
+            for wid, w in self.active_widgets.items():
+                if w.isVisible():
+                    if w.parent() is None:
+                        local_pos = self.fullscreen_ui.mapFromGlobal(w.pos())
+                        w.setParent(self.fullscreen_ui)
+                        w.move(local_pos)
+                    else:
+                        w.setParent(self.fullscreen_ui)
+                    w.show()
+                    w.raise_()
+
+        elif mode == "set_overlay":
+            self.is_fullscreen = False
+            
+            if getattr(self.fullscreen_ui, 'text_input', None) is not None:
+                self.fullscreen_ui.text_input.hide()
+                
+            self.state = "IDLE"
+            self.visualizer.set_state("IDLE", False)
+            
+            self.fullscreen_ui.btn_media.hide()
+            self.fullscreen_ui.btn_lights.hide()
+            self.fullscreen_ui.btn_reminders.hide()
+            self.fullscreen_ui.btn_todos.hide()
+            self.fullscreen_ui.btn_settings.hide()
+            self.fullscreen_ui.btn_updates.hide()
+            self.fullscreen_ui.btn_calendar.hide()
+            self.fullscreen_ui.calendar_drawer.hide()
+            self.fullscreen_ui.reminder_widget.hide()
+            
+            for wid, w in self.active_widgets.items():
+                if w.isVisible():
+                    global_pos = self.fullscreen_ui.mapToGlobal(w.pos())
+                    w.setParent(None)
+                    w.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+                    w.move(global_pos)
+                    w.show()
+                elif wid == "options_list":
+                    if hasattr(w, "title_bar"):
+                        w.title_bar.hide()
+                    w.adjustSize()
+                    w.setParent(None)
+                    w.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+                    cx = self.fullscreen_ui.x() + (self.fullscreen_ui.width() - w.width()) // 2
+                    w.move(int(cx), self.fullscreen_ui.y() + 10)
+                    w.show()
+                    
+            self.fullscreen_ui.hide()
+            
+            self.overlay_ui.position_in_corner(self.current_monitor_idx)
+            self.overlay_ui.showNormal()
+            
+            self.visualizer.setParent(self.overlay_ui)
+            self.visualizer.setGeometry(0, 0, self.overlay_ui.width(), self.overlay_ui.height())
+            self.visualizer.show()
+
+    def save_ui_state(self):
+        try:
+            active_widgets_data = {}
+            for wid, wrapper in self.active_widgets.items():
+                active_widgets_data[wid] = {
+                    "visible": wrapper.isVisible(),
+                    "pos": [wrapper.x(), wrapper.y()],
+                    "size": [wrapper.width(), wrapper.height()]
+                }
+                
+            reminder_data = {
+                "visible": self.fullscreen_ui.reminder_widget.isVisible() if hasattr(self, 'reminder_widget') else False,
+                "pos": [self.fullscreen_ui.reminder_widget.x(), self.fullscreen_ui.reminder_widget.y()] if hasattr(self, 'reminder_widget') else [0, 0]
+            }
+            
+            carousel_idx = self.fullscreen_ui.calendar_drawer.carousel.stack.currentIndex() if hasattr(self, 'calendar_drawer') else 0
+            
+            state_payload = {
+                "drawer_open": getattr(self, 'calendar_is_open', False),
+                "carousel_tab": carousel_idx,
+                "reminder_widget": reminder_data,
+                "active_widgets": active_widgets_data,
+                "current_monitor_idx": getattr(self, 'current_monitor_idx', 0)
+            }
+            
+            os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+            with open(STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(state_payload, f, indent=2)
+        except Exception as e:
+            logging.error(f"Failed to save UI state: {e}")
+
+    def load_ui_state(self):
+        if not os.path.exists(STATE_FILE):
+            return
+            
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                state = json.load(f)
+                
+            # 1. Carousel tab
+            carousel_tab = state.get("carousel_tab", 0)
+            if hasattr(self, 'calendar_drawer'):
+                if 0 <= carousel_tab < self.fullscreen_ui.calendar_drawer.carousel.stack.count():
+                    self.fullscreen_ui.calendar_drawer.carousel.stack.setCurrentIndex(carousel_tab)
+                    self.fullscreen_ui.calendar_drawer.carousel.update_indicator()
+                    
+            # 2. Drawer open/closed state
+            drawer_state = state.get("drawer_open", False)
+            if drawer_state and not self.fullscreen_ui.calendar_is_open:
+                self._toggle_calendar()
+                
+            self.current_monitor_idx = state.get("current_monitor_idx", 0)
+                
+            widgets_state = state.get("active_widgets", {})
+            rem_state = state.get("reminder_widget", {})
+            if hasattr(self, 'reminder_widget'):
+                pos = rem_state.get("pos")
+                if pos and len(pos) == 2:
+                    self.fullscreen_ui.reminder_widget.move(pos[0], pos[1])
+                if rem_state.get("visible", False):
+                    self.fullscreen_ui.reminder_widget.show()
+                    self.fullscreen_ui.reminder_widget.raise_()
+                else:
+                    self.fullscreen_ui.reminder_widget.hide()
                     
             # 4. Draggable Floating Widgets (Media, Lights, To-Do)
             active_state = state.get("active_widgets", {})

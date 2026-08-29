@@ -1,87 +1,130 @@
-import re
+with open("src/clUI_new.py", "r") as f:
+    lines = f.readlines()
 
-with open('src/clUI.py', 'r') as f:
-    content = f.read()
+new_set_ui_mode = """    def set_ui_mode(self, mode):
+        if mode == "save_state":
+            self.save_ui_state()
+            return
+            
+        if mode == "show_logs":
+            self._toggle_debug()
+            return
+            
+        if mode == "set_fullscreen":
+            if getattr(self, 'is_fullscreen', False):
+                screens = QApplication.screens()
+                self.current_monitor_idx = (getattr(self, 'current_monitor_idx', 0) + 1) % len(screens)
+                target_screen = screens[self.current_monitor_idx]
+                if self.fullscreen_ui.windowHandle():
+                    self.fullscreen_ui.windowHandle().setScreen(target_screen)
+                self.fullscreen_ui.hide()
+                self.fullscreen_ui.setGeometry(target_screen.geometry())
+                self.fullscreen_ui.showFullScreen()
+                return
 
-# 1. Remove _is_ui_obscured entirely
-content = re.sub(r'    def _is_ui_obscured\(self\):.*?    def set_state\(self, state\):', '    def set_state(self, state):', content, flags=re.DOTALL)
+            self.is_fullscreen = True
+            
+            screens = QApplication.screens()
+            if getattr(self, 'current_monitor_idx', 0) >= len(screens):
+                self.current_monitor_idx = 0
+            target_screen = screens[self.current_monitor_idx]
+            
+            if self.fullscreen_ui.windowHandle():
+                self.fullscreen_ui.windowHandle().setScreen(target_screen)
+            
+            self.fullscreen_ui.setGeometry(target_screen.geometry())
+            self.fullscreen_ui.showFullScreen()
 
-# 2. Fix set_state to not call _is_ui_obscured and publish overlay
-content = re.sub(
-    r'    def set_state\(self, state\):\n        self\.state = state\n        \n        if state in \["LISTENING", "RECORDING", "ATTENTION"\]:\n            if getattr\(self, \'is_fullscreen\', False\) and self\._is_ui_obscured\(\):\n                import paho\.mqtt\.publish as publish\n                import json\n                try:\n                    publish\.single\("jarvis/sys/ui_control", json\.dumps\(\{"action": "set_overlay"\}\), hostname="localhost", qos=0\)\n                except Exception as e:\n                    print\(f"Failed to switch to overlay mode: \{e\}"\)\n        \n        self\.visualizer\.set_state\(state, self\.is_fullscreen\)',
-    '    def set_state(self, state):\n        self.state = state\n        \n        self.visualizer.set_state(state, self.is_fullscreen)',
-    content
-)
+            def force_focus():
+                self.fullscreen_ui.setWindowState((self.fullscreen_ui.windowState() & ~Qt.WindowState.WindowMinimized) | Qt.WindowState.WindowActive)
+                self.fullscreen_ui.raise_()
+                self.fullscreen_ui.activateWindow() 
+                self.fullscreen_ui.setFocus()
+            
+            QTimer.singleShot(150, force_focus)
+            
+            self.visualizer.setParent(self.fullscreen_ui)
+            self.visualizer.setGeometry(0, 0, self.fullscreen_ui.width(), self.fullscreen_ui.height())
+            self.visualizer.show()
+            
+            self.overlay_ui.hide()
+            
+            self.fullscreen_ui.btn_media.show()
+            self.fullscreen_ui.btn_lights.show()
+            self.fullscreen_ui.btn_reminders.show()
+            self.fullscreen_ui.btn_todos.show()
+            self.fullscreen_ui.btn_settings.show()
+            self.fullscreen_ui.btn_updates.show()
+            self.fullscreen_ui.btn_calendar.show()
+            self.fullscreen_ui.calendar_drawer.show()
+            self.fullscreen_ui.reminder_widget.show()
+            
+            if getattr(self.fullscreen_ui, 'text_input', None) is not None:
+                self.fullscreen_ui.text_input.show()
+                self.fullscreen_ui.text_input.raise_()
 
+            for wid, w in self.active_widgets.items():
+                if w.isVisible():
+                    if w.parent() is None:
+                        local_pos = self.fullscreen_ui.mapFromGlobal(w.pos())
+                        w.setParent(self.fullscreen_ui)
+                        w.move(local_pos)
+                    else:
+                        w.setParent(self.fullscreen_ui)
+                    w.show()
+                    w.raise_()
 
-# 3. Add toggle_widget_signal to MqttThread
-content = content.replace(
-    'ui_mode_signal = pyqtSignal(str)',
-    'ui_mode_signal = pyqtSignal(str)\n    toggle_widget_signal = pyqtSignal(str)'
-)
+        elif mode == "set_overlay":
+            self.is_fullscreen = False
+            
+            if getattr(self.fullscreen_ui, 'text_input', None) is not None:
+                self.fullscreen_ui.text_input.hide()
+                
+            self.state = "IDLE"
+            self.visualizer.set_state("IDLE", False)
+            
+            self.fullscreen_ui.btn_media.hide()
+            self.fullscreen_ui.btn_lights.hide()
+            self.fullscreen_ui.btn_reminders.hide()
+            self.fullscreen_ui.btn_todos.hide()
+            self.fullscreen_ui.btn_settings.hide()
+            self.fullscreen_ui.btn_updates.hide()
+            self.fullscreen_ui.btn_calendar.hide()
+            self.fullscreen_ui.calendar_drawer.hide()
+            self.fullscreen_ui.reminder_widget.hide()
+            
+            for wid, w in self.active_widgets.items():
+                if w.isVisible():
+                    global_pos = self.fullscreen_ui.mapToGlobal(w.pos())
+                    w.setParent(None)
+                    w.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+                    w.move(global_pos)
+                    w.show()
+                elif wid == "options_list":
+                    if hasattr(w, "title_bar"):
+                        w.title_bar.hide()
+                    w.adjustSize()
+                    w.setParent(None)
+                    w.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+                    cx = self.fullscreen_ui.x() + (self.fullscreen_ui.width() - w.width()) // 2
+                    w.move(int(cx), self.fullscreen_ui.y() + 10)
+                    w.show()
+                    
+            self.fullscreen_ui.hide()
+            
+            self.overlay_ui.position_in_corner(self.current_monitor_idx)
+            self.overlay_ui.showNormal()
+            
+            self.visualizer.setParent(self.overlay_ui)
+            self.visualizer.setGeometry(0, 0, self.overlay_ui.width(), self.overlay_ui.height())
+            self.visualizer.show()
+"""
 
-# 4. Connect toggle_widget_signal in JarvisUI
-content = content.replace(
-    'self.mqtt_thread.ui_mode_signal.connect(self.set_ui_mode)',
-    'self.mqtt_thread.ui_mode_signal.connect(self.set_ui_mode)\n        self.mqtt_thread.toggle_widget_signal.connect(self._handle_toggle_widget)'
-)
+out_lines = []
+for line in lines:
+    if line.startswith("    def save_ui_state(self):"):
+        out_lines.append(new_set_ui_mode + "\n")
+    out_lines.append(line)
 
-# 5. Fix _handle_ui_control
-content = re.sub(
-    r'    def _handle_ui_control.*?def _handle_state_change',
-    '''    def _handle_ui_control(self, payload):
-        if isinstance(payload, dict) and "action" in payload:
-            action = payload["action"]
-            if action in ["set_fullscreen", "set_overlay"]:
-                self.ui_mode_signal.emit(action)
-            elif action.startswith("toggle_"):
-                self.toggle_widget_signal.emit(action)
-
-    def _handle_state_change''',
-    content, flags=re.DOTALL
-)
-
-# 6. Add _handle_toggle_widget to JarvisUI
-# I will append it before set_ui_mode
-content = content.replace(
-    '    def set_ui_mode(self, mode):',
-    '''    def _handle_toggle_widget(self, action):
-        if action == "toggle_todos":
-            self._toggle_todos()
-        elif action == "toggle_reminders":
-            self._toggle_reminders()
-        elif action == "toggle_media":
-            self._toggle_media()
-        elif action == "toggle_lights":
-            self._toggle_lights()
-        elif action == "toggle_calendar":
-            self._toggle_calendar()
-
-    def set_ui_mode(self, mode):'''
-)
-
-# 7. Remove is_fullscreen guards from toggle methods
-def remove_guard(match):
-    body = match.group(2)
-    # Dedent the body by 4 spaces
-    lines = body.split('\n')
-    new_lines = []
-    for line in lines:
-        if line.startswith('    '):
-            new_lines.append(line[4:])
-        elif not line.strip():
-            new_lines.append('')
-        else:
-            new_lines.append(line)
-    return match.group(1) + '\n'.join(new_lines)
-
-# _toggle_media
-content = re.sub(r'(    def _toggle_media\(self\):\n)\s*if getattr\(self, \'is_fullscreen\', False\):\n(.*?)(\n    def _toggle_lights)', remove_guard, content, flags=re.DOTALL)
-# _toggle_lights
-content = re.sub(r'(    def _toggle_lights\(self\):\n)\s*if getattr\(self, \'is_fullscreen\', False\):\n(.*?)(\n    def _toggle_reminders)', remove_guard, content, flags=re.DOTALL)
-# _toggle_todos
-content = re.sub(r'(    def _toggle_todos\(self\):\n)\s*if getattr\(self, \'is_fullscreen\', False\):\n(.*?)(\n    def _toggle_calendar)', remove_guard, content, flags=re.DOTALL)
-
-with open('src/clUI.py', 'w') as f:
-    f.write(content)
-
+with open("src/clUI_new.py", "w") as f:
+    f.writelines(out_lines)
