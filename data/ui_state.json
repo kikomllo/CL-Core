@@ -2,7 +2,7 @@
   "drawer_open": false,
   "carousel_tab": 0,
   "reminder_widget": {
-    "visible": false,
+    "visible": true,
     "pos": [
       1680,
       925
@@ -12,8 +12,8 @@
     "widget_todo_list": {
       "visible": false,
       "pos": [
-        450,
-        64
+        1037,
+        63
       ],
       "size": [
         350,
@@ -21,25 +21,47 @@
       ]
     },
     "widget_updates": {
-      "visible": false,
+      "visible": true,
       "pos": [
-        438,
-        155
+        978,
+        25
       ],
       "size": [
-        698,
-        647
+        400,
+        413
       ]
     },
     "widget_settings": {
       "visible": true,
       "pos": [
-        808,
-        304
+        641,
+        24
       ],
       "size": [
         325,
         409
+      ]
+    },
+    "widget_light_controls": {
+      "visible": true,
+      "pos": [
+        1142,
+        481
+      ],
+      "size": [
+        340,
+        146
+      ]
+    },
+    "widget_media_controls": {
+      "visible": true,
+      "pos": [
+        32,
+        96
+      ],
+      "size": [
+        170,
+        176
       ]
     }
   },

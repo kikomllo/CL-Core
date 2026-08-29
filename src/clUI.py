@@ -796,10 +796,10 @@ class JarvisUI(QWidget):
                 else:
                     self._last_fg_hwnd = hwnd
         else:
-            # On Linux/X11, when the user clicks another application, our application loses active focus.
-            active_win = QApplication.activeWindow()
-            if active_win is None:
-                self.set_ui_mode("set_overlay")
+            # On Linux/Wayland, activeWindow() can be None just because the compositor denied 
+            # initial focus. We rely on the user explicitly closing the dashboard via keybinds 
+            # (abort or ui_overlay) rather than auto-collapsing.
+            pass
 
     def _handle_feedback(self, data):
         device = data.get("device")
@@ -1004,11 +1004,9 @@ class JarvisUI(QWidget):
             return
             
         if state != Qt.ApplicationState.ApplicationActive:
-            self.text_input.hide()
-            if "widget_todo_list" in self.active_widgets:
-                wrapper = self.active_widgets["widget_todo_list"]
-                if hasattr(wrapper, "content_widget") and hasattr(wrapper.content_widget, "task_input"):
-                    wrapper.content_widget.task_input.hide()
+            # On Wayland, the app may frequently be marked as Inactive due to focus stealing prevention.
+            # We must NOT hide the text inputs here, otherwise the user can't use the dashboard if Wayland denies focus.
+            pass
                     
             if sys.platform == "win32":
                 import ctypes
@@ -1210,6 +1208,7 @@ class JarvisUI(QWidget):
             return
             
         if mode == "set_fullscreen":
+            logging.info(f"[DEBUG UI] set_fullscreen triggered. is_fullscreen: {getattr(self, 'is_fullscreen', False)}")
             screens = QApplication.screens()
             is_monitor_swap = getattr(self, 'is_fullscreen', False)
             old_geom = None
@@ -1228,28 +1227,41 @@ class JarvisUI(QWidget):
 
             if is_monitor_swap:
                 widget_visibility = {wid: w.isVisible() for wid, w in self.active_widgets.items()}
-
+                logging.info("[DEBUG UI] Executing monitor swap showNormal()")
+                self.showNormal()
+                QApplication.processEvents()
+            else:
+                logging.info("[DEBUG UI] Executing initial fullscreen setup.")
+                self.hide()
+                QApplication.processEvents()
+                
+                flags = Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
+                if sys.platform == "win32":
+                    flags |= Qt.WindowType.WindowStaysOnTopHint
+                self.setWindowFlags(flags)
+                logging.info("[DEBUG UI] Window flags set.")
+                
+                self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+                if sys.platform != "win32":
+                    self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+                self.clearMask()
+                self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
+                
+                logging.info("[DEBUG UI] Calling showNormal() to force Wayland mapping...")
+                self.showNormal()
+                QApplication.processEvents()
+                logging.info(f"[DEBUG UI] After showNormal() -> isVisible: {self.isVisible()}, isActiveWindow: {self.isActiveWindow()}")
+            
             self.is_fullscreen = True
             
-            if sys.platform == "win32":
-                import time
-                self._occlusion_disabled_until = time.time() + 1.0
+            import time
+            self._occlusion_disabled_until = time.time() + 1.5
             
-            self.hide()
-            QApplication.processEvents()
+            target_screen = screens[self.current_monitor_idx]
+            if self.windowHandle():
+                self.windowHandle().setScreen(target_screen)
             
-            flags = Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
-            if sys.platform == "win32":
-                flags |= Qt.WindowType.WindowStaysOnTopHint
-            self.setWindowFlags(flags)
-            
-            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-            if sys.platform != "win32":
-                self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
-            self.clearMask()
-            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-            
-            geom = screens[self.current_monitor_idx].geometry()
+            geom = target_screen.geometry()
             
             self.setMinimumSize(0, 0)
             self.setMaximumSize(16777215, 16777215)
@@ -1308,7 +1320,6 @@ class JarvisUI(QWidget):
                     if widget_visibility.get(wid, False):
                         w.show()
                         if old_geom:
-                            geom = screens[self.current_monitor_idx].geometry()
                             new_x = int((w.x() / old_geom.width()) * geom.width()) if old_geom.width() > 0 else w.x()
                             new_y = int((w.y() / old_geom.height()) * geom.height()) if old_geom.height() > 0 else w.y()
                             w.move(new_x, new_y)
@@ -1323,7 +1334,19 @@ class JarvisUI(QWidget):
             if getattr(self, "calendar_is_open", False):
                 self.router.dispatch("calendar.read")
 
+            logging.info(f"[DEBUG UI] Calling showFullScreen(). Current focus: {self.hasFocus()}")
             self.showFullScreen()
+            logging.info(f"[DEBUG UI] After showFullScreen() -> isVisible: {self.isVisible()}, isFullScreen: {self.isFullScreen()}")
+            
+            def force_focus():
+                self.setWindowState((self.windowState() & ~Qt.WindowState.WindowMinimized) | Qt.WindowState.WindowActive)
+                self.raise_()
+                self.activateWindow() 
+                self.setFocus()
+                logging.info(f"[DEBUG UI] After delayed activate/focus -> isActiveWindow: {self.isActiveWindow()}, hasFocus: {self.hasFocus()}")
+            
+            # Delay focus grab slightly on Wayland to allow compositor to map the fullscreen surface
+            QTimer.singleShot(150, force_focus)
             
             if sys.platform == "win32":
                 import ctypes
@@ -1354,8 +1377,8 @@ class JarvisUI(QWidget):
             self.setFocus()
             
             box_width = min(650, geom.width() - 100)
-            box_x = geom.x() + int((geom.width() - box_width) / 2)
-            box_y = geom.y() + geom.height() - 62
+            box_x = int((geom.width() - box_width) / 2)
+            box_y = geom.height() - 62
             self.text_input.setGeometry(box_x, box_y, box_width, 30)
             
             if QApplication.applicationState() == Qt.ApplicationState.ApplicationActive:

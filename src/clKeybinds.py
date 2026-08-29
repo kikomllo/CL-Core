@@ -45,6 +45,26 @@ def load_keybinds():
 DEBUG_MODE = is_debug()
 EVDEV_PTT_READY = False
 
+MODIFIER_MAP = {
+    "<ctrl>": ["KEY_LEFTCTRL", "KEY_RIGHTCTRL"],
+    "<alt>": ["KEY_LEFTALT", "KEY_RIGHTALT"],
+    "<shift>": ["KEY_LEFTSHIFT", "KEY_RIGHTSHIFT"],
+    "<super>": ["KEY_LEFTMETA", "KEY_RIGHTMETA"],
+}
+
+def parse_evdev_hotkey(hotkey_str):
+    parts = hotkey_str.lower().split("+")
+    modifiers = []
+    main_key = None
+    for part in parts:
+        if part in MODIFIER_MAP:
+            mod_group = [getattr(ecodes, m, -1) for m in MODIFIER_MAP[part]]
+            modifiers.append(mod_group)
+        else:
+            key_name = f"KEY_{part.upper()}"
+            main_key = getattr(ecodes, key_name, -1)
+    return modifiers, main_key
+
 def evdev_listener():
     """Reads raw hardware inputs from the Linux kernel to bypass Wayland security limits."""
     global EVDEV_PTT_READY
@@ -54,6 +74,26 @@ def evdev_listener():
     ptt_ecode = getattr(ecodes, ptt_key_str, ecodes.KEY_RIGHTALT)
     ptt_active = False
     router = ActionRouter()
+    
+    LEGACY_MAP = {
+        "abort": "system.abort",
+        "ui_fullscreen": "ui.fullscreen",
+        "ui_overlay": "ui.overlay",
+    }
+    
+    parsed_hotkeys = {}
+    for action_key, bind_info in keybinds.items():
+        if action_key == "push_to_talk": continue
+        hotkey_str = bind_info.get("key", "")
+        if not hotkey_str: continue
+        mode = bind_info.get("mode", "single")
+        actual_action = LEGACY_MAP.get(action_key, action_key)
+        mods, mk = parse_evdev_hotkey(hotkey_str)
+        if mk != -1:
+            parsed_hotkeys[actual_action] = {"mods": mods, "main_key": mk, "mode": mode}
+    
+    active_keys = set()
+    active_hardware_actions = set()
     
     while True:
         keyboards = []
@@ -93,6 +133,11 @@ def evdev_listener():
                 for device in r:
                     for event in device.read():
                         if event.type == ecodes.EV_KEY:
+                            if event.value == 1:
+                                active_keys.add(event.code)
+                            elif event.value == 0:
+                                active_keys.discard(event.code)
+                                
                             if event.code == ptt_ecode:
                                 if event.value == 1 and not ptt_active: # Press
                                     ptt_active = True
@@ -102,9 +147,49 @@ def evdev_listener():
                                     ptt_active = False
                                     logging.info("Push-to-Talk (Mic Closed via Hardware)")
                                     router.dispatch("mic.ptt_stop")
+                                    
+                            if event.value in (1, 2): # Press or Auto-Repeat
+                                for action, hk in parsed_hotkeys.items():
+                                    if event.code == hk["main_key"]:
+                                        all_mods_pressed = True
+                                        for mod_group in hk["mods"]:
+                                            if not any(k in active_keys for k in mod_group):
+                                                all_mods_pressed = False
+                                                break
+                                        if all_mods_pressed:
+                                            if hk["mode"] == "single":
+                                                if action not in active_hardware_actions:
+                                                    active_hardware_actions.add(action)
+                                                    logging.info(f"[ACTION ROUTER] Hardware dispatch '{action}' (Single)")
+                                                    router.dispatch(action)
+                                            else:
+                                                logging.info(f"[ACTION ROUTER] Hardware dispatch '{action}' (Continuous)")
+                                                router.dispatch(action)
+                                                
+                            if event.value == 0: # Release
+                                actions_to_remove = []
+                                for action in active_hardware_actions:
+                                    hk = parsed_hotkeys[action]
+                                    broken = False
+                                    if event.code == hk["main_key"]:
+                                        broken = True
+                                    else:
+                                        for mod_group in hk["mods"]:
+                                            if event.code in mod_group:
+                                                if not any(k in active_keys for k in mod_group):
+                                                    broken = True
+                                                    break
+                                    if broken:
+                                        actions_to_remove.append(action)
+                                        
+                                for act in actions_to_remove:
+                                    active_hardware_actions.remove(act)
+                                    
         except Exception as e:
             logging.warning(f"Evdev device disconnected or error ({e}). Rescanning devices...")
             time.sleep(2)
+            active_keys.clear()
+            active_hardware_actions.clear()
 
 def main():
     keybinds = load_keybinds()
@@ -176,23 +261,24 @@ def main():
             router.dispatch("mic.ptt_start")
 
         # Custom HotKey logic
-        for hk_def in hotkeys:
-            hk = hk_def["hk"]
-            action = hk_def["action"]
-            mode = hk_def["mode"]
-            
-            hk.press(canonical_key)
-            if hk._state == hk._keys: # This indicates the hotkey combination is fully met
-                if mode == "single":
-                    if action not in active_actions:
-                        now = time.time()
-                        if now - last_triggered.get(action, 0) > 0.2:
-                            active_actions.add(action)
-                            router.dispatch(action)
-                            last_triggered[action] = now
-                else:
-                    # continuous mode triggers every OS key-repeat
-                    router.dispatch(action)
+        if not EVDEV_PTT_READY:
+            for hk_def in hotkeys:
+                hk = hk_def["hk"]
+                action = hk_def["action"]
+                mode = hk_def["mode"]
+                
+                hk.press(canonical_key)
+                if hk._state == hk._keys: # This indicates the hotkey combination is fully met
+                    if mode == "single":
+                        if action not in active_actions:
+                            now = time.time()
+                            if now - last_triggered.get(action, 0) > 0.2:
+                                active_actions.add(action)
+                                router.dispatch(action)
+                                last_triggered[action] = now
+                    else:
+                        # continuous mode triggers every OS key-repeat
+                        router.dispatch(action)
 
     def on_release(key):
         nonlocal ptt_active
@@ -205,14 +291,15 @@ def main():
             router.dispatch("mic.ptt_stop")
 
         # Custom HotKey logic
-        for hk_def in hotkeys:
-            hk = hk_def["hk"]
-            action = hk_def["action"]
-            
-            hk.release(canonical_key)
-            if hk._state != hk._keys: # Combination broken
-                if action in active_actions:
-                    active_actions.remove(action)
+        if not EVDEV_PTT_READY:
+            for hk_def in hotkeys:
+                hk = hk_def["hk"]
+                action = hk_def["action"]
+                
+                hk.release(canonical_key)
+                if hk._state != hk._keys: # Combination broken
+                    if action in active_actions:
+                        active_actions.remove(action)
 
     l = keyboard.Listener(on_press=on_press, on_release=on_release)
     l.start()
