@@ -592,29 +592,7 @@ class JarvisVisualizer(QWidget):
             painter.drawText(10, 20, f"State: {self.state}")
             painter.restore()
 
-
-class OverlayWindow(QWidget):
-    def __init__(self, parent_ui):
-        super().__init__()
-        self.parent_ui = parent_ui
-        
-        flags = (
-            Qt.WindowType.FramelessWindowHint | 
-            Qt.WindowType.WindowStaysOnTopHint | 
-            Qt.WindowType.Tool
-        )
-        if sys.platform != "win32":
-            flags |= Qt.WindowType.WindowTransparentForInput
-            
-        self.setWindowFlags(flags)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        if sys.platform != "win32":
-            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self.setFixedSize(200, 400)
-
 class JarvisUI(QWidget):
-
     def __init__(self):
         super().__init__()
         self.router = ActionRouter()
@@ -662,8 +640,6 @@ class JarvisUI(QWidget):
         self.options_debounce_timer = QTimer(self)
         self.options_debounce_timer.setSingleShot(True)
         self.options_debounce_timer.timeout.connect(self._apply_pending_options)
-        
-        self.overlay_window = OverlayWindow(self)
         
         # Core Visualizer is now permanently attached to the background
         self.visualizer = JarvisVisualizer(self)
@@ -1227,10 +1203,6 @@ class JarvisUI(QWidget):
             return
             
         if mode == "set_fullscreen":
-            self.overlay_window.hide()
-            self.visualizer.setParent(self)
-            self.visualizer.resize(self.size())
-            self.visualizer.show()
             logging.info(f"[DEBUG UI] set_fullscreen triggered. is_fullscreen: {getattr(self, 'is_fullscreen', False)}")
             screens = QApplication.screens()
             is_monitor_swap = getattr(self, 'is_fullscreen', False)
@@ -1468,22 +1440,33 @@ class JarvisUI(QWidget):
             
             self.hide()
             
+            flags = (
+                Qt.WindowType.FramelessWindowHint | 
+                Qt.WindowType.WindowStaysOnTopHint | 
+                Qt.WindowType.Tool
+            )
+            if sys.platform != "win32":
+                flags |= Qt.WindowType.WindowTransparentForInput
+                
+            self.setWindowFlags(flags)
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            if sys.platform != "win32":
+                self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+            
             primary_screen = QApplication.primaryScreen()
             screen_geom = primary_screen.availableGeometry()
             width, height = 200, 400
             x_pos = screen_geom.right() - width - 20
             y_pos = screen_geom.bottom() - height - 20
             
-            self.overlay_window.setGeometry(x_pos, y_pos, width, height)
-            self.overlay_window.showNormal()
-            
-            self.visualizer.setParent(self.overlay_window)
-            self.visualizer.resize(width, height)
-            self.visualizer.show()
+            self.showNormal()
+            self.setFixedSize(width, height)
+            self.setGeometry(x_pos, y_pos, width, height)
             
             if sys.platform == "win32":
                 import ctypes
-                hwnd = int(self.overlay_window.winId())
+                hwnd = int(self.winId())
                 user32 = ctypes.windll.user32
                 if sys.maxsize > 2**32:
                     GetWindowLong = user32.GetWindowLongPtrW

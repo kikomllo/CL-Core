@@ -13,7 +13,7 @@
         "enable_followup": false,
         "silent_mode": true,
         "last_light_target": "all",
-        "ecosystem_state": "background"
+        "ecosystem_state": "debug"
     },
     "vad_settings": {
         "energy_threshold_normal": 300,
