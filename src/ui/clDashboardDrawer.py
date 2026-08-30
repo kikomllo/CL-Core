@@ -8,6 +8,11 @@ from ui.clTodoWidget import TodoWidget
 from ui.clReminderWidget import ReminderWidget
 from ui.clMediaWidget import MediaWidget
 from ui.clLightControlWidget import LightControlWidget
+from clUIScaler import UIScaler
+
+def s(val):
+    return UIScaler.get().scale(val)
+
 
 class UpNextWidget(QFrame):
     add_event_signal = pyqtSignal()
@@ -17,8 +22,8 @@ class UpNextWidget(QFrame):
         self.setObjectName("UpNextContainer")
         self.setStyleSheet(Theme.get_style("UpNextContainer"))
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(12, 10, 12, 10)
-        self.layout.setSpacing(6)
+        self.layout.setContentsMargins(s(12), s(10), s(12), s(10))
+        self.layout.setSpacing(s(6))
         
         self.header_layout = QHBoxLayout()
         self.header_layout.setContentsMargins(0, 0, 0, 0)
@@ -59,12 +64,19 @@ class UpNextWidget(QFrame):
         self.scroll_content.setStyleSheet("background: transparent;")
         self.events_layout = QVBoxLayout(self.scroll_content)
         self.events_layout.setContentsMargins(0, 0, 0, 0)
-        self.events_layout.setSpacing(6)
+        self.events_layout.setSpacing(s(6))
         self.events_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         
         self.scroll.setWidget(self.scroll_content)
         self.layout.addWidget(self.scroll)
         
+    def update_scaling(self):
+        self.layout.setContentsMargins(s(12), s(10), s(12), s(10))
+        self.layout.setSpacing(s(6))
+        self.events_layout.setSpacing(s(6))
+        self.adjustSize()
+        self.render_events()
+
     def load_events(self, events_data):
         self.current_events_data = events_data
         self.render_events()
@@ -129,8 +141,8 @@ class UpNextWidget(QFrame):
             card = QFrame()
             card.setStyleSheet(Theme.get_style("EventCard"))
             card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(10, 7, 10, 7)
-            card_layout.setSpacing(2)
+            card_layout.setContentsMargins(s(10), s(7), s(10), s(7))
+            card_layout.setSpacing(s(2))
             
             lbl_ev_title = QLabel(ev['summary'])
             lbl_ev_title.setStyleSheet(Theme.get_style("EventTitleLabel"))
@@ -149,7 +161,7 @@ class WidgetCarousel(QWidget):
         super().__init__(parent)
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
-        self.layout.setSpacing(6)
+        self.layout.setSpacing(s(6))
         
         self.stack = QStackedWidget()
         
@@ -168,7 +180,7 @@ class WidgetCarousel(QWidget):
         self.nav_frame = QFrame()
         self.nav_frame.setStyleSheet(Theme.get_style("CarouselNav"))
         nav_layout = QHBoxLayout(self.nav_frame)
-        nav_layout.setContentsMargins(8, 3, 8, 3)
+        nav_layout.setContentsMargins(s(8), s(3), s(8), s(3))
         
         self.btn_prev = QPushButton("❮")
         self.btn_prev.setStyleSheet(Theme.get_style("TransparentButton"))
@@ -224,8 +236,8 @@ class DashboardDrawer(QWidget):
         self.setStyleSheet(Theme.get_style("DashboardDrawer"))
         
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(12, 12, 12, 12)
-        self.layout.setSpacing(10)
+        self.layout.setContentsMargins(s(12), s(12), s(12), s(12))
+        self.layout.setSpacing(s(10))
         
         # Calendar (Top Half, 50%)
         self.calendar = CalendarWidget(self)
@@ -251,3 +263,15 @@ class DashboardDrawer(QWidget):
         # Connect Signals
         self.calendar.day_selected_signal.connect(self.up_next.set_specific_day)
         self.up_next.add_event_signal.connect(self.calendar.open_event_input)
+
+    def update_scaling(self):
+        self.layout.setContentsMargins(s(12), s(12), s(12), s(12))
+        self.layout.setSpacing(s(10))
+        if hasattr(self, 'up_next'):
+            self.up_next.update_scaling()
+        if hasattr(self, 'calendar') and hasattr(self.calendar, 'update_scaling'):
+            self.calendar.update_scaling()
+        if hasattr(self, 'carousel'):
+            if hasattr(self.carousel.btn_prev, 'setFixedSize'): self.carousel.btn_prev.setFixedSize(25, 25)
+            if hasattr(self.carousel.btn_next, 'setFixedSize'): self.carousel.btn_next.setFixedSize(25, 25)
+        self.adjustSize()

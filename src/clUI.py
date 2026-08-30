@@ -304,9 +304,7 @@ class DraggableWidget(QWidget):
         self.layout.addWidget(self.content_widget)
         
         # Enforce minimum size based on content to prevent squashing and clipping
-        min_w = self.content_widget.minimumWidth()
-        min_h = self.content_widget.minimumHeight() + (24 if title or closable else 0)
-        self.setMinimumSize(max(150, min_w), max(50, min_h))
+        self.setMinimumSize(150, 50)
         
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(Theme.get_style("NotificationBody"))
@@ -315,6 +313,19 @@ class DraggableWidget(QWidget):
         self._resizing = False
         self._drag_start_pos = QPoint()
         self._resize_start_size = self.size()
+        
+    def update_scaling(self):
+        if hasattr(self, 'content_widget') and hasattr(self.content_widget, 'update_scaling'):
+            self.content_widget.update_scaling()
+            
+        s = UIScaler.get().scale
+        if hasattr(self, 'title_bar'):
+            self.title_bar.setFixedHeight(24)
+            
+        if hasattr(self, 'content_widget'):
+            self.setMinimumSize(150, 50)
+            
+        self.adjustSize()
 
     def close_widget(self):
         if hasattr(self.parent(), 'close_draggable_widget'):
@@ -328,14 +339,21 @@ class DraggableWidget(QWidget):
 
     def paintEvent(self, event):
         super().paintEvent(event)
+        s = UIScaler.get().scale
+        margin = s(15)
+        w, h = self.width(), self.height()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect = self.rect()
-        painter.setPen(QPen(QColor(255, 120, 0, 180), 3))
-        x, y = rect.width(), rect.height()
-        painter.drawLine(x - 14, y - 4, x - 4, y - 14)
-        painter.drawLine(x - 9, y - 4, x - 4, y - 9)
-        painter.drawLine(x - 4, y - 4, x - 4, y - 4)
+        path = QPainterPath()
+        path.moveTo(w, h - margin)
+        path.lineTo(w - margin, h)
+        path.lineTo(w, h)
+        painter.fillPath(path, QColor(255, 120, 0, 80))
+        painter.setPen(QPen(QColor(255, 120, 0, 180), s(3)))
+        x, y = w, h
+        painter.drawLine(x - s(14), y - s(4), x - s(4), y - s(14))
+        painter.drawLine(x - s(9), y - s(4), x - s(4), y - s(9))
+        painter.drawLine(x - s(4), y - s(4), x - s(4), y - s(4))
 
     def mousePressEvent(self, event):
         rect = self.rect()
@@ -363,7 +381,10 @@ class DraggableWidget(QWidget):
             min_size = self.layout.minimumSize()
             new_w = max(min_size.width(), self._resize_start_size.width() + delta.x())
             new_h = max(min_size.height(), self._resize_start_size.height() + delta.y())
-            self.resize(new_w, new_h)
+            if hasattr(self, 'resizeUnscaled'):
+                self.resizeUnscaled(new_w, new_h)
+            else:
+                self.resize(new_w, new_h)
         elif self._dragging:
             delta = event.globalPosition().toPoint() - self._drag_start_global
             new_pos = self._drag_start_pos + delta
@@ -504,6 +525,8 @@ class JarvisVisualizer(QWidget):
         if self.current_opacity <= 0.01 and not self.is_fullscreen:
             return
 
+        s = UIScaler.get().scale
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
@@ -517,14 +540,14 @@ class JarvisVisualizer(QWidget):
         
         painter.setOpacity(self.current_opacity)
         
-        gradient = QRadialGradient(cx, cy, 100)
+        gradient = QRadialGradient(cx, cy, s(100))
         gradient.setColorAt(0.0, QColor(255, 150, 0, 60))
         gradient.setColorAt(0.5, QColor(255, 100, 0, 30))
         gradient.setColorAt(1.0, QColor(200, 50, 0, 0))
         
         painter.setBrush(QBrush(gradient))
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRect(int(cx - 500), int(cy - 500), 1000, 1000)
+        painter.drawRect(int(cx - s(500)), int(cy - s(500)), s(1000), s(1000))
         
         painter.save()
         painter.translate(cx, cy)
@@ -532,20 +555,20 @@ class JarvisVisualizer(QWidget):
         painter.save()
         painter.rotate(self.time_offset * 15)
         pen_ring1 = QPen(QColor(255, 180, 0, int(60 * self.current_opacity)))
-        pen_ring1.setWidth(2)
+        pen_ring1.setWidth(s(2))
         pen_ring1.setStyle(Qt.PenStyle.DashLine)
         painter.setPen(pen_ring1)
-        r1 = 80
+        r1 = s(80)
         painter.drawEllipse(QPointF(0, 0), r1, r1)
         painter.restore()
         
         painter.save()
         painter.rotate(-self.time_offset * 25)
         pen_ring2 = QPen(QColor(255, 120, 0, int(90 * self.current_opacity)))
-        pen_ring2.setWidth(1)
+        pen_ring2.setWidth(s(1))
         pen_ring2.setStyle(Qt.PenStyle.DotLine)
         painter.setPen(pen_ring2)
-        r2 = 50
+        r2 = s(50)
         painter.drawEllipse(QPointF(0, 0), r2, r2)
         painter.restore()
         
@@ -553,12 +576,12 @@ class JarvisVisualizer(QWidget):
         
         colors = [QColor(255, 120, 0, 100), QColor(255, 180, 0, 180), QColor(255, 230, 100, 255)]
         phases = [0, 2, 4]
-        amplitudes = [self.amplitude, self.amplitude * 0.6, self.amplitude * 0.3]
+        amplitudes = [s(self.amplitude), s(self.amplitude * 0.6), s(self.amplitude * 0.3)]
         
         for i in range(3):
             path = QPainterPath()
             path.moveTo(0, cy)
-            step = 6
+            step = max(1, s(6))
             for x in range(0, self.width() + step, step):
                 envelope = math.pow(math.sin(math.pi * x / self.width()), 3)
                 y = cy + math.sin(x * self.frequency + self.time_offset + phases[i]) * amplitudes[i] * envelope
@@ -727,18 +750,20 @@ class JarvisUI(QWidget):
         self.mqtt_thread.calendar_status_signal.connect(self._handle_calendar_data)
         self.mqtt_thread.start()
 
-    def refresh_layout(self):
+    def refresh_layout(self, force_monitor_idx=None):
         screens = UIScaler.get().get_stable_screens()
         
-        # Dynamically determine which screen the window is ACTUALLY on, as Wayland/user can move it independently
-        current_screen = self.screen()
-        idx = 0
-        if current_screen:
-            screen_name = current_screen.name()
-            for i, s in enumerate(screens):
-                if s.name() == screen_name:
-                    idx = i
-                    break
+        if force_monitor_idx is not None:
+            idx = force_monitor_idx
+        else:
+            current_screen = self.screen()
+            idx = 0
+            if current_screen:
+                screen_name = current_screen.name()
+                for i, s in enumerate(screens):
+                    if s.name() == screen_name:
+                        idx = i
+                        break
                     
         self.current_monitor_idx = idx
         UIScaler.get().set_active_monitor(idx)
@@ -749,7 +774,8 @@ class JarvisUI(QWidget):
         win_h = self.height()
         
         import logging
-        logging.info(f"[DEBUG LAYOUT] Physical Screen: {current_screen.name() if current_screen else 'Unknown'} (idx: {idx})")
+        target_screen_name = screens[idx].name() if idx < len(screens) else 'Unknown'
+        logging.info(f"[DEBUG LAYOUT] Physical Screen: {target_screen_name} (idx: {idx})")
         logging.info(f"[DEBUG LAYOUT] Window Size: {win_w}x{win_h}")
         logging.info(f"[DEBUG LAYOUT] Applied Scale: {s(100)/100.0}")
 
@@ -774,9 +800,25 @@ class JarvisUI(QWidget):
         drawer_width = s(400) if win_w >= 1920 else s(350)
         if hasattr(self, 'calendar_drawer'):
             self.calendar_drawer.setGeometry(win_w, 0, drawer_width, win_h)
+            if hasattr(self.calendar_drawer, 'update_scaling'):
+                self.calendar_drawer.update_scaling()
         
         if hasattr(self, 'drawer'):
             self.drawer.setGeometry(win_w - drawer_width - 20, 0, drawer_width, win_h)
+            if hasattr(self.drawer, 'update_scaling'):
+                self.drawer.update_scaling()
+                
+        for wrapper in self.active_widgets.values():
+            if hasattr(wrapper, 'update_scaling'):
+                wrapper.update_scaling()
+                
+        # Universally force all active local CSS and fonts to rescale!
+        from PyQt6.QtWidgets import QApplication
+        for widget in QApplication.allWidgets():
+            if hasattr(widget, '_unscaled_css'):
+                widget.setStyleSheet(widget._unscaled_css)
+            if hasattr(widget, '_unscaled_font'):
+                widget.setFont(widget._unscaled_font)
 
         rw_w = s(300)
         rw_h = s(150)
@@ -1317,7 +1359,7 @@ class JarvisUI(QWidget):
             
             self.visualizer.lower()
             
-            self.refresh_layout()
+            self.refresh_layout(force_monitor_idx=self.current_monitor_idx)
             self.btn_calendar.setText("❮")
             self.calendar_is_open = False
             

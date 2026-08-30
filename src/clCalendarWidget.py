@@ -4,6 +4,11 @@ from clTheme import Theme
 from datetime import datetime, timedelta
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QStackedWidget, QGridLayout, QScrollArea, QFrame, QSizePolicy, QLineEdit, QDateEdit, QTimeEdit
 from PyQt6.QtCore import Qt, pyqtSignal, QDate, QTime
+from clUIScaler import UIScaler
+
+def s(val):
+    return UIScaler.get().scale(val)
+
 
 class CalendarWidget(QWidget):
     day_selected_signal = pyqtSignal(datetime)
@@ -13,7 +18,7 @@ class CalendarWidget(QWidget):
         self.setStyleSheet(Theme.get_style("Panel"))
         
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(10, 10, 10, 10)
+        self.layout.setContentsMargins(s(10), s(10), s(10), s(10))
         
         # --- Top Navigation ---
         self.nav_layout = QHBoxLayout()
@@ -113,7 +118,7 @@ class CalendarWidget(QWidget):
 
     def init_year_view(self):
         self.year_layout = QGridLayout(self.year_view)
-        self.year_layout.setSpacing(5)
+        self.year_layout.setSpacing(s(5))
         
     def render_year(self):
         # Clear layout
@@ -140,7 +145,7 @@ class CalendarWidget(QWidget):
 
     def init_month_view(self):
         self.month_layout = QGridLayout(self.month_view)
-        self.month_layout.setSpacing(2)
+        self.month_layout.setSpacing(s(2))
         
     def render_month(self):
         for i in reversed(range(self.month_layout.count())): 
@@ -170,7 +175,7 @@ class CalendarWidget(QWidget):
             btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             
             btn_layout = QVBoxLayout(btn)
-            btn_layout.setContentsMargins(2, 2, 2, 2)
+            btn_layout.setContentsMargins(s(2), s(2), s(2), s(2))
             btn_layout.setSpacing(0)
             
             lbl_day = QLabel(str(day))
@@ -181,7 +186,7 @@ class CalendarWidget(QWidget):
             if events_today > 0:
                 dots_layout = QHBoxLayout()
                 dots_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                dots_layout.setSpacing(2)
+                dots_layout.setSpacing(s(2))
                 for _ in range(min(events_today, 3)):
                     dot = QFrame()
                     dot.setFixedSize(4, 4)
@@ -217,7 +222,7 @@ class CalendarWidget(QWidget):
 
     def init_week_view(self):
         self.week_layout = QHBoxLayout(self.week_view)
-        self.week_layout.setSpacing(2)
+        self.week_layout.setSpacing(s(2))
         
     def render_week(self):
         for i in reversed(range(self.week_layout.count())): 
@@ -231,8 +236,8 @@ class CalendarWidget(QWidget):
             col_widget = QWidget()
             col_widget.setStyleSheet(Theme.get_style("CalendarWeekCol"))
             col_layout = QVBoxLayout(col_widget)
-            col_layout.setContentsMargins(2, 4, 2, 4)
-            col_layout.setSpacing(4)
+            col_layout.setContentsMargins(s(2), s(4), s(2), s(4))
+            col_layout.setSpacing(s(4))
             
             day_date = start_week + timedelta(days=i)
             
@@ -262,6 +267,12 @@ class CalendarWidget(QWidget):
             
             col_layout.addStretch()
             self.week_layout.addWidget(col_widget)
+
+    def update_scaling(self):
+        self.setMinimumSize(320, 380)
+        self.layout.setContentsMargins(s(10), s(10), s(10), s(10))
+        self.layout.setSpacing(s(5))
+        self.adjustSize()
 
     def init_day_view(self):
         self.day_layout = QVBoxLayout(self.day_view)
@@ -302,11 +313,11 @@ class CalendarWidget(QWidget):
                 frame.setStyleSheet(Theme.get_style("EventCard"))
                 
                 main_l = QHBoxLayout(frame)
-                main_l.setContentsMargins(10, 8, 10, 8)
-                main_l.setSpacing(8)
+                main_l.setContentsMargins(s(10), s(8), s(10), s(8))
+                main_l.setSpacing(s(8))
                 
                 info_layout = QVBoxLayout()
-                info_layout.setSpacing(2)
+                info_layout.setSpacing(s(2))
                 
                 lbl_title = QLabel(ev['summary'])
                 lbl_title.setStyleSheet(Theme.get_style("EventTitleLabel"))
@@ -347,8 +358,8 @@ class CalendarWidget(QWidget):
             main_layout.addWidget(bg_frame)
 
             dlg_layout = QVBoxLayout(bg_frame)
-            dlg_layout.setContentsMargins(14, 14, 14, 14)
-            dlg_layout.setSpacing(10)
+            dlg_layout.setContentsMargins(s(14), s(14), s(14), s(14))
+            dlg_layout.setSpacing(s(10))
             
             self.dialog_title_lbl = QLabel("NEW CALENDAR EVENT")
             self.dialog_title_lbl.setStyleSheet(Theme.get_style("BadgeLabel"))
@@ -367,7 +378,7 @@ class CalendarWidget(QWidget):
             dlg_layout.addWidget(lbl_dt)
             
             dt_layout = QHBoxLayout()
-            dt_layout.setSpacing(8)
+            dt_layout.setSpacing(s(8))
             
             self.input_date = QDateEdit(QDate.currentDate())
             self.input_date.setDisplayFormat("yyyy-MM-dd")
@@ -385,7 +396,7 @@ class CalendarWidget(QWidget):
             dlg_layout.addLayout(dt_layout)
             
             btn_layout = QHBoxLayout()
-            btn_layout.setSpacing(6)
+            btn_layout.setSpacing(s(6))
             
             self.btn_dialog_delete = QPushButton("Delete")
             self.btn_dialog_delete.setStyleSheet(Theme.get_style("LightDangerButton"))

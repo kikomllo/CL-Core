@@ -6,6 +6,11 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollAr
 from PyQt6.QtCore import Qt, QTimer
 from utils.clConfigLoader import ConfigLoader
 from utils.clEnvLoader import EnvLoader
+from clUIScaler import UIScaler
+
+def s(val):
+    return UIScaler.get().scale(val)
+
 
 class CollapsibleBlock(QWidget):
     """Code editor style collapsible container widget for individual smart lights."""
@@ -31,8 +36,8 @@ class CollapsibleBlock(QWidget):
         self.body_widget = QWidget()
         self.body_widget.setStyleSheet(Theme.get_style("SettingsCollapseBody"))
         self.body_layout = QVBoxLayout(self.body_widget)
-        self.body_layout.setContentsMargins(12, 10, 12, 10)
-        self.body_layout.setSpacing(10)
+        self.body_layout.setContentsMargins(s(12), s(10), s(12), s(10))
+        self.body_layout.setSpacing(s(10))
         
         self.main_layout.addWidget(self.body_widget)
         self.body_widget.hide()
@@ -60,7 +65,7 @@ class SettingsWidget(QWidget):
         self.router = ActionRouter()
         self.setMinimumSize(325, 385)
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 10)
+        self.layout.setContentsMargins(0, 0, 0, s(10))
         self.layout.setSpacing(0)
         
         self.tabs = QTabWidget()
@@ -95,7 +100,14 @@ class SettingsWidget(QWidget):
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self._check_for_updates)
         self.update_timer.start(2000)
-
+        
+    def update_scaling(self):
+        self.setMinimumSize(325, 385)
+        self.layout.setContentsMargins(0, 0, 0, s(10))
+        if hasattr(self, 'reboot_btn'):
+            self.reboot_btn.setFixedHeight(32)
+        self.adjustSize()
+        
     def _create_scroll_tab(self):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -104,8 +116,8 @@ class SettingsWidget(QWidget):
         scroll_content = QWidget()
         scroll_content.setStyleSheet("background: transparent;")
         scroll_layout = QVBoxLayout(scroll_content)
-        scroll_layout.setContentsMargins(15, 12, 15, 30)
-        scroll_layout.setSpacing(12)
+        scroll_layout.setContentsMargins(s(15), s(12), s(15), s(30))
+        scroll_layout.setSpacing(s(12))
         scroll_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         scroll.setWidget(scroll_content)
         
@@ -119,7 +131,7 @@ class SettingsWidget(QWidget):
     def _create_checkbox(self, key, label_text, is_checked, callback):
         widget = QWidget()
         lay = QHBoxLayout(widget)
-        lay.setContentsMargins(0,0,0,0)
+        lay.setContentsMargins(0, 0, 0, 0)
         
         chk = QCheckBox()
         chk.setStyleSheet(Theme.get_style("SettingsCheckbox"))
@@ -140,7 +152,7 @@ class SettingsWidget(QWidget):
     def _create_dropdown(self, key, label_text, options, current_val, callback):
         widget = QWidget()
         lay = QHBoxLayout(widget)
-        lay.setContentsMargins(0,0,0,0)
+        lay.setContentsMargins(0, 0, 0, 0)
         
         lbl = QLabel(label_text)
         lbl.setStyleSheet("color: #ffe6cc; font-size: 9.5pt;")
@@ -161,8 +173,8 @@ class SettingsWidget(QWidget):
     def _create_line_edit(self, key, label_text, current_val, is_password, callback):
         widget = QWidget()
         lay = QVBoxLayout(widget)
-        lay.setContentsMargins(0,0,0,0)
-        lay.setSpacing(3)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(s(3))
         
         lbl = QLabel(label_text)
         lbl.setStyleSheet("color: rgba(255, 230, 204, 200); font-size: 8.5pt;")
@@ -217,8 +229,8 @@ class SettingsWidget(QWidget):
         # Dynamic WiFi Network Light Groups
         self.networks_container = QWidget()
         self.networks_layout = QVBoxLayout(self.networks_container)
-        self.networks_layout.setContentsMargins(0, 5, 0, 0)
-        self.networks_layout.setSpacing(15)
+        self.networks_layout.setContentsMargins(0, s(5), 0, 0)
+        self.networks_layout.setSpacing(s(15))
         lights_layout.addWidget(self.networks_container)
         
         self._populate_network_lights()
@@ -366,7 +378,7 @@ class SettingsWidget(QWidget):
             net_section = QWidget()
             net_lay = QVBoxLayout(net_section)
             net_lay.setContentsMargins(0, 0, 0, 0)
-            net_lay.setSpacing(8)
+            net_lay.setSpacing(s(8))
             
             # Network Header Bar
             header_widget = QWidget()
@@ -451,8 +463,8 @@ class SettingsWidget(QWidget):
     def _create_line_edit_raw(self, label_text, current_val, callback):
         widget = QWidget()
         lay = QVBoxLayout(widget)
-        lay.setContentsMargins(0,0,0,0)
-        lay.setSpacing(2)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(s(2))
         
         lbl = QLabel(label_text)
         lbl.setStyleSheet("color: rgba(255, 230, 204, 180); font-size: 8pt;")
@@ -469,7 +481,7 @@ class SettingsWidget(QWidget):
     def _create_dropdown_raw(self, label_text, options, current_val, callback):
         widget = QWidget()
         lay = QHBoxLayout(widget)
-        lay.setContentsMargins(0,0,0,0)
+        lay.setContentsMargins(0, 0, 0, 0)
         
         lbl = QLabel(label_text)
         lbl.setStyleSheet("color: rgba(255, 230, 204, 180); font-size: 8pt;")

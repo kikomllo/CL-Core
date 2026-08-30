@@ -4,6 +4,10 @@ from clTheme import Theme
 from utils.clActionRouter import ActionRouter
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
 from PyQt6.QtCore import QTimer
+from clUIScaler import UIScaler
+
+def s(val):
+    return UIScaler.get().scale(val)
 
 class MediaWidget(QWidget):
     def __init__(self, parent=None, grid_mode=False):
@@ -12,8 +16,8 @@ class MediaWidget(QWidget):
         self.grid_mode = grid_mode
         self.setMinimumSize(250, 170)
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(15, 10, 15, 15)
-        self.layout.setSpacing(6)
+        self.layout.setContentsMargins(s(15), s(10), s(15), s(15))
+        self.layout.setSpacing(s(6))
         
         # Header Badge
         header_layout = QHBoxLayout()
@@ -46,8 +50,8 @@ class MediaWidget(QWidget):
         self.layout.addStretch()
         
         # Playback Controls
-        controls_layout = QHBoxLayout()
-        controls_layout.setSpacing(18)
+        self.controls_layout = QHBoxLayout()
+        self.controls_layout.setSpacing(s(18))
         
         self.prev_btn = QPushButton("⏮")
         self.prev_btn.setFixedSize(32, 32)
@@ -64,13 +68,13 @@ class MediaWidget(QWidget):
         self.next_btn.setStyleSheet(Theme.get_style("MediaSmallBtn"))
         self.next_btn.clicked.connect(lambda: self.send_cmd("next", silent=True))
         
-        controls_layout.addStretch()
-        controls_layout.addWidget(self.prev_btn)
-        controls_layout.addWidget(self.play_btn)
-        controls_layout.addWidget(self.next_btn)
-        controls_layout.addStretch()
+        self.controls_layout.addStretch()
+        self.controls_layout.addWidget(self.prev_btn)
+        self.controls_layout.addWidget(self.play_btn)
+        self.controls_layout.addWidget(self.next_btn)
+        self.controls_layout.addStretch()
         
-        self.layout.addLayout(controls_layout)
+        self.layout.addLayout(self.controls_layout)
         
         self.position = 0.0
         self.duration = 0.0
@@ -80,6 +84,17 @@ class MediaWidget(QWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.timer.start(1000)
+        
+    def update_scaling(self):
+        self.setMinimumSize(250, 170)
+        self.layout.setContentsMargins(s(15), s(10), s(15), s(15))
+        self.layout.setSpacing(s(6))
+        if hasattr(self, 'controls_layout'):
+            self.controls_layout.setSpacing(s(18))
+        if hasattr(self, 'prev_btn'):
+            self.prev_btn.setFixedSize(32, 32)
+            self.play_btn.setFixedSize(40, 40)
+            self.next_btn.setFixedSize(32, 32)
         
     def showEvent(self, event):
         super().showEvent(event)

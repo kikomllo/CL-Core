@@ -5,6 +5,11 @@ import json
 from clTheme import Theme
 from utils.clActionRouter import ActionRouter
 import paho.mqtt.client as mqtt
+from clUIScaler import UIScaler
+
+def s(val):
+    return UIScaler.get().scale(val)
+
 
 class ZoomTextEdit(QTextEdit):
     def __init__(self, *args, **kwargs):
@@ -31,8 +36,8 @@ class UpdateWidget(QWidget):
         self.router = ActionRouter()
         self.setMinimumSize(400, 350)
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(0, 15, 0, 10)
-        self.layout.setSpacing(10)
+        self.layout.setContentsMargins(0, s(15), 0, s(10))
+        self.layout.setSpacing(s(10))
         
         self.status_lbl = QLabel("Ready")
         self.status_lbl.setStyleSheet(Theme.get_style("DimLabel") + " padding-left: 5px;")
@@ -65,8 +70,8 @@ class UpdateWidget(QWidget):
         self.layout.addWidget(self.log_viewer)
         
         self.btn_layout = QHBoxLayout()
-        self.btn_layout.setContentsMargins(15, 5, 15, 5)
-        self.btn_layout.setSpacing(10)
+        self.btn_layout.setContentsMargins(s(15), s(5), s(15), s(5))
+        self.btn_layout.setSpacing(s(10))
         
         self.btn_check = QPushButton("Check for Updates")
         self.btn_check.setStyleSheet(Theme.get_style("SecondaryButton"))
@@ -80,6 +85,19 @@ class UpdateWidget(QWidget):
         self.btn_layout.addWidget(self.btn_update_all)
         self.layout.addLayout(self.btn_layout)
         
+        self.refresh_status()
+        
+    def update_scaling(self):
+        self.setMinimumSize(400, 350)
+        self.layout.setContentsMargins(0, s(15), 0, s(10))
+        self.layout.setSpacing(s(10))
+        if hasattr(self, 'progress_bar'): self.progress_bar.setFixedHeight(6)
+        if hasattr(self, 'btn_layout'):
+            self.btn_layout.setContentsMargins(s(15), s(5), s(15), s(5))
+            self.btn_layout.setSpacing(s(10))
+        self.adjustSize()
+        
+    def refresh_status(self):
         self.status_signal.connect(self._on_status_update)
         self.log_signal.connect(self._on_log_message)
         
@@ -172,7 +190,7 @@ class UpdateWidget(QWidget):
         for update in details:
             w = QWidget()
             lay = QHBoxLayout(w)
-            lay.setContentsMargins(0, 0, 0, 5)
+            lay.setContentsMargins(0, 0, 0, s(5))
             
             t = update.get("type", "Unknown").upper()
             n = update.get("name", "Unknown")
