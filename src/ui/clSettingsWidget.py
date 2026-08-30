@@ -2,11 +2,12 @@ import json
 import os
 from clTheme import Theme
 from utils.clActionRouter import ActionRouter
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QFrame, QCheckBox, QComboBox, QPushButton, QTabWidget, QLineEdit, QInputDialog
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QFrame, QCheckBox, QComboBox, QPushButton, QTabWidget, QLineEdit, QInputDialog, QSizePolicy
+from PyQt6.QtCore import Qt, QTimer, QSize
 from utils.clConfigLoader import ConfigLoader
 from utils.clEnvLoader import EnvLoader
 from clUIScaler import UIScaler
+from ui.clMarqueeLabel import MarqueeLabel
 
 def s(val):
     return UIScaler.get().scale(val)
@@ -114,7 +115,11 @@ class SettingsWidget(QWidget):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         
-        scroll_content = QWidget()
+        class ScrollContent(QWidget):
+            def minimumSizeHint(self):
+                return QSize(0, super().minimumSizeHint().height())
+                
+        scroll_content = ScrollContent()
         scroll_content.setStyleSheet("background: transparent;")
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setContentsMargins(s(15), s(12), s(15), s(30))
@@ -141,7 +146,7 @@ class SettingsWidget(QWidget):
         
         self.ui_elements[key] = chk
         
-        lbl = QLabel(label_text)
+        lbl = MarqueeLabel(label_text, force_single_line=True)
         lbl.setStyleSheet("color: #ffe6cc; font-size: 9.5pt;")
         
         lay.addWidget(chk)
@@ -155,11 +160,12 @@ class SettingsWidget(QWidget):
         lay = QHBoxLayout(widget)
         lay.setContentsMargins(0, 0, 0, 0)
         
-        lbl = QLabel(label_text)
+        lbl = MarqueeLabel(label_text, force_single_line=True)
         lbl.setStyleSheet("color: #ffe6cc; font-size: 9.5pt;")
         
         combo = QComboBox()
         combo.setMinimumWidth(0)
+        combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         combo.addItems(options)
         if current_val in options:
             combo.setCurrentText(current_val)
@@ -178,11 +184,12 @@ class SettingsWidget(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(s(3))
         
-        lbl = QLabel(label_text)
+        lbl = MarqueeLabel(label_text, force_single_line=True)
         lbl.setStyleSheet("color: rgba(255, 230, 204, 200); font-size: 8.5pt;")
         
         line_edit = QLineEdit()
         line_edit.setMinimumWidth(0)
+        line_edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         if current_val is not None:
             line_edit.setText(str(current_val))
             
@@ -299,11 +306,13 @@ class SettingsWidget(QWidget):
                 
                 # Line Edit for key string
                 key_edit = QLineEdit(current_key)
+                key_edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
                 key_edit.setStyleSheet(Theme.get_style("SettingsLineEdit"))
                 key_edit.editingFinished.connect(lambda ak=action_key, le=key_edit: self._update_keybind(ak, "key", le.text()))
                 
                 # Dropdown for mode
                 mode_combo = QComboBox()
+                mode_combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
                 mode_combo.addItems(["single", "continuous"])
                 mode_combo.setCurrentText(current_mode)
                 mode_combo.setFixedWidth(100)
@@ -469,10 +478,12 @@ class SettingsWidget(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(s(2))
         
-        lbl = QLabel(label_text)
+        lbl = MarqueeLabel(label_text, force_single_line=True)
         lbl.setStyleSheet("color: rgba(255, 230, 204, 180); font-size: 8pt;")
         
         line_edit = QLineEdit()
+        line_edit.setMinimumWidth(0)
+        line_edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         line_edit.setText(str(current_val) if current_val else "")
         line_edit.setStyleSheet(Theme.get_style("SettingsLineEdit"))
         line_edit.editingFinished.connect(lambda: callback(line_edit.text()))
@@ -486,10 +497,12 @@ class SettingsWidget(QWidget):
         lay = QHBoxLayout(widget)
         lay.setContentsMargins(0, 0, 0, 0)
         
-        lbl = QLabel(label_text)
+        lbl = MarqueeLabel(label_text, force_single_line=True)
         lbl.setStyleSheet("color: rgba(255, 230, 204, 180); font-size: 8pt;")
         
         combo = QComboBox()
+        combo.setMinimumWidth(0)
+        combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         combo.addItems(options)
         if current_val in options: combo.setCurrentText(current_val)
         combo.setStyleSheet(Theme.get_style("SettingsDropdown"))
@@ -667,5 +680,5 @@ class SettingsWidget(QWidget):
         self.needs_reboot = False
 
 
-    def get_standalone_min_size(self):
-        return 325, 385
+    def minimumSizeHint(self):
+        return QSize(325, 385)

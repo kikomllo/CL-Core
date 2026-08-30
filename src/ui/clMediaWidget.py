@@ -5,6 +5,7 @@ from utils.clActionRouter import ActionRouter
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
 from PyQt6.QtCore import QTimer
 from clUIScaler import UIScaler
+from ui.clMarqueeLabel import MarqueeLabel
 
 def s(val):
     return UIScaler.get().scale(val)
@@ -28,13 +29,11 @@ class MediaWidget(QWidget):
         self.layout.addLayout(header_layout)
         
         # Title and Artist
-        self.title_lbl = QLabel("No Media Playing")
+        self.title_lbl = MarqueeLabel("No Media Playing")
         self.title_lbl.setStyleSheet(Theme.get_style("TitleLabel"))
-        self.title_lbl.setWordWrap(True)
         
-        self.artist_lbl = QLabel("Unknown Artist")
+        self.artist_lbl = MarqueeLabel("Unknown Artist")
         self.artist_lbl.setStyleSheet(Theme.get_style("SubtitleLabel"))
-        self.artist_lbl.setWordWrap(True)
         
         self.layout.addWidget(self.title_lbl)
         self.layout.addWidget(self.artist_lbl)
@@ -138,12 +137,14 @@ class MediaWidget(QWidget):
         self.duration = data.get("duration", 0.0)
         self.status = data.get("status", "Paused")
         
-        self.title_lbl.setText(title[:30] + ("..." if len(title) > 30 else ""))
-        self.artist_lbl.setText(artist[:30] + ("..." if len(artist) > 30 else ""))
+        self.title_lbl.setText(title)
+        self.artist_lbl.setText(artist)
         
         self._update_time_label()
         self.play_btn.setText("⏸" if self.status == "Playing" else "▶")
 
 
     def get_standalone_min_size(self):
-        return 250, 170
+        w = self.minimumSizeHint().width()
+        h = self.minimumSizeHint().height()
+        return max(200, w), max(120, h)

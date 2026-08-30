@@ -311,14 +311,6 @@ class DraggableWidget(QWidget):
         self.content_widget = content_widget
         self.layout.addWidget(self.content_widget)
         
-        if hasattr(content_widget, 'get_standalone_min_size'):
-            w, h = content_widget.get_standalone_min_size()
-            self.setMinimumSize(w, h)
-            self._unscaled_min_size = (w, h)
-        else:
-            self.setMinimumSize(150, 50)
-            self._unscaled_min_size = (150, 50)
-        
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(Theme.get_global_stylesheet() + "\n" + Theme.get_style("NotificationBody"))
         
@@ -334,10 +326,6 @@ class DraggableWidget(QWidget):
         s = UIScaler.get().scale
         if hasattr(self, 'title_bar'):
             self.title_bar.setFixedHeight(24)
-            
-        if hasattr(self, 'content_widget'):
-            w, h = getattr(self, '_unscaled_min_size', (150, 50))
-            self.setMinimumSize(w, h)
             
         self.adjustSize()
 
@@ -445,10 +433,8 @@ class DraggableWidget(QWidget):
         if hasattr(self, '_resizing') and self._resizing:
             delta = event.globalPosition().toPoint() - self._resize_start_global
             
-            s = UIScaler.get().scale
-            min_size_unscaled = getattr(self, '_unscaled_min_size', (150, 50))
-            min_w = s(min_size_unscaled[0])
-            min_h = s(min_size_unscaled[1])
+            min_w = self.minimumSizeHint().width()
+            min_h = self.minimumSizeHint().height()
             
             new_w = max(min_w, self._resize_start_size.width() + delta.x())
             new_h = max(min_h, self._resize_start_size.height() + delta.y())
