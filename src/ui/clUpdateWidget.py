@@ -6,26 +6,10 @@ from clTheme import Theme
 from utils.clActionRouter import ActionRouter
 import paho.mqtt.client as mqtt
 from clUIScaler import UIScaler
+from ui.clZoomTextEdit import ZoomTextEdit
 
 def s(val):
     return UIScaler.get().scale(val)
-
-
-class ZoomTextEdit(QTextEdit):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.viewport().installEventFilter(self)
-
-    def eventFilter(self, obj, event):
-        if obj == self.viewport() and event.type() == QEvent.Type.Wheel:
-            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-                delta = event.angleDelta().y()
-                if delta > 0:
-                    self.zoomIn(1)
-                elif delta < 0:
-                    self.zoomOut(1)
-                return True
-        return super().eventFilter(obj, event)
 
 class UpdateWidget(QWidget):
     status_signal = pyqtSignal(str, object)

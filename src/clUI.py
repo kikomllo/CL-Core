@@ -1366,10 +1366,20 @@ class JarvisUI(QWidget):
                 self.hide()
                 QApplication.processEvents()
             else:
-                if not hasattr(self, 'current_monitor_idx'):
-                    self.current_monitor_idx = UIScaler.get().get_primary_monitor_idx()
-                if self.current_monitor_idx >= len(screens):
-                    self.current_monitor_idx = UIScaler.get().get_primary_monitor_idx()
+                from PyQt6.QtGui import QCursor
+                cursor_pos = QCursor.pos()
+                active_screen = QApplication.screenAt(cursor_pos)
+                if not active_screen:
+                    active_screen = QApplication.primaryScreen()
+                    
+                self.current_monitor_idx = 0
+                active_name = active_screen.name() if active_screen else ""
+                for i, s in enumerate(screens):
+                    if s.name() == active_name:
+                        self.current_monitor_idx = i
+                        break
+                
+                UIScaler.get().set_active_monitor(self.current_monitor_idx)
                 
                 self.hide()
                 QApplication.processEvents()
@@ -1404,11 +1414,6 @@ class JarvisUI(QWidget):
             self.setMaximumSize(16777215, 16777215)
             
             self.setGeometry(geom)
-
-            logging.info("[DEBUG UI] Calling showNormal() to force Wayland mapping...")
-            self.showNormal()
-            QApplication.processEvents()
-            logging.info(f"[DEBUG UI] After showNormal() -> isVisible: {self.isVisible()}, isActiveWindow: {self.isActiveWindow()}")
             
             # Reset visualizer to IDLE before transitioning — prevents stale RECORDING state
             # from a previous TTS+mic cycle being inherited by the fullscreen view
