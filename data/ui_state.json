@@ -6,22 +6,22 @@
   },
   "active_widgets": {
     "widget_todo_list": {
-      "visible": false,
+      "visible": true,
       "pos": [
-        1316,
-        592
+        23,
+        410
       ],
       "size": [
-        168,
-        73
+        267,
+        273
       ],
       "is_unpinned": false
     },
     "widget_settings": {
-      "visible": true,
+      "visible": false,
       "pos": [
-        837,
-        76
+        456,
+        42
       ],
       "size": [
         325,
@@ -30,10 +30,10 @@
       "is_unpinned": false
     },
     "widget_updates": {
-      "visible": true,
+      "visible": false,
       "pos": [
-        229,
-        215
+        56,
+        184
       ],
       "size": [
         362,
@@ -42,26 +42,26 @@
       "is_unpinned": false
     },
     "widget_media_controls": {
-      "visible": false,
+      "visible": true,
       "pos": [
-        25,
-        70
+        23,
+        41
       ],
       "size": [
-        147,
-        141
+        135,
+        140
       ],
       "is_unpinned": false
     },
     "widget_light_controls": {
-      "visible": false,
+      "visible": true,
       "pos": [
-        238,
-        70
+        161,
+        42
       ],
       "size": [
-        143,
-        120
+        290,
+        139
       ],
       "is_unpinned": false
     }
