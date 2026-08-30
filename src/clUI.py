@@ -23,6 +23,7 @@ from ui.clLogWidget import LogWidget
 
 from clUIScalerInjector import inject_scaler
 from clUIScaler import UIScaler
+from clTheme import Theme
 
 inject_scaler()
 
@@ -265,26 +266,27 @@ class MqttThread(QThread):
 class DraggableWidget(QWidget):
     def __init__(self, widget_id, title, content_widget, closable=True, parent=None):
         super().__init__(parent)
+        self.setObjectName("PopupMain")
         self.widget_id = widget_id
         self.closable = closable
         
         print(f"[DEBUG DraggableWidget] widget_id={widget_id}, title={repr(title)}, closable={closable}")
         
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setContentsMargins(0, 0, 0, 15)
         self.layout.setSpacing(0)
         
         if title or closable:
             self.title_bar = QWidget(self)
             self.title_bar.setFixedHeight(24)
             self.title_bar.setObjectName("TitleBar")
-            self.title_bar.setStyleSheet("#TitleBar { background-color: rgba(255, 120, 0, 60); border-top-left-radius: 12px; border-top-right-radius: 12px; border-bottom: 1px solid rgba(255, 150, 0, 80); }")
+            self.title_bar.setStyleSheet(Theme.get_style("NotificationTitleBar"))
             title_layout = QHBoxLayout(self.title_bar)
             title_layout.setContentsMargins(10, 0, 5, 0)
             
             if title:
                 lbl = QLabel(title)
-                lbl.setStyleSheet("color: rgba(255, 200, 0, 200); font-family: 'Courier New'; font-size: 9pt; font-weight: bold; background: transparent; border: none;")
+                lbl.setStyleSheet(Theme.get_style("NotificationTitle"))
                 title_layout.addWidget(lbl)
             else:
                 title_layout.addStretch()
@@ -292,10 +294,7 @@ class DraggableWidget(QWidget):
             if closable:
                 btn = QPushButton("X")
                 btn.setFixedSize(18, 18)
-                btn.setStyleSheet("""
-                    QPushButton { background-color: transparent; color: rgba(255,150,0,180); font-weight: bold; border: none; font-size: 10pt; }
-                    QPushButton:hover { color: #ff5500; }
-                """)
+                btn.setStyleSheet(Theme.get_style("NotificationCloseBtn"))
                 btn.clicked.connect(self.close_widget)
                 title_layout.addWidget(btn)
                 
@@ -310,13 +309,7 @@ class DraggableWidget(QWidget):
         self.setMinimumSize(max(150, min_w), max(50, min_h))
         
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet("""
-            DraggableWidget {
-                background-color: rgba(20, 10, 0, 180);
-                border: 1px solid rgba(255, 120, 0, 100);
-                border-radius: 12px;
-            }
-        """)
+        self.setStyleSheet(Theme.get_style("NotificationBody"))
         
         self._dragging = False
         self._resizing = False
@@ -328,6 +321,10 @@ class DraggableWidget(QWidget):
             self.parent().close_draggable_widget(self.widget_id)
         else:
             self.hide()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.adjustSize()
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -667,74 +664,39 @@ class JarvisUI(QWidget):
         self.text_input = QLineEdit(self)
 
         self.text_input.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.text_input_style = """
-            QLineEdit {
-                background-color: rgba(20, 10, 0, 150);
-                color: rgba(255, 200, 0, 180);
-                border: 1px solid rgba(255, 180, 0, 50);
-                border-radius: 8px;
-                font-family: 'Courier New';
-                font-size: 10pt;
-                padding: 5px;
-            }
-        """
-        self.text_input.setStyleSheet(self.text_input_style)
         self.text_input.returnPressed.connect(self.submit_text_command)
         self.text_input.hide()
         
-        self.btn_style = """
-            QPushButton {
-                background-color: rgba(20, 10, 0, 180);
-                color: #ffaa00;
-                border-radius: 8px;
-                font-size: 10pt;
-                font-weight: bold;
-                font-family: 'Courier New';
-                border: 1px solid rgba(255, 150, 0, 80);
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 120, 0, 80);
-            }
-        """
-
         self.btn_media = QPushButton("MUSIC", self)
-        self.btn_media.setStyleSheet(self.btn_style)
         self.btn_media.clicked.connect(self._toggle_media)
         self.btn_media.hide()
         
         self.btn_lights = QPushButton("LIGHTS", self)
-        self.btn_lights.setStyleSheet(self.btn_style)
         self.btn_lights.clicked.connect(self._toggle_lights)
         self.btn_lights.hide()
         
         self.btn_reminders = QPushButton("REMINDERS", self)
-        self.btn_reminders.setStyleSheet(self.btn_style)
         self.btn_reminders.clicked.connect(self._toggle_reminders)
         self.btn_reminders.hide()
         
         self.btn_todos = QPushButton("TODOS", self)
-        self.btn_todos.setStyleSheet(self.btn_style)
         self.btn_todos.clicked.connect(self._toggle_todos)
         self.btn_todos.hide()
         
         self.btn_settings = QPushButton("SETTINGS", self)
-        self.btn_settings.setStyleSheet(self.btn_style)
         self.btn_settings.clicked.connect(self._toggle_settings)
         self.btn_settings.hide()
         
         self.btn_updates = QPushButton("UPDATES", self)
-        self.btn_updates.setStyleSheet(self.btn_style)
         self.btn_updates.clicked.connect(self._toggle_updates)
         self.btn_updates.hide()
         
         self.btn_debug = QPushButton("DEBUG", self)
-        self.btn_debug.setStyleSheet(self.btn_style)
         self.btn_debug.clicked.connect(self._toggle_debug)
         self.btn_debug.hide()
         
-        self.btn_calendar_style = "QPushButton { background-color: rgba(255, 150, 0, 40); color: #ffaa00; border-radius: 5px; font-weight: bold; border: 1px solid rgba(255, 150, 0, 80); } QPushButton:hover { background-color: rgba(255, 150, 0, 80); }"
         self.btn_calendar = QPushButton("❮", self)
-        self.btn_calendar.setStyleSheet(self.btn_calendar_style)
+        self.btn_calendar.setStyleSheet(Theme.get_style("CalendarButton"))
         self.btn_calendar.clicked.connect(self._toggle_calendar)
         self.btn_calendar.hide()
         
@@ -792,10 +754,8 @@ class JarvisUI(QWidget):
         logging.info(f"[DEBUG LAYOUT] Applied Scale: {s(100)/100.0}")
 
         # Re-apply stylesheets so the scaling dynamically updates font sizes and border radii
-        self.text_input.setStyleSheet(self.text_input_style)
-        for btn in [self.btn_media, self.btn_lights, self.btn_reminders, self.btn_todos, self.btn_settings, self.btn_updates, self.btn_debug]:
-            btn.setStyleSheet(self.btn_style)
-        self.btn_calendar.setStyleSheet(self.btn_calendar_style)
+        self.setStyleSheet(Theme.get_global_stylesheet())
+        self.btn_calendar.setStyleSheet(Theme.get_style("CalendarButton"))
 
         # Row 1
         self.btn_media.setGeometry(s(30), win_h - s(65), s(120), s(35))
@@ -1171,14 +1131,14 @@ class JarvisUI(QWidget):
         if not options:
             lbl = QLabel("List empty.")
             lbl.setFont(opt_font)
-            lbl.setStyleSheet("color: rgba(255, 100, 100, 180);")
+            lbl.setStyleSheet(Theme.get_style("HealthDanger"))
             layout.addWidget(lbl)
         else:
             for opt in reversed(options[:5]):
                 truncated_opt = fm.elidedText(opt, Qt.TextElideMode.ElideRight, target_width - 20)
                 lbl = QLabel(truncated_opt)
                 lbl.setFont(opt_font)
-                lbl.setStyleSheet("color: rgba(255, 200, 0, 180);")
+                lbl.setStyleSheet(Theme.get_style("HealthWarning"))
                 layout.addWidget(lbl)
             
         content.setStyleSheet("background-color: transparent;")
@@ -1602,8 +1562,7 @@ class JarvisUI(QWidget):
                 }
                 
             reminder_data = {
-                "visible": self.reminder_widget.isVisible() if hasattr(self, 'reminder_widget') else False,
-                "pos": [self.reminder_widget.x(), self.reminder_widget.y()] if hasattr(self, 'reminder_widget') else [0, 0]
+                "visible": self.reminder_widget.isVisible() if hasattr(self, 'reminder_widget') else False
             }
             
             carousel_idx = self.calendar_drawer.carousel.stack.currentIndex() if hasattr(self, 'calendar_drawer') else 0
@@ -1648,9 +1607,6 @@ class JarvisUI(QWidget):
             widgets_state = state.get("active_widgets", {})
             rem_state = state.get("reminder_widget", {})
             if hasattr(self, 'reminder_widget'):
-                pos = rem_state.get("pos")
-                if pos and len(pos) == 2:
-                    self.reminder_widget.move(pos[0], pos[1])
                 if rem_state.get("visible", False):
                     self.reminder_widget.show()
                     self.reminder_widget.raise_(); self._enforce_z_order()

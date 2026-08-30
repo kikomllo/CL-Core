@@ -1,5 +1,6 @@
 import os
 import sys
+from clTheme import Theme
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QTextEdit
 from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QFont, QColor, QTextCursor
@@ -16,37 +17,8 @@ class LogWidget(QWidget):
         self.text_edit.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         
         # Match updater aesthetic
-        self.text_edit.setStyleSheet("""
-            QTextEdit {
-                background-color: rgba(10, 5, 0, 200);
-                color: #ffaa00;
-                border: 1px solid rgba(255, 150, 0, 50);
-                border-radius: 4px;
-                padding: 5px;
-                selection-background-color: rgba(255, 170, 0, 50);
-            }
-            QScrollBar:vertical {
-                border: none;
-                background: rgba(0, 0, 0, 100);
-                width: 10px;
-                margin: 0px 0px 0px 0px;
-            }
-            QScrollBar::handle:vertical {
-                background: rgba(255, 170, 0, 150);
-                min-height: 20px;
-                border-radius: 5px;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                border: none;
-                background: none;
-            }
-        """)
-        
+        self.text_edit.setStyleSheet(Theme.get_style("LogViewer"))
         self.text_edit.document().setDefaultStyleSheet("p { margin-top: 3px; margin-bottom: 3px; }")
-        
-        font = QFont("monospace")
-        font.setPointSize(8)
-        self.text_edit.setFont(font)
         
         self.layout.addWidget(self.text_edit)
         

@@ -2,6 +2,7 @@ import os
 import logging
 import json
 from datetime import datetime
+from clTheme import Theme
 from utils.clActionRouter import ActionRouter
 from PyQt6.QtWidgets import QWidget, QPushButton
 from PyQt6.QtCore import QTimer, QFileSystemWatcher, Qt, QRectF
@@ -30,55 +31,22 @@ class ReminderWidget(QWidget):
         self.timer.timeout.connect(self.tick)
         self.timer.start(1000)
         
-        btn_arrow_style = """
-            QPushButton {
-                text-align: center;
-                padding-bottom: 4px;
-                background-color: transparent;
-                color: #ffaa00;
-                border: none;
-                font-size: 14pt;
-                font-weight: bold;
-                font-family: 'Courier New';
-            }
-            QPushButton:hover {
-                color: #ffffff;
-            }
-        """
-        
-        btn_delete_style = """
-            QPushButton {
-                text-align: center;
-                padding-bottom: 4px;
-                background-color: rgba(20, 10, 0, 180);
-                color: #ffaa00;
-                border-radius: 4px;
-                font-size: 7.5pt;
-                font-weight: bold;
-                font-family: 'Courier New';
-                border: 1px solid rgba(255, 150, 0, 80);
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 120, 0, 80);
-            }
-        """
-        
         # Single mode controls
         self.btn_delete = QPushButton("DELETE", self)
         self.btn_delete.setFixedSize(64, 22)
-        self.btn_delete.setStyleSheet(btn_delete_style)
+        self.btn_delete.setStyleSheet(Theme.get_style("SmallDangerButton"))
         self.btn_delete.clicked.connect(self.cancel_reminder)
         self.btn_delete.move(78, 96)
         
         self.btn_prev = QPushButton("<", self)
         self.btn_prev.setFixedSize(24, 24)
-        self.btn_prev.setStyleSheet(btn_arrow_style)
+        self.btn_prev.setStyleSheet(Theme.get_style("TransparentButton"))
         self.btn_prev.clicked.connect(self.prev_reminder)
         self.btn_prev.move(48, 95)
         
         self.btn_next = QPushButton(">", self)
         self.btn_next.setFixedSize(24, 24)
-        self.btn_next.setStyleSheet(btn_arrow_style)
+        self.btn_next.setStyleSheet(Theme.get_style("TransparentButton"))
         self.btn_next.clicked.connect(self.next_reminder)
         self.btn_next.move(148, 95)
         
@@ -86,18 +54,18 @@ class ReminderWidget(QWidget):
         self.grid_delete_btns = []
         for i in range(4):
             btn = QPushButton("DELETE", self)
-            btn.setStyleSheet(btn_delete_style)
+            btn.setStyleSheet(Theme.get_style("SmallDangerButton"))
             btn.clicked.connect(lambda checked, idx=i: self.cancel_grid_reminder(idx))
             btn.hide()
             self.grid_delete_btns.append(btn)
             
         self.btn_grid_prev = QPushButton("<", self)
-        self.btn_grid_prev.setStyleSheet(btn_arrow_style)
+        self.btn_grid_prev.setStyleSheet(Theme.get_style("TransparentButton"))
         self.btn_grid_prev.clicked.connect(self.prev_grid_page)
         self.btn_grid_prev.hide()
         
         self.btn_grid_next = QPushButton(">", self)
-        self.btn_grid_next.setStyleSheet(btn_arrow_style)
+        self.btn_grid_next.setStyleSheet(Theme.get_style("TransparentButton"))
         self.btn_grid_next.clicked.connect(self.next_grid_page)
         self.btn_grid_next.hide()
         
