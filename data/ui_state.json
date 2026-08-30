@@ -9,7 +9,7 @@
       "visible": false,
       "pos": [
         1431,
-        336
+        317
       ],
       "size": [
         350,
@@ -20,12 +20,12 @@
     "widget_settings": {
       "visible": true,
       "pos": [
-        37,
-        545
+        917,
+        63
       ],
       "size": [
-        400,
-        492
+        325,
+        424
       ],
       "is_unpinned": false
     },
@@ -33,35 +33,35 @@
       "visible": true,
       "pos": [
         472,
-        68
+        64
       ],
       "size": [
-        400,
-        350
+        311,
+        162
       ],
       "is_unpinned": false
     },
     "widget_media_controls": {
       "visible": true,
       "pos": [
-        130,
-        75
+        81,
+        97
       ],
       "size": [
-        250,
-        170
+        172,
+        192
       ],
       "is_unpinned": false
     },
     "widget_light_controls": {
-      "visible": false,
+      "visible": true,
       "pos": [
-        861,
-        481
+        5,
+        343
       ],
       "size": [
-        340,
-        300
+        392,
+        157
       ],
       "is_unpinned": false
     }
