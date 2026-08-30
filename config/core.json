@@ -12,7 +12,7 @@
         "hardware": "cpu",
         "enable_followup": false,
         "silent_mode": true,
-        "last_light_target": "all",
+        "last_light_target": "bedroom",
         "ecosystem_state": "debug"
     },
     "vad_settings": {

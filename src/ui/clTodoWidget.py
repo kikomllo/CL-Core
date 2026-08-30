@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QLineEdit, QPushButton, QCheckBox, QTabWidget, QInputDialog, QStackedWidget, QSizePolicy
 )
 from clUIScaler import UIScaler
-from PyQt6.QtCore import Qt, QPoint
+from PyQt6.QtCore import Qt, QPoint, QTimer
 
 def s(val):
     return UIScaler.get().scale(val)
@@ -18,7 +18,7 @@ class TodoWidget(QWidget):
         # self.setMinimumSize(350, 400)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, s(10))
+        self.layout.setContentsMargins(s(2), 0, s(2), 0)
         self.layout.setSpacing(0)
         
         # Tabs for lists
@@ -79,7 +79,7 @@ class TodoWidget(QWidget):
 
     def update_scaling(self):
         # self.setMinimumSize(350, 400)
-        self.layout.setContentsMargins(0, 0, 0, s(10))
+        self.layout.setContentsMargins(s(2), 0, s(2), 0)
         if hasattr(self, 'btn_add_list'): self.btn_add_list.setFixedSize(24, 24)
         if hasattr(self, 'task_input'): self.task_input.setFixedHeight(32)
         if hasattr(self, 'add_btn'): self.add_btn.setFixedHeight(32)
@@ -319,6 +319,8 @@ class TodoWidget(QWidget):
                 
             for t in tasks:
                 task_widget = QWidget()
+                task_widget.setMinimumHeight(32)
+                task_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
                 task_layout = QHBoxLayout(task_widget)
                 task_layout.setContentsMargins(0, 0, 0, 0)
                 task_layout.setSpacing(s(8))
@@ -327,6 +329,8 @@ class TodoWidget(QWidget):
                 chk.setStyleSheet(Theme.get_style("TodoCheckbox"))
                 
                 lbl = QLabel(t["task"])
+                lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+                lbl.setMinimumHeight(24)
                 lbl.setWordWrap(True)
                 lbl.setStyleSheet("padding: 2px 0px;")
                 
@@ -348,6 +352,13 @@ class TodoWidget(QWidget):
             if self.tabs.tabText(i) == self.current_list_name:
                 self.tabs.setCurrentIndex(i)
                 break
+                
+        QTimer.singleShot(50, self._force_resize)
+        
+    def _force_resize(self):
+        self.adjustSize()
+        if self.parentWidget():
+            self.parentWidget().adjustSize()
                 
     def toggle_task(self, todo_id, state):
         is_checked = (state == 2)

@@ -151,7 +151,7 @@ class Theme:
             """
         elif component == "RefreshButton":
             return f"""
-                QPushButton {{ text-align: center; padding-bottom: 4px; background-color: rgba(255, 150, 0, 20); color: {cls.C_PRIMARY}; border-radius: 15px; border: 1px solid rgba(255,150,0,80); font-size: 14pt; }}
+                QPushButton {{ text-align: center; padding: 0; background-color: rgba(255, 150, 0, 20); color: {cls.C_PRIMARY}; border-radius: 15px; border: 1px solid rgba(255,150,0,80); font-size: 12pt; }}
                 QPushButton:hover {{ background-color: rgba(255, 150, 0, 60); color: #ffffff; }}
             """
         elif component == "LightDangerButton":
