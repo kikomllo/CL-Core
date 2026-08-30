@@ -269,7 +269,7 @@ class CalendarWidget(QWidget):
             self.week_layout.addWidget(col_widget)
 
     def update_scaling(self):
-        self.setMinimumSize(320, 380)
+        # self.setMinimumSize(320, 380)
         self.layout.setContentsMargins(s(10), s(10), s(10), s(10))
         self.layout.setSpacing(s(5))
         self.adjustSize()
@@ -482,3 +482,7 @@ class CalendarWidget(QWidget):
     def load_events(self, events_data):
         self.events = events_data.get('events', [])
         self.update_ui()
+
+
+    def get_standalone_min_size(self):
+        return 320, 380

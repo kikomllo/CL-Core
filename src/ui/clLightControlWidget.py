@@ -16,7 +16,6 @@ class LightControlWidget(QWidget):
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(s(15), s(15), s(15), s(15))
         self.layout.setSpacing(s(8))
-        self.setMinimumWidth(340)
         
         # Title and Refresh
         top_layout = QHBoxLayout()
@@ -32,6 +31,8 @@ class LightControlWidget(QWidget):
         top_layout.addStretch()
         top_layout.addWidget(self.refresh_btn)
         self.layout.addLayout(top_layout)
+        
+
         
         # Lights container
         self.lights_container = QWidget()
@@ -57,7 +58,6 @@ class LightControlWidget(QWidget):
     def update_scaling(self):
         self.layout.setContentsMargins(s(15), s(15), s(15), s(15))
         self.layout.setSpacing(s(8))
-        self.setMinimumWidth(340)
         if hasattr(self, 'refresh_btn'):
             self.refresh_btn.setFixedSize(30, 30)
         if hasattr(self, 'lights_layout'):
@@ -210,3 +210,6 @@ class LightControlWidget(QWidget):
         # Deferred resize ensures the parent wrapper picks up the new layout geometry
         QTimer.singleShot(0, lambda: self.window().adjustSize())
         QTimer.singleShot(50, lambda: self.window().adjustSize())
+
+    def get_standalone_min_size(self):
+        return 340, 300

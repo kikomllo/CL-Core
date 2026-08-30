@@ -63,7 +63,7 @@ class SettingsWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.router = ActionRouter()
-        self.setMinimumSize(325, 385)
+        # self.setMinimumSize(325, 385)
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, s(10))
         self.layout.setSpacing(0)
@@ -87,7 +87,7 @@ class SettingsWidget(QWidget):
         
         # Reboot Button at bottom
         self.reboot_btn = QPushButton("Save & Reboot Ecosystem")
-        self.reboot_btn.setFixedHeight(32)
+        self.reboot_btn.setFixedHeight(42)
         self.reboot_btn.setStyleSheet(Theme.get_style("RebootButton"))
         self.reboot_btn.clicked.connect(self._reboot_ecosystem)
         self.reboot_btn.hide()
@@ -102,16 +102,17 @@ class SettingsWidget(QWidget):
         self.update_timer.start(2000)
         
     def update_scaling(self):
-        self.setMinimumSize(325, 385)
+        # self.setMinimumSize(325, 385)
         self.layout.setContentsMargins(0, 0, 0, s(10))
         if hasattr(self, 'reboot_btn'):
-            self.reboot_btn.setFixedHeight(32)
+            self.reboot_btn.setFixedHeight(42)
         self.adjustSize()
         
     def _create_scroll_tab(self):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         
         scroll_content = QWidget()
         scroll_content.setStyleSheet("background: transparent;")
@@ -158,6 +159,7 @@ class SettingsWidget(QWidget):
         lbl.setStyleSheet("color: #ffe6cc; font-size: 9.5pt;")
         
         combo = QComboBox()
+        combo.setMinimumWidth(0)
         combo.addItems(options)
         if current_val in options:
             combo.setCurrentText(current_val)
@@ -180,6 +182,7 @@ class SettingsWidget(QWidget):
         lbl.setStyleSheet("color: rgba(255, 230, 204, 200); font-size: 8.5pt;")
         
         line_edit = QLineEdit()
+        line_edit.setMinimumWidth(0)
         if current_val is not None:
             line_edit.setText(str(current_val))
             
@@ -212,9 +215,9 @@ class SettingsWidget(QWidget):
         sys_layout.addWidget(self._create_dropdown("hardware", "Hardware Acceleration", ["cpu", "cuda"], "cpu", self._change_hardware))
         sys_layout.addSpacing(20)
 
-        # --- TAB 2: SMART LIGHTS ---
+        # --- TAB 2: LIGHTS ---
         lights_scroll, lights_layout = self._create_scroll_tab()
-        self.tabs.addTab(lights_scroll, "Smart Lights")
+        self.tabs.addTab(lights_scroll, "Lights")
         self.lights_layout = lights_layout
         
         lights_layout.addWidget(self._create_section_label("Global Light Settings"))
@@ -662,3 +665,7 @@ class SettingsWidget(QWidget):
             
         self.reboot_btn.hide()
         self.needs_reboot = False
+
+
+    def get_standalone_min_size(self):
+        return 325, 385

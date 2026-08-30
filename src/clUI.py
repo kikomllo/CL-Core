@@ -269,6 +269,8 @@ class DraggableWidget(QWidget):
         self.setObjectName("PopupMain")
         self.widget_id = widget_id
         self.closable = closable
+        self.main_window = parent
+        self.is_unpinned = False
         
         print(f"[DEBUG DraggableWidget] widget_id={widget_id}, title={repr(title)}, closable={closable}")
         
@@ -292,8 +294,14 @@ class DraggableWidget(QWidget):
                 title_layout.addStretch()
                 
             if closable:
+                self.pin_btn = QPushButton("↑")
+                self.pin_btn.setFixedSize(22, 22)
+                self.pin_btn.setStyleSheet(Theme.get_style("NotificationCloseBtn") + " font-family: 'DejaVu Sans', 'Arial', sans-serif; font-weight: normal;")
+                self.pin_btn.clicked.connect(lambda: self.toggle_pin())
+                title_layout.addWidget(self.pin_btn)
+                
                 btn = QPushButton("X")
-                btn.setFixedSize(18, 18)
+                btn.setFixedSize(22, 22)
                 btn.setStyleSheet(Theme.get_style("NotificationCloseBtn"))
                 btn.clicked.connect(self.close_widget)
                 title_layout.addWidget(btn)
@@ -303,8 +311,13 @@ class DraggableWidget(QWidget):
         self.content_widget = content_widget
         self.layout.addWidget(self.content_widget)
         
-        # Enforce minimum size based on content to prevent squashing and clipping
-        self.setMinimumSize(150, 50)
+        if hasattr(content_widget, 'get_standalone_min_size'):
+            w, h = content_widget.get_standalone_min_size()
+            self.setMinimumSize(w, h)
+            self._unscaled_min_size = (w, h)
+        else:
+            self.setMinimumSize(150, 50)
+            self._unscaled_min_size = (150, 50)
         
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(Theme.get_style("NotificationBody"))
@@ -323,21 +336,74 @@ class DraggableWidget(QWidget):
             self.title_bar.setFixedHeight(24)
             
         if hasattr(self, 'content_widget'):
-            self.setMinimumSize(150, 50)
+            w, h = getattr(self, '_unscaled_min_size', (150, 50))
+            self.setMinimumSize(w, h)
             
         self.adjustSize()
 
     def close_widget(self):
-        if hasattr(self.parent(), 'close_draggable_widget'):
-            self.parent().close_draggable_widget(self.widget_id)
+        parent_ui = self.main_window if self.is_unpinned else self.parent()
+        if hasattr(parent_ui, 'close_draggable_widget'):
+            parent_ui.close_draggable_widget(self.widget_id)
         else:
             self.hide()
+
+    def toggle_pin(self, force_unpin=None):
+        should_unpin = not self.is_unpinned if force_unpin is None else force_unpin
+        if should_unpin == self.is_unpinned:
+            return
+            
+        self.is_unpinned = should_unpin
+        current_size = self.size()
+        
+        if self.is_unpinned:
+            global_pos = self.mapToGlobal(QPoint(0, 0))
+            self.setParent(None)
+            self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool)
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            if hasattr(self, 'pin_btn'):
+                self.pin_btn.setText("↓")
+            self.move(global_pos)
+        else:
+            global_pos = self.pos()
+            if self.main_window:
+                self.setParent(self.main_window)
+                local_pos = self.main_window.mapFromGlobal(global_pos)
+                
+                # Clamp to main window bounds so it pops into screen if pinned on another monitor
+                max_x = max(0, self.main_window.width() - current_size.width())
+                max_y = max(0, self.main_window.height() - current_size.height())
+                clamped_x = max(0, min(local_pos.x(), max_x))
+                clamped_y = max(0, min(local_pos.y(), max_y))
+                
+                self.move(clamped_x, clamped_y)
+            self.setWindowFlags(Qt.WindowType.Widget)
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            if hasattr(self, 'pin_btn'):
+                self.pin_btn.setText("↑")
+                
+        if hasattr(self, 'resizeUnscaled'):
+            self.resizeUnscaled(current_size.width(), current_size.height())
+        else:
+            self.resize(current_size)
+            
+        self.show()
+        
+        if hasattr(self.main_window, 'save_ui_state'):
+            self.main_window.save_ui_state()
 
     def showEvent(self, event):
         super().showEvent(event)
         self.adjustSize()
 
     def paintEvent(self, event):
+        from PyQt6.QtWidgets import QStyleOption, QStyle
+        opt = QStyleOption()
+        opt.initFrom(self)
+        p = QPainter(self)
+        self.style().drawPrimitive(QStyle.PrimitiveElement.PE_Widget, opt, p, self)
+        p.end()
+        
         super().paintEvent(event)
         s = UIScaler.get().scale
         margin = s(15)
@@ -378,9 +444,15 @@ class DraggableWidget(QWidget):
     def mouseMoveEvent(self, event):
         if hasattr(self, '_resizing') and self._resizing:
             delta = event.globalPosition().toPoint() - self._resize_start_global
-            min_size = self.layout.minimumSize()
-            new_w = max(min_size.width(), self._resize_start_size.width() + delta.x())
-            new_h = max(min_size.height(), self._resize_start_size.height() + delta.y())
+            
+            s = UIScaler.get().scale
+            min_size_unscaled = getattr(self, '_unscaled_min_size', (150, 50))
+            min_w = s(min_size_unscaled[0])
+            min_h = s(min_size_unscaled[1])
+            
+            new_w = max(min_w, self._resize_start_size.width() + delta.x())
+            new_h = max(min_h, self._resize_start_size.height() + delta.y())
+            
             if hasattr(self, 'resizeUnscaled'):
                 self.resizeUnscaled(new_w, new_h)
             else:
@@ -388,7 +460,7 @@ class DraggableWidget(QWidget):
         elif self._dragging:
             delta = event.globalPosition().toPoint() - self._drag_start_global
             new_pos = self._drag_start_pos + delta
-            if self.parent():
+            if self.parent() and not self.is_unpinned:
                 new_pos.setX(max(0, min(new_pos.x(), self.parent().width() - self.width())))
                 new_pos.setY(max(0, min(new_pos.y(), self.parent().height() - self.height())))
             self.move(new_pos)
@@ -397,8 +469,8 @@ class DraggableWidget(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             self._dragging = False
             self._resizing = False
-            if hasattr(self.parent(), 'save_ui_state'):
-                self.parent().save_ui_state()
+            if hasattr(self.main_window, 'save_ui_state'):
+                self.main_window.save_ui_state()
         super().mouseReleaseEvent(event)
 
 class JarvisVisualizer(QWidget):
@@ -1600,7 +1672,8 @@ class JarvisUI(QWidget):
                 active_widgets_data[wid] = {
                     "visible": wrapper.isVisible(),
                     "pos": [wrapper.x(), wrapper.y()],
-                    "size": [wrapper.width(), wrapper.height()]
+                    "size": [wrapper.width(), wrapper.height()],
+                    "is_unpinned": getattr(wrapper, "is_unpinned", False)
                 }
                 
             reminder_data = {
@@ -1615,6 +1688,7 @@ class JarvisUI(QWidget):
                 "reminder_widget": reminder_data,
                 "active_widgets": active_widgets_data,
                 "current_monitor_idx": getattr(self, 'current_monitor_idx', 0),
+                "screen_size": [self.width(), self.height()],
                 "is_fullscreen": getattr(self, 'is_fullscreen', False)
             }
             
@@ -1688,10 +1762,24 @@ class JarvisUI(QWidget):
                     w = self.active_widgets[widget_id]
                     
                     if pos and len(pos) == 2:
-                        w.move(pos[0], pos[1])
+                        prev_screen = state.get("screen_size", [1920, 1080]) # Fallback for old states
+                        scale_x = self.width() / max(1, prev_screen[0])
+                        scale_y = self.height() / max(1, prev_screen[1])
+                        
+                        p_x = int(pos[0] * scale_x)
+                        p_y = int(pos[1] * scale_y)
+                        
+                        # Clamp to current screen bounds
+                        p_x = max(0, min(p_x, self.width() - 50))
+                        p_y = max(0, min(p_y, self.height() - 50))
+                        
+                        w.move(p_x, p_y)
                         
                     if size and len(size) == 2:
                         w.resize(size[0], size[1])
+                        
+                    if info.get("is_unpinned", False) and hasattr(w, "toggle_pin"):
+                        w.toggle_pin(force_unpin=True)
                         
                     if is_visible:
                         w.show()

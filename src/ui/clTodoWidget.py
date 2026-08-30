@@ -15,7 +15,7 @@ class TodoWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.router = ActionRouter()
-        self.setMinimumSize(350, 400)
+        # self.setMinimumSize(350, 400)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, s(10))
@@ -78,7 +78,7 @@ class TodoWidget(QWidget):
         self.current_list_name = "My To-Do List"
 
     def update_scaling(self):
-        self.setMinimumSize(350, 400)
+        # self.setMinimumSize(350, 400)
         self.layout.setContentsMargins(0, 0, 0, s(10))
         if hasattr(self, 'btn_add_list'): self.btn_add_list.setFixedSize(24, 24)
         if hasattr(self, 'task_input'): self.task_input.setFixedHeight(32)
@@ -358,3 +358,7 @@ class TodoWidget(QWidget):
                 self.router.dispatch("todo.delete", id=todo_id)
         except:
             pass
+
+
+    def get_standalone_min_size(self):
+        return 350, 400
