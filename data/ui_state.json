@@ -8,56 +8,56 @@
     "widget_todo_list": {
       "visible": true,
       "pos": [
-        45,
-        331
+        294,
+        58
       ],
       "size": [
-        350,
-        439
+        249,
+        316
       ]
     },
     "widget_settings": {
       "visible": true,
       "pos": [
-        913,
-        35
+        757,
+        58
       ],
       "size": [
-        400,
-        492
+        238,
+        306
       ]
     },
     "widget_updates": {
       "visible": true,
       "pos": [
-        522,
-        316
+        46,
+        402
       ],
       "size": [
-        400,
-        374
+        284,
+        281
       ]
     },
     "widget_media_controls": {
       "visible": true,
       "pos": [
-        193,
-        89
+        86,
+        56
       ],
       "size": [
-        250,
-        209
+        178,
+        153
       ]
     },
     "widget_light_controls": {
-      "visible": true,
+      "visible": false,
       "pos": [
-        551,
-        20
+        861,
+        481
       ],
       "size": [
-        392,
-        231
+        340,
+        195
       ]
     }
   },

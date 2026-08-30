@@ -5,7 +5,11 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QFrame, 
     QLineEdit, QPushButton, QCheckBox, QTabWidget, QInputDialog, QStackedWidget, QSizePolicy
 )
+from clUIScaler import UIScaler
 from PyQt6.QtCore import Qt, QPoint
+
+def s(val):
+    return UIScaler.get().scale(val)
 
 class TodoWidget(QWidget):
     def __init__(self, parent=None):
@@ -14,7 +18,7 @@ class TodoWidget(QWidget):
         self.setMinimumSize(350, 400)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 10)
+        self.layout.setContentsMargins(0, 0, 0, s(10))
         self.layout.setSpacing(0)
         
         # Tabs for lists
@@ -39,7 +43,6 @@ class TodoWidget(QWidget):
         self.task_input = QLineEdit()
         self.task_input.setPlaceholderText("New task...")
         self.task_input.setFixedHeight(32)
-        self.task_input.setFixedHeight(32)
         self.task_input.returnPressed.connect(self.submit_task)
         
         def input_focus_out(event):
@@ -58,8 +61,8 @@ class TodoWidget(QWidget):
         
         self.bottom_container = QWidget()
         self.bottom_layout = QHBoxLayout(self.bottom_container)
-        self.bottom_layout.setContentsMargins(15, 5, 15, 0)
-        self.bottom_layout.setSpacing(10)
+        self.bottom_layout.setContentsMargins(s(15), s(5), s(15), 0)
+        self.bottom_layout.setSpacing(s(10))
         self.bottom_layout.addWidget(self.bottom_stack, stretch=1)
         
         self.btn_delete_list = QPushButton("X")
@@ -73,6 +76,28 @@ class TodoWidget(QWidget):
         self.layout.addWidget(self.bottom_container)
         
         self.current_list_name = "My To-Do List"
+
+    def update_scaling(self):
+        self.setMinimumSize(350, 400)
+        self.layout.setContentsMargins(0, 0, 0, s(10))
+        if hasattr(self, 'btn_add_list'): self.btn_add_list.setFixedSize(24, 24)
+        if hasattr(self, 'task_input'): self.task_input.setFixedHeight(32)
+        if hasattr(self, 'add_btn'): self.add_btn.setFixedHeight(32)
+        if hasattr(self, 'bottom_layout'):
+            self.bottom_layout.setContentsMargins(s(15), s(5), s(15), 0)
+            self.bottom_layout.setSpacing(s(10))
+        if hasattr(self, 'btn_delete_list'): self.btn_delete_list.setFixedSize(32, 32)
+        
+        for i in range(self.tabs.count()):
+            scroll = self.tabs.widget(i)
+            if hasattr(scroll, 'scroll_layout'):
+                scroll.scroll_layout.setContentsMargins(s(15), s(15), s(15), s(30))
+                scroll.scroll_layout.setSpacing(s(12))
+                for j in range(scroll.scroll_layout.count()):
+                    item = scroll.scroll_layout.itemAt(j)
+                    if item and item.widget() and item.widget().layout():
+                        item.widget().layout().setSpacing(s(8))
+        self.adjustSize()
         
     def prompt_new_list(self):
         if not hasattr(self, 'list_dialog') or self.list_dialog is None:
@@ -93,8 +118,8 @@ class TodoWidget(QWidget):
             main_layout.addWidget(bg_frame)
 
             dlg_layout = QVBoxLayout(bg_frame)
-            dlg_layout.setContentsMargins(14, 14, 14, 14)
-            dlg_layout.setSpacing(10)
+            dlg_layout.setContentsMargins(s(14), s(14), s(14), s(14))
+            dlg_layout.setSpacing(s(10))
             
             title_lbl = QLabel("NEW TO-DO LIST")
             title_lbl.setStyleSheet(Theme.get_style("TitleLabel"))
@@ -110,7 +135,7 @@ class TodoWidget(QWidget):
             dlg_layout.addWidget(self.input_list_name)
             
             btn_layout = QHBoxLayout()
-            btn_layout.setSpacing(6)
+            btn_layout.setSpacing(s(6))
             
             btn_cancel = QPushButton("Cancel")
             btn_cancel.setStyleSheet(Theme.get_style("DangerButton"))
@@ -127,8 +152,8 @@ class TodoWidget(QWidget):
         self.input_list_name.clear()
         
         # Center dialog
-        dlg_width = 250
-        dlg_height = 150
+        dlg_width = s(250)
+        dlg_height = s(150)
         self.list_dialog.resize(dlg_width, dlg_height)
         
         # Map to global properly for popup
@@ -224,8 +249,8 @@ class TodoWidget(QWidget):
         
         scroll_content = QWidget()
         scroll_layout = QVBoxLayout(scroll_content)
-        scroll_layout.setContentsMargins(15, 15, 15, 30)
-        scroll_layout.setSpacing(12)
+        scroll_layout.setContentsMargins(s(15), s(15), s(15), s(30))
+        scroll_layout.setSpacing(s(12))
         scroll_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         
         scroll.setWidget(scroll_content)
@@ -296,7 +321,7 @@ class TodoWidget(QWidget):
                 task_widget = QWidget()
                 task_layout = QHBoxLayout(task_widget)
                 task_layout.setContentsMargins(0, 0, 0, 0)
-                task_layout.setSpacing(8)
+                task_layout.setSpacing(s(8))
                 
                 chk = QCheckBox()
                 chk.setStyleSheet(Theme.get_style("TodoCheckbox"))

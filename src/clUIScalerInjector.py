@@ -9,6 +9,7 @@ def inject_scaler():
     def _scaled_setStyleSheet(self, css):
         if not isinstance(css, str):
             return _orig_setStyleSheet(self, css)
+        self._unscaled_css = css
         _orig_setStyleSheet(self, UIScaler.get().scale_css(css))
     QWidget.setStyleSheet = _scaled_setStyleSheet
 
@@ -67,12 +68,17 @@ def inject_scaler():
         else:
             _orig_resize(self, scaler.scale(args[0]), scaler.scale(args[1]))
     QWidget.resize = _scaled_resize
+    
+    def _unscaled_resize(self, w, h):
+        _orig_resize(self, int(w), int(h))
+    QWidget.resizeUnscaled = _unscaled_resize
 
     # Font
     _orig_setFont = QWidget.setFont
     def _scaled_setFont(self, font):
         scaler = UIScaler.get()
         f = QFont(font)
+        self._unscaled_font = QFont(font)
         if f.pointSize() > 0:
             f.setPointSize(scaler.scale(f.pointSize()))
         elif f.pixelSize() > 0:

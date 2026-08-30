@@ -193,7 +193,7 @@ class Theme:
         elif component == "TodoTabs":
             return f"""
                 QTabWidget::pane {{ border: 0px; background: transparent; }}
-                QTabBar {{ draw-base: false; border: 0px; outline: none; }}
+                QTabBar {{ qproperty-drawBase: 0; border: 0px; outline: none; }}
                 QTabBar::tab {{ background: rgba(30, 15, 5, 200); color: {cls.C_TEXT_DIM}; padding: 6px 16px; border-top-left-radius: 6px; border-top-right-radius: 6px; font-weight: bold; font-size: {cls.F_NORMAL}; margin-right: 2px; border: none; outline: none; }}
                 QTabBar::tab:selected {{ background: {cls.C_BG_INPUT}; color: {cls.C_PRIMARY}; border-bottom: 2px solid {cls.C_PRIMARY}; }}
                 QTabBar QToolButton {{ background: rgba(30, 15, 5, 200); color: {cls.C_PRIMARY}; border: none; }}

@@ -4,14 +4,18 @@ from clTheme import Theme
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
 from PyQt6.QtCore import QTimer
 from utils.clActionRouter import ActionRouter
+from clUIScaler import UIScaler
+
+def s(val):
+    return UIScaler.get().scale(val)
 
 class LightControlWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.router = ActionRouter()
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(15, 15, 15, 15)
-        self.layout.setSpacing(8)
+        self.layout.setContentsMargins(s(15), s(15), s(15), s(15))
+        self.layout.setSpacing(s(8))
         self.setMinimumWidth(340)
         
         # Title and Refresh
@@ -19,21 +23,21 @@ class LightControlWidget(QWidget):
         self.title_lbl = QLabel("Smart Lights")
         self.title_lbl.setStyleSheet(Theme.get_style("TitleLabel"))
         
-        refresh_btn = QPushButton("⟳")
-        refresh_btn.setFixedSize(30, 30)
-        refresh_btn.setStyleSheet(Theme.get_style("RefreshButton"))
-        refresh_btn.clicked.connect(lambda: self.send_cmd("refresh_lights", "all"))
+        self.refresh_btn = QPushButton("⟳")
+        self.refresh_btn.setFixedSize(30, 30)
+        self.refresh_btn.setStyleSheet(Theme.get_style("RefreshButton"))
+        self.refresh_btn.clicked.connect(lambda: self.send_cmd("refresh_lights", "all"))
         
         top_layout.addWidget(self.title_lbl)
         top_layout.addStretch()
-        top_layout.addWidget(refresh_btn)
+        top_layout.addWidget(self.refresh_btn)
         self.layout.addLayout(top_layout)
         
         # Lights container
         self.lights_container = QWidget()
         self.lights_layout = QVBoxLayout(self.lights_container)
         self.lights_layout.setContentsMargins(0, 0, 0, 0)
-        self.lights_layout.setSpacing(5)
+        self.lights_layout.setSpacing(s(5))
         
         # Loading placeholder shown until first real data arrives
         self._loading_lbl = QLabel("⏳ Loading lights...")
@@ -49,6 +53,27 @@ class LightControlWidget(QWidget):
         self.layout.addWidget(btn)
         
         self.light_rows = {}
+
+    def update_scaling(self):
+        self.layout.setContentsMargins(s(15), s(15), s(15), s(15))
+        self.layout.setSpacing(s(8))
+        self.setMinimumWidth(340)
+        if hasattr(self, 'refresh_btn'):
+            self.refresh_btn.setFixedSize(30, 30)
+        if hasattr(self, 'lights_layout'):
+            self.lights_layout.setSpacing(s(5))
+        for row_data in self.light_rows.values():
+            if "layout" in row_data:
+                row_data["layout"].setSpacing(s(6))
+            if "indicator" in row_data:
+                row_data["indicator"].setFixedWidth(22)
+            if "toggle_btn" in row_data:
+                row_data["toggle_btn"].setMinimumHeight(26)
+            if "delete_btn" in row_data:
+                row_data["delete_btn"].setFixedSize(26, 26)
+        if hasattr(self, 'lights_container'):
+            self.lights_container.adjustSize()
+        self.adjustSize()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -142,7 +167,7 @@ class LightControlWidget(QWidget):
                 row = QWidget()
                 row_layout = QHBoxLayout(row)
                 row_layout.setContentsMargins(0, 0, 0, 0)
-                row_layout.setSpacing(6)
+                row_layout.setSpacing(s(6))
                 
                 indicator = QLabel("●")
                 indicator.setStyleSheet("color: rgba(100, 100, 100, 255); font-size: 16pt;")
@@ -172,7 +197,10 @@ class LightControlWidget(QWidget):
                 self.lights_layout.addWidget(row)
                 self.light_rows[target_name] = {
                     "widget": row,
+                    "layout": row_layout,
                     "indicator": indicator,
+                    "toggle_btn": toggle_btn,
+                    "delete_btn": delete_btn,
                     "is_on": is_on,
                     "is_offline": is_offline
                 }
