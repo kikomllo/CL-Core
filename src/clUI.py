@@ -294,9 +294,9 @@ class DraggableWidget(QWidget):
                 title_layout.addStretch()
                 
             if closable:
-                self.pin_btn = QPushButton("↑")
+                self.pin_btn = QPushButton("↥")
                 self.pin_btn.setFixedSize(22, 22)
-                self.pin_btn.setStyleSheet(Theme.get_style("NotificationCloseBtn") + " font-family: 'DejaVu Sans', 'Arial', sans-serif; font-weight: normal;")
+                self.pin_btn.setStyleSheet(Theme.get_style("NotificationCloseBtn"))
                 self.pin_btn.clicked.connect(lambda: self.toggle_pin())
                 title_layout.addWidget(self.pin_btn)
                 
@@ -320,7 +320,7 @@ class DraggableWidget(QWidget):
             self._unscaled_min_size = (150, 50)
         
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(Theme.get_style("NotificationBody"))
+        self.setStyleSheet(Theme.get_global_stylesheet() + "\n" + Theme.get_style("NotificationBody"))
         
         self._dragging = False
         self._resizing = False
@@ -362,7 +362,7 @@ class DraggableWidget(QWidget):
             self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool)
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
             if hasattr(self, 'pin_btn'):
-                self.pin_btn.setText("↓")
+                self.pin_btn.setText("↧")
             self.move(global_pos)
         else:
             global_pos = self.pos()
@@ -380,7 +380,7 @@ class DraggableWidget(QWidget):
             self.setWindowFlags(Qt.WindowType.Widget)
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
             if hasattr(self, 'pin_btn'):
-                self.pin_btn.setText("↑")
+                self.pin_btn.setText("↥")
                 
         if hasattr(self, 'resizeUnscaled'):
             self.resizeUnscaled(current_size.width(), current_size.height())
