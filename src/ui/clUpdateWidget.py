@@ -20,7 +20,7 @@ class UpdateWidget(QWidget):
         self.router = ActionRouter()
         # self.setMinimumSize(400, 350)
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(0, s(15), 0, s(10))
+        self.layout.setContentsMargins(0, s(15), 0, 0)
         self.layout.setSpacing(s(10))
         
         self.status_lbl = QLabel("Ready")
@@ -54,7 +54,7 @@ class UpdateWidget(QWidget):
         self.layout.addWidget(self.log_viewer)
         
         self.btn_layout = QHBoxLayout()
-        self.btn_layout.setContentsMargins(s(15), s(5), s(15), s(5))
+        self.btn_layout.setContentsMargins(s(15), s(5), s(15), 0)
         self.btn_layout.setSpacing(s(10))
         
         self.btn_check = QPushButton("Check for Updates")
@@ -73,11 +73,11 @@ class UpdateWidget(QWidget):
         
     def update_scaling(self):
         # self.setMinimumSize(400, 350)
-        self.layout.setContentsMargins(0, s(15), 0, s(10))
+        self.layout.setContentsMargins(0, s(15), 0, 0)
         self.layout.setSpacing(s(10))
         if hasattr(self, 'progress_bar'): self.progress_bar.setFixedHeight(6)
         if hasattr(self, 'btn_layout'):
-            self.btn_layout.setContentsMargins(s(15), s(5), s(15), s(5))
+            self.btn_layout.setContentsMargins(s(15), s(5), s(15), 0)
             self.btn_layout.setSpacing(s(10))
         self.adjustSize()
         

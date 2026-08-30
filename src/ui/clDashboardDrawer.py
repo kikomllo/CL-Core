@@ -140,9 +140,12 @@ class UpNextWidget(QFrame):
             # Create a styled event card rectangle
             card = QFrame()
             card.setStyleSheet(Theme.get_style("EventCard"))
-            card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(s(10), s(7), s(10), s(7))
-            card_layout.setSpacing(s(2))
+            main_layout = QHBoxLayout(card)
+            main_layout.setContentsMargins(s(10), s(7), s(10), s(7))
+            main_layout.setSpacing(s(8))
+            
+            info_layout = QVBoxLayout()
+            info_layout.setSpacing(s(2))
             
             lbl_ev_title = QLabel(ev['summary'])
             lbl_ev_title.setStyleSheet(Theme.get_style("EventTitleLabel"))
@@ -151,10 +154,25 @@ class UpNextWidget(QFrame):
             lbl_ev_time = QLabel(f"{day_str} at {time_str}")
             lbl_ev_time.setStyleSheet(Theme.get_style("SubtitleLabel"))
             
-            card_layout.addWidget(lbl_ev_title)
-            card_layout.addWidget(lbl_ev_time)
+            info_layout.addWidget(lbl_ev_title)
+            info_layout.addWidget(lbl_ev_time)
+            
+            main_layout.addLayout(info_layout, stretch=1)
+            
+            btn_delete = QPushButton("X")
+            btn_delete.setFixedSize(s(24), s(24))
+            btn_delete.setToolTip("Delete Event")
+            btn_delete.setStyleSheet(Theme.get_style("SmallDangerButton"))
+            btn_delete.clicked.connect(lambda checked, eid=ev['id']: self._delete_event(eid))
+            
+            main_layout.addWidget(btn_delete)
             
             self.events_layout.addWidget(card)
+
+    def _delete_event(self, event_id):
+        import json
+        import paho.mqtt.publish as publish
+        publish.single("jarvis/sys/calendar/control", json.dumps({"action": "delete", "id": event_id}), hostname="localhost", qos=0)
 
 class WidgetCarousel(QWidget):
     def __init__(self, parent=None):

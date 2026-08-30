@@ -17,7 +17,7 @@ class MediaWidget(QWidget):
         self.grid_mode = grid_mode
         # self.setMinimumSize(250, 170)
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(s(15), s(10), s(15), s(15))
+        self.layout.setContentsMargins(s(15), s(10), s(15), 0)
         self.layout.setSpacing(s(6))
         
         # Header Badge
@@ -86,7 +86,7 @@ class MediaWidget(QWidget):
         
     def update_scaling(self):
         # self.setMinimumSize(250, 170)
-        self.layout.setContentsMargins(s(15), s(10), s(15), s(15))
+        self.layout.setContentsMargins(s(15), s(10), s(15), 0)
         self.layout.setSpacing(s(6))
         if hasattr(self, 'controls_layout'):
             self.controls_layout.setSpacing(s(18))

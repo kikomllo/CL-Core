@@ -14,7 +14,7 @@ class LightControlWidget(QWidget):
         super().__init__(parent)
         self.router = ActionRouter()
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(s(15), s(15), s(15), s(15))
+        self.layout.setContentsMargins(s(15), s(8), s(15), 0)
         self.layout.setSpacing(s(8))
         
         # Title and Refresh
@@ -56,7 +56,7 @@ class LightControlWidget(QWidget):
         self.light_rows = {}
 
     def update_scaling(self):
-        self.layout.setContentsMargins(s(15), s(15), s(15), s(15))
+        self.layout.setContentsMargins(s(15), s(8), s(15), 0)
         self.layout.setSpacing(s(8))
         if hasattr(self, 'refresh_btn'):
             self.refresh_btn.setFixedSize(30, 30)
@@ -68,7 +68,7 @@ class LightControlWidget(QWidget):
             if "indicator" in row_data:
                 row_data["indicator"].setFixedWidth(22)
             if "toggle_btn" in row_data:
-                row_data["toggle_btn"].setMinimumHeight(26)
+                row_data["toggle_btn"].setFixedHeight(26)
             if "delete_btn" in row_data:
                 row_data["delete_btn"].setFixedSize(26, 26)
         if hasattr(self, 'lights_container'):
@@ -178,8 +178,8 @@ class LightControlWidget(QWidget):
                 name_lbl.setStyleSheet(Theme.get_style("SubtitleLabel"))
                 
                 toggle_btn = QPushButton("Toggle")
-                toggle_btn.setMinimumHeight(26)
-                toggle_btn.setStyleSheet(Theme.get_style("SecondaryButton"))
+                toggle_btn.setFixedHeight(26)
+                toggle_btn.setStyleSheet(Theme.get_style("SecondaryButton") + " font-size: 9pt; padding: 0;")
                 toggle_btn.clicked.connect(lambda checked, t=target_name: self.send_cmd("toggle", t, silent=True))
                 
                 delete_btn = QPushButton("X")
@@ -208,8 +208,12 @@ class LightControlWidget(QWidget):
         self.lights_container.adjustSize()
         self.adjustSize()
         # Deferred resize ensures the parent wrapper picks up the new layout geometry
-        QTimer.singleShot(0, lambda: self.window().adjustSize())
-        QTimer.singleShot(50, lambda: self.window().adjustSize())
+        QTimer.singleShot(50, self._force_resize)
+
+    def _force_resize(self):
+        self.adjustSize()
+        if self.parentWidget():
+            self.parentWidget().adjustSize()
 
     def get_standalone_min_size(self):
         return 340, 300

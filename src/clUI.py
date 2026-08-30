@@ -382,7 +382,6 @@ class DraggableWidget(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        self.adjustSize()
 
     def paintEvent(self, event):
         from PyQt6.QtWidgets import QStyleOption, QStyle
@@ -476,7 +475,6 @@ class JarvisVisualizer(QWidget):
         self.frequency = 0.05
         self.speed = 0.1
         self.is_fullscreen = False
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
     def set_volume(self, vol):
         max_amp = self.height() / 4.0 if self.height() > 100 else 150
@@ -705,7 +703,10 @@ class JarvisUI(QWidget):
                 idx = UIScaler.get().active_monitor
                 self.current_monitor_idx = idx
             except: pass
-        target_screen = screens[idx] if idx < len(screens) else screens[UIScaler.get().get_primary_monitor_idx()]
+        
+        # Initial overlay spawn should always be on the primary monitor
+        overlay_idx = UIScaler.get().get_primary_monitor_idx()
+        target_screen = screens[overlay_idx] if overlay_idx < len(screens) else screens[0]
         screen_geom = target_screen.availableGeometry()
         
         s = UIScaler.get().scale
@@ -1362,9 +1363,16 @@ class JarvisUI(QWidget):
                 # Save widget visibility before hiding
                 widget_visibility = {wid: w.isVisible() for wid, w in self.active_widgets.items()}
                 
-                # Wayland requires hide() before setScreen() to correctly map
+                # To prevent the old 1366x768 buffer from flashing on the new monitor,
+                # we temporarily hide all widgets and skip drawing the background.
+                self._is_swapping_monitors = True
+                self.visualizer.hide()
+                for w in self.active_widgets.values():
+                    w.hide()
+                
+                # To swap monitors in XWayland/X11, we must un-fullscreen the window first.
+                # We DO NOT call QApplication.processEvents() here.
                 self.hide()
-                QApplication.processEvents()
             else:
                 from PyQt6.QtGui import QCursor
                 cursor_pos = QCursor.pos()
@@ -1381,6 +1389,8 @@ class JarvisUI(QWidget):
                 
                 UIScaler.get().set_active_monitor(self.current_monitor_idx)
                 
+                # Wayland maps new windows to where the cursor is, but for the initial
+                # spawn we just ensure the surface is created.
                 self.hide()
                 QApplication.processEvents()
 
@@ -1413,7 +1423,9 @@ class JarvisUI(QWidget):
             self.setMinimumSize(0, 0)
             self.setMaximumSize(16777215, 16777215)
             
-            self.setGeometry(geom)
+            # Using move and resize exactly as proven in the test script
+            self.move(geom.topLeft())
+            self.resize(geom.width(), geom.height())
             
             # Reset visualizer to IDLE before transitioning — prevents stale RECORDING state
             # from a previous TTS+mic cycle being inherited by the fullscreen view
@@ -1468,6 +1480,18 @@ class JarvisUI(QWidget):
 
             logging.info(f"[DEBUG UI] Calling showFullScreen(). Current focus: {self.hasFocus()}")
             self.showFullScreen()
+            
+            if is_monitor_swap:
+                # Re-enable paint events, restore visibility, and force a repaint
+                self._is_swapping_monitors = False
+                self.setUpdatesEnabled(True)
+                
+                if getattr(self, 'state', 'IDLE') == 'IDLE':
+                    self.visualizer.show()
+                
+                self.update()
+                QApplication.processEvents()
+                
             logging.info(f"[DEBUG UI] After showFullScreen() -> isVisible: {self.isVisible()}, isFullScreen: {self.isFullScreen()}")
             
             def force_focus():
@@ -1534,6 +1558,14 @@ class JarvisUI(QWidget):
             self.btn_updates.hide()
             self.btn_calendar.hide()
             self.calendar_drawer.hide()
+            
+            if getattr(self, 'calendar_is_open', False):
+                self.calendar_is_open = False
+                self.btn_calendar.setText("❮")
+                if hasattr(self, 'calendar_animation') and self.calendar_animation.state() == QPropertyAnimation.State.Running:
+                    self.calendar_animation.stop()
+                self.save_ui_state()
+            
             self.reminder_widget.hide()
                 
             # Hide all dashboard widgets except options_list
@@ -1564,8 +1596,8 @@ class JarvisUI(QWidget):
             self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
             
             screens = UIScaler.get().get_stable_screens()
-            idx = getattr(self, 'current_monitor_idx', 0)
-            target_screen = screens[idx] if idx < len(screens) else screens[UIScaler.get().get_primary_monitor_idx()]
+            idx = UIScaler.get().get_primary_monitor_idx()
+            target_screen = screens[idx] if idx < len(screens) else screens[0]
             screen_geom = target_screen.availableGeometry()
             s = UIScaler.get().scale
             width, height = s(200), s(400)
@@ -1627,6 +1659,10 @@ class JarvisUI(QWidget):
         return pix
 
     def paintEvent(self, event):
+        if getattr(self, '_is_swapping_monitors', False):
+            # Skip drawing background during monitor swap to stay 100% transparent
+            return
+            
         if not self.is_fullscreen:
             return
             
@@ -1767,7 +1803,13 @@ class JarvisUI(QWidget):
                         w.move(p_x, p_y)
                         
                     if size and len(size) == 2:
-                        w.resize(size[0], size[1])
+                        # Scale the saved size to match the current monitor proportions just like we do for position
+                        prev_screen = state.get("screen_size", [1920, 1080])
+                        scale_x = self.width() / max(1, prev_screen[0])
+                        scale_y = self.height() / max(1, prev_screen[1])
+                        s_w = int(size[0] * scale_x)
+                        s_h = int(size[1] * scale_y)
+                        w.resize(s_w, s_h)
                         
                     if info.get("is_unpinned", False) and hasattr(w, "toggle_pin"):
                         w.toggle_pin(force_unpin=True)

@@ -1,67 +1,67 @@
 {
   "drawer_open": false,
-  "carousel_tab": 0,
+  "carousel_tab": 1,
   "reminder_widget": {
-    "visible": false
+    "visible": true
   },
   "active_widgets": {
     "widget_todo_list": {
-      "visible": true,
+      "visible": false,
       "pos": [
-        23,
-        410
+        264,
+        351
       ],
       "size": [
-        267,
-        273
+        170,
+        66
       ],
       "is_unpinned": false
     },
     "widget_settings": {
       "visible": false,
       "pos": [
-        456,
-        42
+        80,
+        33
       ],
       "size": [
-        325,
-        417
+        355,
+        477
       ],
       "is_unpinned": false
     },
     "widget_updates": {
       "visible": false,
       "pos": [
-        56,
-        184
+        652,
+        113
       ],
       "size": [
-        362,
-        315
+        223,
+        116
       ],
       "is_unpinned": false
     },
     "widget_media_controls": {
-      "visible": true,
+      "visible": false,
       "pos": [
-        23,
-        41
+        60,
+        43
       ],
       "size": [
-        135,
-        140
+        155,
+        152
       ],
       "is_unpinned": false
     },
     "widget_light_controls": {
-      "visible": true,
+      "visible": false,
       "pos": [
-        161,
-        42
+        652,
+        172
       ],
       "size": [
-        290,
-        139
+        143,
+        104
       ],
       "is_unpinned": false
     }

@@ -337,7 +337,15 @@ class CalendarWidget(QWidget):
                 btn_edit.setStyleSheet(Theme.get_style("SettingsActionBtn"))
                 btn_edit.clicked.connect(lambda checked, event_data=ev: self.open_event_input(event_data))
                 
+                # Red Delete button
+                btn_delete = QPushButton("X")
+                btn_delete.setFixedSize(26, 26)
+                btn_delete.setToolTip("Delete Event")
+                btn_delete.setStyleSheet(Theme.get_style("SmallDangerButton"))
+                btn_delete.clicked.connect(lambda checked, eid=ev['id']: self._delete_event_by_id(eid))
+                
                 main_l.addWidget(btn_edit)
+                main_l.addWidget(btn_delete)
                 
                 self.day_content_layout.addWidget(frame)
 
@@ -456,6 +464,10 @@ class CalendarWidget(QWidget):
         self.event_dialog.show()
         self.event_dialog.raise_()
         self.input_title.setFocus()
+
+    def _delete_event_by_id(self, event_id):
+        import paho.mqtt.publish as publish
+        publish.single("jarvis/sys/calendar/control", json.dumps({"action": "delete", "id": event_id}), hostname="localhost", qos=0)
 
     def submit_delete(self):
         if getattr(self, 'editing_event_id', None):
