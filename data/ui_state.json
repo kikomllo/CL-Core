@@ -32,8 +32,8 @@
     "widget_updates": {
       "visible": true,
       "pos": [
-        415,
-        132
+        472,
+        68
       ],
       "size": [
         400,
@@ -44,23 +44,23 @@
     "widget_media_controls": {
       "visible": true,
       "pos": [
-        133,
-        54
+        130,
+        75
       ],
       "size": [
         250,
-        194
+        170
       ],
       "is_unpinned": false
     },
     "widget_light_controls": {
-      "visible": true,
+      "visible": false,
       "pos": [
-        1051,
-        77
+        861,
+        481
       ],
       "size": [
-        392,
+        340,
         300
       ],
       "is_unpinned": false
