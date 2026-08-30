@@ -34,7 +34,7 @@ class UpdateWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.router = ActionRouter()
-        self.setMinimumSize(400, 350)
+        # self.setMinimumSize(400, 350)
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, s(15), 0, s(10))
         self.layout.setSpacing(s(10))
@@ -88,7 +88,7 @@ class UpdateWidget(QWidget):
         self.refresh_status()
         
     def update_scaling(self):
-        self.setMinimumSize(400, 350)
+        # self.setMinimumSize(400, 350)
         self.layout.setContentsMargins(0, s(15), 0, s(10))
         self.layout.setSpacing(s(10))
         if hasattr(self, 'progress_bar'): self.progress_bar.setFixedHeight(6)
@@ -207,3 +207,7 @@ class UpdateWidget(QWidget):
             lay.addWidget(btn)
             
             self.scroll_layout.addWidget(w)
+
+
+    def get_standalone_min_size(self):
+        return 400, 350

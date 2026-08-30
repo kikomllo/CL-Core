@@ -14,7 +14,7 @@ class MediaWidget(QWidget):
         super().__init__(parent)
         self.router = ActionRouter()
         self.grid_mode = grid_mode
-        self.setMinimumSize(250, 170)
+        # self.setMinimumSize(250, 170)
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(s(15), s(10), s(15), s(15))
         self.layout.setSpacing(s(6))
@@ -53,7 +53,7 @@ class MediaWidget(QWidget):
         self.controls_layout = QHBoxLayout()
         self.controls_layout.setSpacing(s(18))
         
-        self.prev_btn = QPushButton("⏮")
+        self.prev_btn = QPushButton("<<")
         self.prev_btn.setFixedSize(32, 32)
         self.prev_btn.setStyleSheet(Theme.get_style("MediaSmallBtn"))
         self.prev_btn.clicked.connect(lambda: self.send_cmd("prev", silent=True))
@@ -63,7 +63,7 @@ class MediaWidget(QWidget):
         self.play_btn.setStyleSheet(Theme.get_style("MediaPlayBtn"))
         self.play_btn.clicked.connect(self.toggle_optimistic)
         
-        self.next_btn = QPushButton("⏭")
+        self.next_btn = QPushButton(">>")
         self.next_btn.setFixedSize(32, 32)
         self.next_btn.setStyleSheet(Theme.get_style("MediaSmallBtn"))
         self.next_btn.clicked.connect(lambda: self.send_cmd("next", silent=True))
@@ -86,7 +86,7 @@ class MediaWidget(QWidget):
         self.timer.start(1000)
         
     def update_scaling(self):
-        self.setMinimumSize(250, 170)
+        # self.setMinimumSize(250, 170)
         self.layout.setContentsMargins(s(15), s(10), s(15), s(15))
         self.layout.setSpacing(s(6))
         if hasattr(self, 'controls_layout'):
@@ -143,3 +143,7 @@ class MediaWidget(QWidget):
         
         self._update_time_label()
         self.play_btn.setText("⏸" if self.status == "Playing" else "▶")
+
+
+    def get_standalone_min_size(self):
+        return 250, 170
