@@ -68,9 +68,25 @@ class TodoWidget(QWidget):
             }
         """)
         self.layout.addWidget(self.tabs, stretch=1)
+        self.btn_add_list = QPushButton("+")
+        self.btn_add_list.setFixedSize(24, 24)
+        self.btn_add_list.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #ffaa00;
+                font-weight: bold;
+                border: none;
+                font-size: 14pt;
+            }
+            QPushButton:hover {
+                color: #ffcc00;
+            }
+        """)
+        self.btn_add_list.clicked.connect(self.prompt_new_list)
+        self.tabs.setCornerWidget(self.btn_add_list)
+
         
         self.tabs.currentChanged.connect(self.on_tab_changed)
-        self.tabs.tabBarClicked.connect(self.on_tab_clicked)
         self.last_valid_index = 0
         
         self.bottom_stack = QStackedWidget()
@@ -272,13 +288,7 @@ class TodoWidget(QWidget):
                     plus_idx = i
                     break
             
-            if plus_idx >= 0:
-                self.tabs.removeTab(plus_idx)
-                
             self.create_tab(text)
-            
-            if plus_idx >= 0:
-                self.tabs.addTab(QWidget(), "+")
                 
             for i in range(self.tabs.count()):
                 if self.tabs.tabText(i) == text:
@@ -359,17 +369,9 @@ class TodoWidget(QWidget):
 
     def on_tab_changed(self, index):
         if index >= 0:
-            if self.tabs.tabText(index) == "+":
-                if hasattr(self, 'last_valid_index'):
-                    # Prevent staying on the '+' tab if not creating a list
-                    self.tabs.setCurrentIndex(self.last_valid_index)
-                return
             self.last_valid_index = index
             self.current_list_name = self.tabs.tabText(index)
-            
-    def on_tab_clicked(self, index):
-        if index >= 0 and self.tabs.tabText(index) == "+":
-            self.prompt_new_list()
+
         
     def showEvent(self, event):
         super().showEvent(event)
@@ -468,8 +470,6 @@ class TodoWidget(QWidget):
                 task_widget.mouseReleaseEvent = lambda e, c=chk: c.setChecked(not c.isChecked()) if e.button() == Qt.MouseButton.LeftButton else None
                 chk.stateChanged.connect(lambda state, tid=t["id"]: self.toggle_task(tid, state))
                 layout.addWidget(task_widget)
-                
-        self.tabs.addTab(QWidget(), "+")
         
         # Restore the previously selected tab if possible
         for i in range(self.tabs.count()):

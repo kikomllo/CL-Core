@@ -23,7 +23,6 @@ from ui.clLogWidget import LogWidget
 
 from clUIScalerInjector import inject_scaler
 from clUIScaler import UIScaler
-
 inject_scaler()
 
 import platform
@@ -618,16 +617,16 @@ class JarvisUI(QWidget):
             self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         
-        screens = UIScaler.get().get_stable_screens()
+        screens = QApplication.screens()
         idx = getattr(self, 'current_monitor_idx', 0)
         # Use UIScaler's active monitor if current_monitor_idx hasn't been set
         if not hasattr(self, 'current_monitor_idx'):
             try:
-                
+                from clUIScaler import UIScaler
                 idx = UIScaler.get().active_monitor
                 self.current_monitor_idx = idx
             except: pass
-        target_screen = screens[idx] if idx < len(screens) else screens[UIScaler.get().get_primary_monitor_idx()]
+        target_screen = screens[idx] if idx < len(screens) else QApplication.primaryScreen()
         screen_geom = target_screen.availableGeometry()
         
         s = UIScaler.get().scale
@@ -660,14 +659,14 @@ class JarvisUI(QWidget):
         
         # Core Visualizer is now permanently attached to the background
         self.visualizer = JarvisVisualizer(self)
-        self.visualizer.setGeometry(0, 0, self.width(), self.height())
+        self.visualizer.resize(self.size())
         self.visualizer.show()
         
         # Text Input Workaround
         self.text_input = QLineEdit(self)
 
         self.text_input.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.text_input_style = """
+        self.text_input.setStyleSheet("""
             QLineEdit {
                 background-color: rgba(20, 10, 0, 150);
                 color: rgba(255, 200, 0, 180);
@@ -677,17 +676,16 @@ class JarvisUI(QWidget):
                 font-size: 10pt;
                 padding: 5px;
             }
-        """
-        self.text_input.setStyleSheet(self.text_input_style)
+        """)
         self.text_input.returnPressed.connect(self.submit_text_command)
         self.text_input.hide()
         
-        self.btn_style = """
+        btn_style = """
             QPushButton {
                 background-color: rgba(20, 10, 0, 180);
                 color: #ffaa00;
                 border-radius: 8px;
-                font-size: 10pt;
+                font-size: 9pt;
                 font-weight: bold;
                 font-family: 'Courier New';
                 border: 1px solid rgba(255, 150, 0, 80);
@@ -698,43 +696,50 @@ class JarvisUI(QWidget):
         """
 
         self.btn_media = QPushButton("MUSIC", self)
-        self.btn_media.setStyleSheet(self.btn_style)
+        self.btn_media.setStyleSheet(btn_style)
+        self.btn_media.setFixedSize(100, 35)
         self.btn_media.clicked.connect(self._toggle_media)
         self.btn_media.hide()
         
         self.btn_lights = QPushButton("LIGHTS", self)
-        self.btn_lights.setStyleSheet(self.btn_style)
+        self.btn_lights.setStyleSheet(btn_style)
+        self.btn_lights.setFixedSize(100, 35)
         self.btn_lights.clicked.connect(self._toggle_lights)
         self.btn_lights.hide()
         
         self.btn_reminders = QPushButton("REMINDERS", self)
-        self.btn_reminders.setStyleSheet(self.btn_style)
+        self.btn_reminders.setStyleSheet(btn_style)
+        self.btn_reminders.setFixedSize(100, 35)
         self.btn_reminders.clicked.connect(self._toggle_reminders)
         self.btn_reminders.hide()
         
         self.btn_todos = QPushButton("TODOS", self)
-        self.btn_todos.setStyleSheet(self.btn_style)
+        self.btn_todos.setStyleSheet(btn_style)
+        self.btn_todos.setFixedSize(100, 35)
         self.btn_todos.clicked.connect(self._toggle_todos)
         self.btn_todos.hide()
         
         self.btn_settings = QPushButton("SETTINGS", self)
-        self.btn_settings.setStyleSheet(self.btn_style)
+        self.btn_settings.setStyleSheet(btn_style)
+        self.btn_settings.setFixedSize(100, 35)
         self.btn_settings.clicked.connect(self._toggle_settings)
         self.btn_settings.hide()
         
         self.btn_updates = QPushButton("UPDATES", self)
-        self.btn_updates.setStyleSheet(self.btn_style)
+        self.btn_updates.setStyleSheet(btn_style)
+        self.btn_updates.setFixedSize(100, 35)
         self.btn_updates.clicked.connect(self._toggle_updates)
         self.btn_updates.hide()
         
         self.btn_debug = QPushButton("DEBUG", self)
-        self.btn_debug.setStyleSheet(self.btn_style)
+        self.btn_debug.setStyleSheet(btn_style)
+        self.btn_debug.setFixedSize(100, 35)
         self.btn_debug.clicked.connect(self._toggle_debug)
         self.btn_debug.hide()
         
-        self.btn_calendar_style = "QPushButton { background-color: rgba(255, 150, 0, 40); color: #ffaa00; border-radius: 5px; font-weight: bold; border: 1px solid rgba(255, 150, 0, 80); } QPushButton:hover { background-color: rgba(255, 150, 0, 80); }"
         self.btn_calendar = QPushButton("❮", self)
-        self.btn_calendar.setStyleSheet(self.btn_calendar_style)
+        self.btn_calendar.setStyleSheet("QPushButton { background-color: rgba(255, 150, 0, 40); color: #ffaa00; border-radius: 5px; font-weight: bold; border: 1px solid rgba(255, 150, 0, 80); } QPushButton:hover { background-color: rgba(255, 150, 0, 80); }")
+        self.btn_calendar.setFixedSize(30, 80)
         self.btn_calendar.clicked.connect(self._toggle_calendar)
         self.btn_calendar.hide()
         
@@ -765,68 +770,58 @@ class JarvisUI(QWidget):
         self.mqtt_thread.calendar_status_signal.connect(self._handle_calendar_data)
         self.mqtt_thread.start()
 
+        try:
+            with open(STATE_FILE, "r") as f:
+                import json
+                state = json.load(f)
+                if state.get("is_fullscreen", False):
+                    from PyQt6.QtCore import QTimer as _QTimer
+                    _QTimer.singleShot(100, lambda: self.set_ui_mode("set_fullscreen"))
+        except: pass
+
+
     def refresh_layout(self):
-        screens = UIScaler.get().get_stable_screens()
+        screens = QApplication.screens()
+        idx = getattr(self, 'current_monitor_idx', 0)
+        if idx >= len(screens):
+            idx = 0
+        target_screen = screens[idx]
+        geom = target_screen.geometry()
         
-        # Dynamically determine which screen the window is ACTUALLY on, as Wayland/user can move it independently
-        current_screen = self.screen()
-        idx = 0
-        if current_screen:
-            screen_name = current_screen.name()
-            for i, s in enumerate(screens):
-                if s.name() == screen_name:
-                    idx = i
-                    break
-                    
-        self.current_monitor_idx = idx
+        from clUIScaler import UIScaler
         UIScaler.get().set_active_monitor(idx)
         s = UIScaler.get().scale
 
-        # Use actual window dimensions instead of target screen geometry to prevent Wayland scaling/cropping bugs
-        win_w = self.width()
-        win_h = self.height()
-        
-        import logging
-        logging.info(f"[DEBUG LAYOUT] Physical Screen: {current_screen.name() if current_screen else 'Unknown'} (idx: {idx})")
-        logging.info(f"[DEBUG LAYOUT] Window Size: {win_w}x{win_h}")
-        logging.info(f"[DEBUG LAYOUT] Applied Scale: {s(100)/100.0}")
-
-        # Re-apply stylesheets so the scaling dynamically updates font sizes and border radii
-        self.text_input.setStyleSheet(self.text_input_style)
-        for btn in [self.btn_media, self.btn_lights, self.btn_reminders, self.btn_todos, self.btn_settings, self.btn_updates, self.btn_debug]:
-            btn.setStyleSheet(self.btn_style)
-        self.btn_calendar.setStyleSheet(self.btn_calendar_style)
-
         # Row 1
-        self.btn_media.setGeometry(s(30), win_h - s(65), s(120), s(35))
-        self.btn_lights.setGeometry(s(160), win_h - s(65), s(120), s(35))
-        self.btn_reminders.setGeometry(s(290), win_h - s(65), s(120), s(35))
-        self.btn_todos.setGeometry(s(420), win_h - s(65), s(120), s(35))
+        self.btn_media.setGeometry(s(30), geom.height() - s(65), s(120), s(35))
+        self.btn_lights.setGeometry(s(160), geom.height() - s(65), s(120), s(35))
+        self.btn_reminders.setGeometry(s(290), geom.height() - s(65), s(120), s(35))
+        self.btn_todos.setGeometry(s(420), geom.height() - s(65), s(120), s(35))
 
         # Row 2
-        self.btn_settings.setGeometry(s(30), win_h - s(110), s(120), s(35))
-        self.btn_updates.setGeometry(s(160), win_h - s(110), s(120), s(35))
-        self.btn_debug.setGeometry(s(290), win_h - s(110), s(120), s(35))
+        self.btn_settings.setGeometry(s(30), geom.height() - s(110), s(120), s(35))
+        self.btn_updates.setGeometry(s(160), geom.height() - s(110), s(120), s(35))
+        self.btn_debug.setGeometry(s(290), geom.height() - s(110), s(120), s(35))
 
         # Calendar button
-        self.btn_calendar.setGeometry(win_w - s(30), int(win_h / 2) - s(40), s(30), s(80))
+        self.btn_calendar.setGeometry(geom.width() - s(30), int(geom.height() / 2) - s(40), s(30), s(80))
 
-        drawer_width = s(400) if win_w >= 1920 else s(350)
+        drawer_width = s(400) if geom.width() >= 1920 else s(350)
         if hasattr(self, 'calendar_drawer'):
-            self.calendar_drawer.setGeometry(win_w, 0, drawer_width, win_h)
+            self.calendar_drawer.setGeometry(geom.width(), 0, drawer_width, geom.height())
         
         if hasattr(self, 'drawer'):
-            self.drawer.setGeometry(win_w - drawer_width - 20, 0, drawer_width, win_h)
+            self.drawer.setGeometry(geom.right() - drawer_width - 20, 0, drawer_width, geom.height())
 
         rw_w = s(300)
         rw_h = s(150)
         if hasattr(self, 'reminder_widget'):
-            self.reminder_widget.setGeometry(win_w - rw_w - 20, win_h - rw_h - 20, rw_w, rw_h)
+            self.reminder_widget.setGeometry(geom.width() - rw_w - 20, geom.height() - rw_h - 20, rw_w, rw_h)
 
         # Text Input
         box_width = s(600)
-        box_x = win_w // 2 - (box_width // 2)
-        box_y = win_h - s(80)
+        box_x = geom.width() // 2 - (box_width // 2)
+        box_y = geom.height() - s(80)
         self.text_input.setGeometry(box_x, box_y, box_width, s(40))
 
     def _check_occlusion(self):
@@ -1121,9 +1116,7 @@ class JarvisUI(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if hasattr(self, 'visualizer'):
-            self.visualizer.setGeometry(0, 0, self.width(), self.height())
-        # Constantly recalculate coordinates if Wayland overrides our setGeometry
-        self.refresh_layout()
+            self.visualizer.resize(self.size())
 
     def set_volume(self, vol):
         self.visualizer.set_volume(vol)
@@ -1290,49 +1283,76 @@ class JarvisUI(QWidget):
             
         if mode == "set_fullscreen":
             logging.info(f"[DEBUG UI] set_fullscreen triggered. is_fullscreen: {getattr(self, 'is_fullscreen', False)}")
-            screens = UIScaler.get().get_stable_screens()
+            screens = QApplication.screens()
             is_monitor_swap = getattr(self, 'is_fullscreen', False)
             old_geom = None
-
+            
             if is_monitor_swap:
                 self.current_monitor_idx = (getattr(self, 'current_monitor_idx', 0) + 1) % len(screens)
                 self.save_ui_state()
-                UIScaler.get().set_active_monitor(self.current_monitor_idx)
-
-                # Save widget visibility before hiding
-                widget_visibility = {wid: w.isVisible() for wid, w in self.active_widgets.items()}
                 
-                # Wayland requires hide() before setScreen() to correctly map
+                # Dynamic update
+                from clUIScaler import UIScaler
+                UIScaler.get().set_active_monitor(self.current_monitor_idx)
+                
+                target_screen = screens[self.current_monitor_idx]
+                geom = target_screen.geometry()
+                
                 self.hide()
                 QApplication.processEvents()
+                
+                if self.windowHandle():
+                    self.windowHandle().setScreen(target_screen)
+                
+                self.setGeometry(geom)
+                self.showNormal()
+                QApplication.processEvents()
+                
+                self.refresh_layout()
+                self.showFullScreen()
+                self.activateWindow()
+                self.setFocus()
+                return
             else:
                 if not hasattr(self, 'current_monitor_idx'):
-                    self.current_monitor_idx = UIScaler.get().get_primary_monitor_idx()
-                if self.current_monitor_idx >= len(screens):
-                    self.current_monitor_idx = UIScaler.get().get_primary_monitor_idx()
+                    primary = QApplication.primaryScreen()
+                    self.current_monitor_idx = screens.index(primary) if primary in screens else 0
                 
+                if self.current_monitor_idx >= len(screens):
+                    primary = QApplication.primaryScreen()
+                    self.current_monitor_idx = screens.index(primary) if primary in screens else 0
+
+            if is_monitor_swap:
+                widget_visibility = {wid: w.isVisible() for wid, w in self.active_widgets.items()}
+                logging.info("[DEBUG UI] Executing monitor swap showNormal()")
+                self.showNormal()
+                QApplication.processEvents()
+            else:
+                logging.info("[DEBUG UI] Executing initial fullscreen setup.")
                 self.hide()
                 QApplication.processEvents()
-
-            flags = Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
-            if sys.platform == "win32":
-                flags |= Qt.WindowType.WindowStaysOnTopHint
-            self.setWindowFlags(flags)
-            logging.info("[DEBUG UI] Window flags set.")
-            
-            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-            if sys.platform != "win32":
-                self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
-            self.clearMask()
-            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
+                
+                flags = Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
+                if sys.platform == "win32":
+                    flags |= Qt.WindowType.WindowStaysOnTopHint
+                self.setWindowFlags(flags)
+                logging.info("[DEBUG UI] Window flags set.")
+                
+                self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+                if sys.platform != "win32":
+                    self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+                self.clearMask()
+                self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
+                
+                logging.info("[DEBUG UI] Calling showNormal() to force Wayland mapping...")
+                self.showNormal()
+                QApplication.processEvents()
+                logging.info(f"[DEBUG UI] After showNormal() -> isVisible: {self.isVisible()}, isActiveWindow: {self.isActiveWindow()}")
             
             self.is_fullscreen = True
-
+            
             import time
             self._occlusion_disabled_until = time.time() + 1.5
-
-            # Force native window creation so windowHandle() becomes available without mapping the window yet
-            self.winId()
             
             target_screen = screens[self.current_monitor_idx]
             if self.windowHandle():
@@ -1344,11 +1364,6 @@ class JarvisUI(QWidget):
             self.setMaximumSize(16777215, 16777215)
             
             self.setGeometry(geom)
-
-            logging.info("[DEBUG UI] Calling showNormal() to force Wayland mapping...")
-            self.showNormal()
-            QApplication.processEvents()
-            logging.info(f"[DEBUG UI] After showNormal() -> isVisible: {self.isVisible()}, isActiveWindow: {self.isActiveWindow()}")
             
             # Reset visualizer to IDLE before transitioning — prevents stale RECORDING state
             # from a previous TTS+mic cycle being inherited by the fullscreen view
@@ -1357,8 +1372,24 @@ class JarvisUI(QWidget):
             
             self.visualizer.lower()
             
-            self.refresh_layout()
+            # Row 1
+            s = UIScaler.get().scale
+            self.btn_media.setGeometry(s(30), geom.height() - s(65), s(120), s(35))
+            self.btn_lights.setGeometry(s(145), geom.height() - s(65), s(120), s(35))
+            
+            self.btn_reminders.setGeometry(s(260), geom.height() - s(65), s(120), s(35))
+            self.btn_todos.setGeometry(s(375), geom.height() - s(65), s(120), s(35))
+            
+            self.btn_settings.setGeometry(s(30), geom.height() - s(115), s(120), s(35))
+            self.btn_updates.setGeometry(s(145), geom.height() - s(115), s(120), s(35))
+            
+            self.btn_debug.setGeometry(s(260), geom.height() - s(115), s(120), s(35))
+            
+            # Position calendar toggle on right edge
+            self.btn_calendar.setGeometry(geom.width() - s(30), int(geom.height() / 2) - s(40), s(30), s(80))
             self.btn_calendar.setText("❮")
+            
+            self.calendar_drawer.setGeometry(geom.width(), 0, 380, geom.height())
             self.calendar_is_open = False
             
             self.btn_media.show()
@@ -1443,7 +1474,11 @@ class JarvisUI(QWidget):
             self.activateWindow() 
             self.setFocus()
             
-            pass
+            box_width = min(650, geom.width() - 100)
+            box_x = int((geom.width() - box_width) / 2)
+            box_y = geom.height() - 62
+            s = UIScaler.get().scale
+            self.text_input.setGeometry(box_x, box_y, box_width, s(30))
             
             if QApplication.applicationState() == Qt.ApplicationState.ApplicationActive:
                 self._on_app_state_changed(Qt.ApplicationState.ApplicationActive)
@@ -1498,9 +1533,9 @@ class JarvisUI(QWidget):
                 self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
             
-            screens = UIScaler.get().get_stable_screens()
+            screens = QApplication.screens()
             idx = getattr(self, 'current_monitor_idx', 0)
-            target_screen = screens[idx] if idx < len(screens) else screens[UIScaler.get().get_primary_monitor_idx()]
+            target_screen = screens[idx] if idx < len(screens) else QApplication.primaryScreen()
             screen_geom = target_screen.availableGeometry()
             s = UIScaler.get().scale
             width, height = s(200), s(400)
