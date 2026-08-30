@@ -1,5 +1,6 @@
 import json
 import logging
+from clTheme import Theme
 from datetime import datetime, timedelta
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QStackedWidget, QGridLayout, QScrollArea, QFrame, QSizePolicy, QLineEdit, QDateEdit, QTimeEdit
 from PyQt6.QtCore import Qt, pyqtSignal, QDate, QTime
@@ -9,7 +10,7 @@ class CalendarWidget(QWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setStyleSheet("background-color: rgba(20, 10, 0, 180); border-radius: 10px; border: 1px solid rgba(255, 150, 0, 50);")
+        self.setStyleSheet(Theme.get_style("Panel"))
         
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(10, 10, 10, 10)
@@ -17,36 +18,17 @@ class CalendarWidget(QWidget):
         # --- Top Navigation ---
         self.nav_layout = QHBoxLayout()
         
-        nav_btn_style = """
-            QPushButton {
-                text-align: center;
-                padding-bottom: 4px;
-                color: #ffaa00;
-                background: rgba(255, 150, 0, 0.12);
-                border-radius: 6px;
-                padding: 4px 8px;
-                border: 1px solid rgba(255, 150, 0, 0.35);
-                font-weight: bold;
-                font-size: 11px;
-            }
-            QPushButton:hover {
-                background: rgba(255, 150, 0, 0.3);
-                border: 1px solid #ffaa00;
-                color: #ffffff;
-            }
-        """
-        
         self.btn_left = QPushButton("< Year")
-        self.btn_left.setStyleSheet(nav_btn_style)
+        self.btn_left.setStyleSheet(Theme.get_style("CalendarNavBtn"))
         self.btn_left.setFixedSize(65, 28)
         self.btn_left.clicked.connect(self.navigate_left)
         
         self.lbl_title = QLabel("Calendar")
-        self.lbl_title.setStyleSheet("color: #ffbb33; font-size: 16px; font-weight: 800; border: none; background: transparent; letter-spacing: 0.5px;")
+        self.lbl_title.setStyleSheet(Theme.get_style("CalendarTitle"))
         self.lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         self.btn_right = QPushButton("Week >")
-        self.btn_right.setStyleSheet(nav_btn_style)
+        self.btn_right.setStyleSheet(Theme.get_style("CalendarNavBtn"))
         self.btn_right.setFixedSize(65, 28)
         self.btn_right.clicked.connect(self.navigate_right)
         
@@ -143,9 +125,9 @@ class CalendarWidget(QWidget):
         for i, month in enumerate(months):
             btn = QPushButton(month)
             if i + 1 == datetime.now().month and self.current_date.year == datetime.now().year:
-                btn.setStyleSheet("background: rgba(255, 150, 0, 60); color: white; border-radius: 5px; font-weight: bold; border: 1px solid #ffaa00;")
+                btn.setStyleSheet(Theme.get_style("CalendarYearBtnActive"))
             else:
-                btn.setStyleSheet("background: rgba(255, 150, 0, 10); color: #ffaa00; border-radius: 5px; border: 1px solid rgba(255, 150, 0, 30);")
+                btn.setStyleSheet(Theme.get_style("CalendarYearBtnInactive"))
             btn.setMinimumHeight(60)
             btn.clicked.connect(lambda checked, m=i+1: self.go_to_month(m))
             row, col = divmod(i, 3)
@@ -169,7 +151,7 @@ class CalendarWidget(QWidget):
         for col, day in enumerate(days):
             lbl = QLabel(day)
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setStyleSheet("color: #ff9900; font-weight: 700; font-size: 11px; border: none; background: transparent;")
+            lbl.setStyleSheet(Theme.get_style("CalendarDayLabel"))
             lbl.setFixedHeight(26)
             self.month_layout.addWidget(lbl, 0, col)
             
@@ -211,43 +193,14 @@ class CalendarWidget(QWidget):
             is_selected = (day == self.current_date.day)
 
             if is_selected:
-                lbl_day.setStyleSheet("background: transparent; border: none; color: #ffffff; font-size: 13px; font-weight: 900;")
-                btn.setStyleSheet("""
-                    QPushButton {
-                        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ff8c00, stop:1 #e65c00);
-                        border-radius: 6px;
-                        border: 1px solid #ffcc66;
-                    }
-                    QPushButton:hover {
-                        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ffa01a, stop:1 #ff701a);
-                    }
-                """)
+                lbl_day.setStyleSheet(Theme.get_style("CalendarLblSelected"))
+                btn.setStyleSheet(Theme.get_style("CalendarBtnSelected"))
             elif is_today:
-                lbl_day.setStyleSheet("background: transparent; border: none; color: #ffaa00; font-size: 13px; font-weight: 900;")
-                btn.setStyleSheet("""
-                    QPushButton {
-                        background: rgba(255, 150, 0, 0.2);
-                        border-radius: 6px;
-                        border: 1px solid rgba(255, 170, 0, 0.5);
-                    }
-                    QPushButton:hover {
-                        background: rgba(255, 150, 0, 0.4);
-                        border: 1px solid #ffaa00;
-                    }
-                """)
+                lbl_day.setStyleSheet(Theme.get_style("CalendarLblToday"))
+                btn.setStyleSheet(Theme.get_style("CalendarBtnToday"))
             else:
-                lbl_day.setStyleSheet("background: transparent; border: none; color: #ffffff; font-size: 13px; font-weight: 700;")
-                btn.setStyleSheet("""
-                    QPushButton {
-                        background: rgba(35, 18, 5, 0.75);
-                        border-radius: 6px;
-                        border: 1px solid rgba(255, 170, 0, 0.25);
-                    }
-                    QPushButton:hover {
-                        background: rgba(255, 150, 0, 0.4);
-                        border: 1px solid #ffaa00;
-                    }
-                """)
+                lbl_day.setStyleSheet(Theme.get_style("CalendarLblDefault"))
+                btn.setStyleSheet(Theme.get_style("CalendarBtnDefault"))
             btn.setMinimumSize(36, 36)
             btn.clicked.connect(lambda checked, d=day: self.go_to_day(d))
             self.month_layout.addWidget(btn, row, col)
@@ -276,7 +229,7 @@ class CalendarWidget(QWidget):
         
         for i, day_name in enumerate(days):
             col_widget = QWidget()
-            col_widget.setStyleSheet("background: rgba(255, 150, 0, 5); border: 1px solid rgba(255, 150, 0, 20); border-radius: 5px;")
+            col_widget.setStyleSheet(Theme.get_style("CalendarWeekCol"))
             col_layout = QVBoxLayout(col_widget)
             col_layout.setContentsMargins(2, 4, 2, 4)
             col_layout.setSpacing(4)
@@ -286,9 +239,9 @@ class CalendarWidget(QWidget):
             lbl_day = QLabel(f"{day_name}\n{day_date.day}")
             lbl_day.setAlignment(Qt.AlignmentFlag.AlignCenter)
             if day_date.date() == datetime.now().date():
-                lbl_day.setStyleSheet("background: rgba(255, 150, 0, 60); color: white; border-radius: 3px; padding: 2px; font-weight: bold; border: none;")
+                lbl_day.setStyleSheet(Theme.get_style("CalendarWeekLblToday"))
             else:
-                lbl_day.setStyleSheet("color: #ffaa00; font-weight: bold; border: none; background: transparent;")
+                lbl_day.setStyleSheet(Theme.get_style("CalendarWeekLblDefault"))
                 
             col_layout.addWidget(lbl_day)
             
@@ -303,7 +256,7 @@ class CalendarWidget(QWidget):
                     dt = datetime.fromisoformat(ev['start']['dateTime'])
                     time_str = dt.strftime('%H:%M')
                     btn_ev = QPushButton(f"{time_str}\n{ev['summary']}")
-                    btn_ev.setStyleSheet("background: rgba(255, 150, 0, 40); color: white; border-left: 2px solid #ffaa00; border-radius: 2px; font-size: 9px; text-align: left; padding: 2px;")
+                    btn_ev.setStyleSheet(Theme.get_style("CalendarWeekEventBtn"))
                     btn_ev.clicked.connect(lambda checked, d=day_date.day: self.go_to_day(d))
                     col_layout.addWidget(btn_ev)
             
@@ -337,7 +290,7 @@ class CalendarWidget(QWidget):
                 
         if not today_events:
             lbl = QLabel("No events for today.")
-            lbl.setStyleSheet("color: rgba(255, 200, 150, 0.6); font-style: italic; font-size: 11px; border: none; padding: 20px;")
+            lbl.setStyleSheet(Theme.get_style("DimLabel"))
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.day_content_layout.addWidget(lbl)
         else:
@@ -346,16 +299,7 @@ class CalendarWidget(QWidget):
                 time_str = dt.strftime('%I:%M %p')
                 
                 frame = QFrame()
-                frame.setStyleSheet("""
-                    QFrame {
-                        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(50, 25, 8, 0.85), stop:1 rgba(30, 14, 3, 0.85));
-                        border-left: 4px solid #ff8c00;
-                        border-top: 1px solid rgba(255, 160, 0, 0.3);
-                        border-right: 1px solid rgba(255, 160, 0, 0.3);
-                        border-bottom: 1px solid rgba(255, 160, 0, 0.3);
-                        border-radius: 8px;
-                    }
-                """)
+                frame.setStyleSheet(Theme.get_style("EventCard"))
                 
                 main_l = QHBoxLayout(frame)
                 main_l.setContentsMargins(10, 8, 10, 8)
@@ -365,11 +309,11 @@ class CalendarWidget(QWidget):
                 info_layout.setSpacing(2)
                 
                 lbl_title = QLabel(ev['summary'])
-                lbl_title.setStyleSheet("color: #ffffff; font-weight: 800; font-size: 12px; border: none; background: transparent;")
+                lbl_title.setStyleSheet(Theme.get_style("EventTitleLabel"))
                 lbl_title.setWordWrap(True)
                 
                 lbl_time = QLabel(time_str)
-                lbl_time.setStyleSheet("color: #ffaa00; font-size: 10px; font-weight: 600; border: none; background: transparent;")
+                lbl_time.setStyleSheet(Theme.get_style("SubtitleLabel"))
                 
                 info_layout.addWidget(lbl_title)
                 info_layout.addWidget(lbl_time)
@@ -379,21 +323,7 @@ class CalendarWidget(QWidget):
                 # Orange Edit button
                 btn_edit = QPushButton("✎ Edit")
                 btn_edit.setFixedSize(55, 26)
-                btn_edit.setStyleSheet("""
-                    QPushButton {
-                        background: rgba(255, 150, 0, 0.15);
-                        color: #ffaa00;
-                        border: 1px solid rgba(255, 160, 0, 0.4);
-                        border-radius: 5px;
-                        font-weight: bold;
-                        font-size: 11px;
-                    }
-                    QPushButton:hover {
-                        background: rgba(255, 150, 0, 0.4);
-                        color: #ffffff;
-                        border: 1px solid #ffaa00;
-                    }
-                """)
+                btn_edit.setStyleSheet(Theme.get_style("SettingsActionBtn"))
                 btn_edit.clicked.connect(lambda checked, event_data=ev: self.open_event_input(event_data))
                 
                 main_l.addWidget(btn_edit)
@@ -407,49 +337,7 @@ class CalendarWidget(QWidget):
             self.event_dialog.setWindowTitle("Create Event")
             self.event_dialog.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
             self.event_dialog.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-            self.event_dialog.setStyleSheet("""
-                #BgFrame {
-                    background-color: rgba(20, 10, 0, 240);
-                    border: 1px solid rgba(255, 120, 0, 100);
-                    border-radius: 12px;
-                }
-                QLineEdit, QDateEdit, QTimeEdit {
-                    background-color: rgba(25, 12, 3, 255);
-                    color: #ffe6cc;
-                    border: 1px solid rgba(255, 180, 0, 150);
-                    border-radius: 6px;
-                    padding: 6px;
-                    font-size: 10pt;
-                    font-weight: 600;
-                }
-                QLineEdit:focus, QDateEdit:focus, QTimeEdit:focus {
-                    border: 1px solid #ffaa00;
-                }
-                QDateEdit::up-button, QTimeEdit::up-button,
-                QDateEdit::down-button, QTimeEdit::down-button {
-                    width: 0px;
-                    height: 0px;
-                    border: none;
-                }
-                QLabel {
-                    color: #ffaa00;
-                    font-weight: bold;
-                    font-size: 10pt;
-                }
-                QPushButton {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(255, 150, 0, 0.25), stop:1 rgba(255, 100, 0, 0.25));
-                    color: #ffbb33;
-                    border-radius: 6px;
-                    border: 1px solid rgba(255, 160, 0, 0.5);
-                    font-weight: bold;
-                    padding: 6px;
-                }
-                QPushButton:hover {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(255, 160, 0, 0.45), stop:1 rgba(255, 110, 0, 0.45));
-                    color: #ffffff;
-                    border: 1px solid #ffaa00;
-                }
-            """)
+            self.event_dialog.setStyleSheet(Theme.get_style("EventDialogBase"))
 
             from PyQt6.QtWidgets import QFrame
             main_layout = QVBoxLayout(self.event_dialog)
@@ -463,11 +351,11 @@ class CalendarWidget(QWidget):
             dlg_layout.setSpacing(10)
             
             self.dialog_title_lbl = QLabel("NEW CALENDAR EVENT")
-            self.dialog_title_lbl.setStyleSheet("color: #ff7700; font-weight: 800; font-size: 10pt; letter-spacing: 0.5px; border: none; background: transparent;")
+            self.dialog_title_lbl.setStyleSheet(Theme.get_style("BadgeLabel"))
             dlg_layout.addWidget(self.dialog_title_lbl)
             
             lbl_name = QLabel("Event Title:")
-            lbl_name.setStyleSheet("color: #ff7700; font-size: 9pt; border: none; background: transparent;")
+            lbl_name.setStyleSheet("background: transparent; border: none;")
             dlg_layout.addWidget(lbl_name)
             
             self.input_title = QLineEdit()
@@ -475,7 +363,7 @@ class CalendarWidget(QWidget):
             dlg_layout.addWidget(self.input_title)
             
             lbl_dt = QLabel("Date & Time:")
-            lbl_dt.setStyleSheet("color: #ff7700; font-size: 9pt; border: none; background: transparent;")
+            lbl_dt.setStyleSheet("background: transparent; border: none;")
             dlg_layout.addWidget(lbl_dt)
             
             dt_layout = QHBoxLayout()
@@ -500,24 +388,11 @@ class CalendarWidget(QWidget):
             btn_layout.setSpacing(6)
             
             self.btn_dialog_delete = QPushButton("Delete")
-            self.btn_dialog_delete.setStyleSheet("""
-                QPushButton {
-                    background: rgba(255, 50, 50, 0.15);
-                    color: #ff6666;
-                    border: 1px solid rgba(255, 80, 80, 0.5);
-                }
-                QPushButton:hover {
-                    background: rgba(255, 50, 50, 0.45);
-                    color: #ffffff;
-                }
-            """)
+            self.btn_dialog_delete.setStyleSheet(Theme.get_style("LightDangerButton"))
             self.btn_dialog_delete.clicked.connect(self.submit_delete)
             
             btn_cancel = QPushButton("Cancel")
-            btn_cancel.setStyleSheet("""
-                QPushButton { background: rgba(255, 255, 255, 0.05); color: #aaaaaa; border: 1px solid rgba(255, 255, 255, 0.2); }
-                QPushButton:hover { background: rgba(255, 255, 255, 0.1); color: #ffffff; }
-            """)
+            btn_cancel.setStyleSheet(Theme.get_style("MediaSmallBtn"))
             btn_cancel.clicked.connect(self.event_dialog.hide)
             
             btn_save = QPushButton("Save Event")

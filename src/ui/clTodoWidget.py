@@ -1,4 +1,5 @@
 import json
+from clTheme import Theme
 from utils.clActionRouter import ActionRouter
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QFrame, 
@@ -20,68 +21,11 @@ class TodoWidget(QWidget):
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         self.tabs.setUsesScrollButtons(True)
-        self.tabs.setStyleSheet("""
-            QTabWidget::pane { border: none; background: transparent; }
-            QTabWidget::tab-bar { alignment: left; left: 0px; right: 0px; }
-            QTabBar {
-                background-color: rgba(255, 120, 0, 10);
-                border-bottom: 1px solid rgba(255, 150, 0, 60);
-                min-height: 24px;
-                max-height: 24px;
-            }
-            QTabBar::tab { 
-                background: transparent; 
-                color: rgba(255, 200, 0, 180); 
-                padding: 0px 12px; 
-                height: 24px;
-                border: none;
-                border-bottom-left-radius: 6px;
-                border-bottom-right-radius: 6px;
-                border-top-left-radius: 0px;
-                border-top-right-radius: 0px;
-                font-family: 'Courier New';
-                font-weight: bold;
-                font-size: 8.5pt;
-            }
-            QTabBar::tab:hover {
-                color: #ffffff;
-                background-color: rgba(255, 150, 0, 40);
-            }
-            QTabBar::tab:selected { 
-                background-color: rgba(255, 150, 0, 70); 
-                color: #ffaa00; 
-                border-bottom: 2px solid #ffaa00; 
-            }
-            QTabBar::scroller { width: 20px; height: 24px; }
-            QTabBar QToolButton { background: transparent; border: none; color: #ffaa00; height: 24px; }
-            QTabBar::tab:last {
-                border-bottom-right-radius: 10px;
-                border-bottom-left-radius: 10px;
-                border-top-right-radius: 0px;
-                border-top-left-radius: 0px;
-                background-color: rgba(255, 120, 0, 15);
-                min-width: 16px;
-                padding: 0px 4px;
-            }
-            QTabBar::tab:last:hover {
-                background-color: rgba(255, 150, 0, 40);
-            }
-        """)
+        self.tabs.setStyleSheet(Theme.get_style("TodoTabs"))
         self.layout.addWidget(self.tabs, stretch=1)
         self.btn_add_list = QPushButton("+")
         self.btn_add_list.setFixedSize(24, 24)
-        self.btn_add_list.setStyleSheet("""
-            QPushButton {
-                background: transparent;
-                color: #ffaa00;
-                font-weight: bold;
-                border: none;
-                font-size: 14pt;
-            }
-            QPushButton:hover {
-                color: #ffcc00;
-            }
-        """)
+        self.btn_add_list.setStyleSheet(Theme.get_style("TransparentButton"))
         self.btn_add_list.clicked.connect(self.prompt_new_list)
         self.tabs.setCornerWidget(self.btn_add_list)
 
@@ -95,16 +39,7 @@ class TodoWidget(QWidget):
         self.task_input = QLineEdit()
         self.task_input.setPlaceholderText("New task...")
         self.task_input.setFixedHeight(32)
-        self.task_input.setStyleSheet("""
-            QLineEdit {
-                background-color: rgba(25, 12, 3, 255);
-                color: #ffe6cc;
-                border: 1px solid rgba(255, 180, 0, 150);
-                border-radius: 8px;
-                padding: 6px;
-                font-size: 10pt;
-            }
-        """)
+        self.task_input.setFixedHeight(32)
         self.task_input.returnPressed.connect(self.submit_task)
         
         def input_focus_out(event):
@@ -115,23 +50,7 @@ class TodoWidget(QWidget):
         # Add Task Button
         self.add_btn = QPushButton("+ Add Task")
         self.add_btn.setFixedHeight(32)
-        self.add_btn.setStyleSheet("""
-            QPushButton {
-                text-align: center;
-                padding-bottom: 4px;
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(255, 150, 0, 0.25), stop:1 rgba(255, 100, 0, 0.25));
-                color: #ffbb33;
-                border-radius: 8px;
-                border: 1px solid rgba(255, 160, 0, 0.5);
-                font-weight: bold;
-                font-size: 10pt;
-            }
-            QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(255, 160, 0, 0.45), stop:1 rgba(255, 110, 0, 0.45));
-                color: #ffffff;
-                border: 1px solid #ffaa00;
-            }
-        """)
+        self.add_btn.setStyleSheet(Theme.get_style("AddButton"))
         self.add_btn.clicked.connect(self.open_task_input)
         
         self.bottom_stack.addWidget(self.add_btn)
@@ -146,21 +65,7 @@ class TodoWidget(QWidget):
         self.btn_delete_list = QPushButton("X")
         self.btn_delete_list.setFixedSize(32, 32)
         self.btn_delete_list.setToolTip("Delete List")
-        self.btn_delete_list.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                color: rgba(255, 150, 0, 180);
-                font-weight: bold;
-                border: 1px solid rgba(255, 150, 0, 50);
-                border-radius: 8px;
-                font-size: 10pt;
-            }
-            QPushButton:hover {
-                color: #ff5500;
-                background-color: rgba(255, 150, 0, 20);
-                border: 1px solid rgba(255, 150, 0, 100);
-            }
-        """)
+        self.btn_delete_list.setStyleSheet(Theme.get_style("DangerButton"))
         
         self.btn_delete_list.clicked.connect(self.delete_current_list)
         self.bottom_layout.addWidget(self.btn_delete_list)
@@ -178,41 +83,7 @@ class TodoWidget(QWidget):
             self.list_dialog.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
             self.list_dialog.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
             self.list_dialog.setStyleSheet("""
-                #BgFrame {
-                    background-color: rgba(20, 10, 0, 240);
-                    border: 1px solid rgba(255, 120, 0, 100);
-                    border-radius: 12px;
-                }
-                QLineEdit {
-                    background-color: rgba(25, 12, 3, 255);
-                    color: #ffe6cc;
-                    border: 1px solid rgba(255, 180, 0, 150);
-                    border-radius: 6px;
-                    padding: 6px;
-                    font-size: 10pt;
-                    font-weight: 600;
-                }
-                QLineEdit:focus {
-                    border: 1px solid #ffaa00;
-                }
-                QLabel {
-                    color: #ffaa00;
-                    font-weight: bold;
-                    font-size: 10pt;
-                }
-                QPushButton {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(255, 150, 0, 0.25), stop:1 rgba(255, 100, 0, 0.25));
-                    color: #ffbb33;
-                    border-radius: 6px;
-                    border: 1px solid rgba(255, 160, 0, 0.5);
-                    font-weight: bold;
-                    padding: 6px;
-                }
-                QPushButton:hover {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(255, 160, 0, 0.45), stop:1 rgba(255, 110, 0, 0.45));
-                    color: #ffffff;
-                    border: 1px solid #ffaa00;
-                }
+                #BgFrame { background-color: rgba(20, 10, 0, 240); border: 1px solid rgba(255, 120, 0, 100); border-radius: 12px; }
             """)
             
             main_layout = QVBoxLayout(self.list_dialog)
@@ -226,11 +97,11 @@ class TodoWidget(QWidget):
             dlg_layout.setSpacing(10)
             
             title_lbl = QLabel("NEW TO-DO LIST")
-            title_lbl.setStyleSheet("color: #ff7700; font-weight: 800; font-size: 10pt; letter-spacing: 0.5px; border: none; background: transparent;")
+            title_lbl.setStyleSheet(Theme.get_style("TitleLabel"))
             dlg_layout.addWidget(title_lbl)
             
             lbl_name = QLabel("List Name:")
-            lbl_name.setStyleSheet("color: #ff7700; font-size: 9pt; border: none; background: transparent;")
+            lbl_name.setStyleSheet(Theme.get_style("DimLabel"))
             dlg_layout.addWidget(lbl_name)
             
             self.input_list_name = QLineEdit()
@@ -242,13 +113,11 @@ class TodoWidget(QWidget):
             btn_layout.setSpacing(6)
             
             btn_cancel = QPushButton("Cancel")
-            btn_cancel.setStyleSheet("""
-                QPushButton { background: rgba(255, 255, 255, 0.05); color: #aaaaaa; border: 1px solid rgba(255, 255, 255, 0.2); }
-                QPushButton:hover { background: rgba(255, 255, 255, 0.1); color: #ffffff; }
-            """)
+            btn_cancel.setStyleSheet(Theme.get_style("DangerButton"))
             btn_cancel.clicked.connect(self.list_dialog.reject)
             
             btn_save = QPushButton("Create")
+            btn_save.setStyleSheet(Theme.get_style("AddButton"))
             btn_save.clicked.connect(self._submit_new_list)
             
             btn_layout.addWidget(btn_cancel)
@@ -351,12 +220,11 @@ class TodoWidget(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; } QScrollBar:vertical { width: 6px; background: rgba(0,0,0,40); border-radius: 3px; } QScrollBar::handle:vertical { background: rgba(255,170,0,120); border-radius: 3px; }")
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
         
         scroll_content = QWidget()
-        scroll_content.setStyleSheet("background: transparent;")
         scroll_layout = QVBoxLayout(scroll_content)
-        scroll_layout.setContentsMargins(15, 4, 15, 30)
+        scroll_layout.setContentsMargins(15, 15, 15, 30)
         scroll_layout.setSpacing(12)
         scroll_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         
@@ -420,7 +288,7 @@ class TodoWidget(QWidget):
             
             if not tasks:
                 lbl = QLabel("No pending tasks.")
-                lbl.setStyleSheet("color: rgba(255, 170, 0, 150); font-style: italic; font-size: 9pt;")
+                lbl.setStyleSheet(Theme.get_style("DimLabel"))
                 layout.addWidget(lbl)
                 continue
                 
@@ -431,37 +299,16 @@ class TodoWidget(QWidget):
                 task_layout.setSpacing(8)
                 
                 chk = QCheckBox()
-                chk.setStyleSheet("""
-                    QCheckBox::indicator {
-                        width: 16px;
-                        height: 16px;
-                        border-radius: 4px;
-                        border: 1px solid rgba(255, 170, 0, 0.5);
-                        background: rgba(35, 18, 5, 0.8);
-                    }
-                    QCheckBox::indicator:hover {
-                        border: 1px solid #ffaa00;
-                        background: rgba(255, 150, 0, 0.3);
-                    }
-                    QCheckBox::indicator:checked {
-                        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ff8c00, stop:1 #e65c00);
-                        border: 1px solid #ffbb33;
-                    }
-                """)
+                chk.setStyleSheet(Theme.get_style("TodoCheckbox"))
                 
                 lbl = QLabel(t["task"])
                 lbl.setWordWrap(True)
-                lbl.setStyleSheet("""
-                    color: #ffe6cc;
-                    font-size: 9.5pt;
-                    font-weight: 500;
-                    padding: 2px 0px;
-                """)
+                lbl.setStyleSheet("padding: 2px 0px;")
                 
                 is_completed = t.get("completed", False)
                 chk.setChecked(is_completed)
                 if is_completed:
-                    lbl.setStyleSheet(lbl.styleSheet() + " color: rgba(255, 200, 150, 0.45); text-decoration: line-through;")
+                    lbl.setStyleSheet(lbl.styleSheet() + " color: " + Theme.C_TEXT_DIM + "; text-decoration: line-through;")
                 
                 task_layout.addWidget(chk)
                 task_layout.addWidget(lbl, 1)

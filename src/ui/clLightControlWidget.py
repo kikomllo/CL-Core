@@ -1,5 +1,6 @@
 import json
 import logging
+from clTheme import Theme
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
 from PyQt6.QtCore import QTimer
 from utils.clActionRouter import ActionRouter
@@ -16,11 +17,11 @@ class LightControlWidget(QWidget):
         # Title and Refresh
         top_layout = QHBoxLayout()
         self.title_lbl = QLabel("Smart Lights")
-        self.title_lbl.setStyleSheet("color: #ffaa00; font-weight: bold; font-size: 13pt;")
+        self.title_lbl.setStyleSheet(Theme.get_style("TitleLabel"))
         
         refresh_btn = QPushButton("⟳")
         refresh_btn.setFixedSize(30, 30)
-        refresh_btn.setStyleSheet("QPushButton { text-align: center; padding-bottom: 4px; background-color: rgba(255, 150, 0, 20); color: #ffaa00; border-radius: 15px; border: 1px solid rgba(255,150,0,80); font-size: 14pt; } QPushButton:hover { background-color: rgba(255, 150, 0, 60); }")
+        refresh_btn.setStyleSheet(Theme.get_style("RefreshButton"))
         refresh_btn.clicked.connect(lambda: self.send_cmd("refresh_lights", "all"))
         
         top_layout.addWidget(self.title_lbl)
@@ -36,14 +37,14 @@ class LightControlWidget(QWidget):
         
         # Loading placeholder shown until first real data arrives
         self._loading_lbl = QLabel("⏳ Loading lights...")
-        self._loading_lbl.setStyleSheet("color: rgba(255, 170, 0, 140); font-style: italic; font-size: 10pt;")
+        self._loading_lbl.setStyleSheet(Theme.get_style("DimLabel"))
         self.lights_layout.addWidget(self._loading_lbl)
         
         self.layout.addWidget(self.lights_container)
         
         # All off button
         btn = QPushButton("Toggle All Off")
-        btn.setStyleSheet("QPushButton { text-align: center; padding-bottom: 4px; background-color: rgba(255, 50, 0, 40); color: #ffaa00; border-radius: 5px; padding: 5px; border: 1px solid rgba(255,100,0,80); } QPushButton:hover { background-color: rgba(255, 50, 0, 80); }")
+        btn.setStyleSheet(Theme.get_style("LightDangerButton"))
         btn.clicked.connect(lambda: self.send_cmd("off", "all", silent=True))
         self.layout.addWidget(btn)
         
@@ -114,7 +115,7 @@ class LightControlWidget(QWidget):
             
             if getattr(self, '_empty_lbl', None) is None:
                 self._empty_lbl = QLabel("No lights configured for this network.")
-                self._empty_lbl.setStyleSheet("color: rgba(150, 150, 150, 255); font-style: italic; font-size: 9.5pt;")
+                self._empty_lbl.setStyleSheet(Theme.get_style("DimLabel"))
                 self.lights_layout.addWidget(self._empty_lbl)
             return
         elif getattr(self, '_empty_lbl', None) is not None:
@@ -149,19 +150,17 @@ class LightControlWidget(QWidget):
                 self._update_indicator(indicator, is_on, is_offline)
                 
                 name_lbl = QLabel(l.get("name", "Unknown"))
-                name_lbl.setStyleSheet("color: #ffaa00; font-weight: bold; font-size: 11pt;")
-                
-                btn_style = "QPushButton { text-align: center; background-color: rgba(255, 150, 0, 20); color: #ffaa00; border-radius: 5px; font-size: 10pt; border: 1px solid rgba(255,150,0,50); padding: 2px 8px; padding-bottom: 4px; } QPushButton:hover { background-color: rgba(255, 150, 0, 60); }"
+                name_lbl.setStyleSheet(Theme.get_style("SubtitleLabel"))
                 
                 toggle_btn = QPushButton("Toggle")
-                toggle_btn.setMinimumHeight(24)
-                toggle_btn.setStyleSheet(btn_style)
+                toggle_btn.setMinimumHeight(26)
+                toggle_btn.setStyleSheet(Theme.get_style("SecondaryButton"))
                 toggle_btn.clicked.connect(lambda checked, t=target_name: self.send_cmd("toggle", t, silent=True))
                 
                 delete_btn = QPushButton("X")
-                delete_btn.setFixedSize(26, 24)
+                delete_btn.setFixedSize(26, 26)
                 delete_btn.setToolTip("Remove light")
-                delete_btn.setStyleSheet("QPushButton { text-align: center; padding-bottom: 4px; background-color: rgba(255, 150, 0, 20); color: #ffaa00; border-radius: 5px; border: 1px solid rgba(255,150,0,50); font-size: 11pt; font-weight: bold; font-family: monospace; } QPushButton:hover { background-color: rgba(255, 150, 0, 60); color: #ffffff; }")
+                delete_btn.setStyleSheet(Theme.get_style("SmallDangerButton"))
                 delete_btn.clicked.connect(lambda checked, t=target_name: self._delete_light(t))
                 
                 row_layout.addWidget(indicator)
@@ -181,5 +180,5 @@ class LightControlWidget(QWidget):
         self.lights_container.adjustSize()
         self.adjustSize()
         # Deferred resize ensures the parent wrapper picks up the new layout geometry
-        QTimer.singleShot(0, self.adjustSize)
-        QTimer.singleShot(50, self.adjustSize)
+        QTimer.singleShot(0, lambda: self.window().adjustSize())
+        QTimer.singleShot(50, lambda: self.window().adjustSize())

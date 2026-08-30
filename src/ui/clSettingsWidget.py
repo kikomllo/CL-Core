@@ -1,5 +1,6 @@
 import json
 import os
+from clTheme import Theme
 from utils.clActionRouter import ActionRouter
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QFrame, QCheckBox, QComboBox, QPushButton, QTabWidget, QLineEdit, QInputDialog
 from PyQt6.QtCore import Qt, QTimer
@@ -22,38 +23,13 @@ class CollapsibleBlock(QWidget):
         self.header_btn.setChecked(False)
         self.header_btn.setFixedHeight(30)
         self.header_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.header_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(35, 18, 5, 220);
-                color: #ffe6cc;
-                border: 1px solid rgba(255, 180, 0, 80);
-                border-radius: 4px;
-                text-align: left;
-                padding-left: 8px;
-                font-family: 'Courier New';
-                font-size: 9pt;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: rgba(55, 30, 10, 255);
-                border: 1px solid #ffaa00;
-            }
-        """)
+        self.header_btn.setStyleSheet(Theme.get_style("SettingsCollapseBtn"))
         self.header_btn.clicked.connect(self.toggle_collapse)
         self.main_layout.addWidget(self.header_btn)
         
         # --- BODY CONTAINER ---
         self.body_widget = QWidget()
-        self.body_widget.setStyleSheet("""
-            QWidget {
-                background-color: rgba(20, 10, 2, 180);
-                border-left: 2px solid rgba(255, 170, 0, 120);
-                border-bottom: 1px solid rgba(255, 170, 0, 40);
-                border-right: 1px solid rgba(255, 170, 0, 40);
-                border-bottom-left-radius: 4px;
-                border-bottom-right-radius: 4px;
-            }
-        """)
+        self.body_widget.setStyleSheet(Theme.get_style("SettingsCollapseBody"))
         self.body_layout = QVBoxLayout(self.body_widget)
         self.body_layout.setContentsMargins(12, 10, 12, 10)
         self.body_layout.setSpacing(10)
@@ -89,37 +65,7 @@ class SettingsWidget(QWidget):
         
         self.tabs = QTabWidget()
         self.tabs.setUsesScrollButtons(True)
-        self.tabs.setStyleSheet("""
-            QTabWidget::pane { border: none; background: transparent; }
-            QTabWidget::tab-bar { alignment: left; }
-            QTabBar {
-                background-color: rgba(255, 120, 0, 30);
-                border-bottom: 1px solid rgba(255, 150, 0, 60);
-                min-height: 24px;
-                max-height: 24px;
-            }
-            QTabBar::tab { 
-                background: transparent; 
-                color: rgba(255, 200, 0, 180); 
-                padding: 0px 12px; 
-                height: 24px;
-                border: none;
-                font-family: 'Courier New';
-                font-weight: bold;
-                font-size: 8.5pt;
-            }
-            QTabBar::tab:hover {
-                color: #ffffff;
-                background-color: rgba(255, 150, 0, 40);
-            }
-            QTabBar::tab:selected { 
-                background-color: rgba(255, 150, 0, 70); 
-                color: #ffaa00; 
-                border-bottom: 2px solid #ffaa00; 
-            }
-            QTabBar::scroller { width: 20px; height: 24px; }
-            QTabBar QToolButton { background: transparent; border: none; color: #ffaa00; height: 24px; }
-        """)
+        self.tabs.setStyleSheet(Theme.get_style("TodoTabs"))
         
         self.layout.addWidget(self.tabs)
         
@@ -137,27 +83,7 @@ class SettingsWidget(QWidget):
         # Reboot Button at bottom
         self.reboot_btn = QPushButton("Save & Reboot Ecosystem")
         self.reboot_btn.setFixedHeight(32)
-        self.reboot_btn.setStyleSheet("""
-            QPushButton {
-                text-align: center;
-                padding-bottom: 4px;
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(200, 30, 0, 0.4), stop:1 rgba(150, 10, 0, 0.4));
-                color: #ffcccc;
-                border-radius: 6px;
-                border: 1px solid rgba(255, 50, 0, 0.5);
-                font-weight: bold;
-                font-size: 9pt;
-                margin-left: 15px;
-                margin-right: 15px;
-                margin-bottom: 10px;
-                margin-top: 5px;
-            }
-            QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(220, 50, 0, 0.6), stop:1 rgba(180, 20, 0, 0.6));
-                color: #ffffff;
-                border: 1px solid #ff4400;
-            }
-        """)
+        self.reboot_btn.setStyleSheet(Theme.get_style("RebootButton"))
         self.reboot_btn.clicked.connect(self._reboot_ecosystem)
         self.reboot_btn.hide()
         self.layout.addWidget(self.reboot_btn)
@@ -174,7 +100,6 @@ class SettingsWidget(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; } QScrollBar:vertical { width: 6px; background: rgba(0,0,0,40); border-radius: 3px; } QScrollBar::handle:vertical { background: rgba(255,170,0,120); border-radius: 3px; }")
         
         scroll_content = QWidget()
         scroll_content.setStyleSheet("background: transparent;")
@@ -188,7 +113,7 @@ class SettingsWidget(QWidget):
 
     def _create_section_label(self, text):
         lbl = QLabel(text)
-        lbl.setStyleSheet("color: rgba(255, 170, 0, 180); font-weight: bold; font-size: 9.5pt; border-bottom: 1px solid rgba(255, 150, 0, 50); padding-bottom: 2px;")
+        lbl.setStyleSheet(Theme.get_style("SectionLabel"))
         return lbl
 
     def _create_checkbox(self, key, label_text, is_checked, callback):
@@ -197,23 +122,7 @@ class SettingsWidget(QWidget):
         lay.setContentsMargins(0,0,0,0)
         
         chk = QCheckBox()
-        chk.setStyleSheet("""
-            QCheckBox::indicator {
-                width: 16px;
-                height: 16px;
-                border-radius: 4px;
-                border: 1px solid rgba(255, 170, 0, 0.5);
-                background: rgba(35, 18, 5, 0.8);
-            }
-            QCheckBox::indicator:hover {
-                border: 1px solid #ffaa00;
-                background: rgba(255, 150, 0, 0.3);
-            }
-            QCheckBox::indicator:checked {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ff8c00, stop:1 #e65c00);
-                border: 1px solid #ffbb33;
-            }
-        """)
+        chk.setStyleSheet(Theme.get_style("SettingsCheckbox"))
         chk.setChecked(is_checked)
         chk.stateChanged.connect(callback)
         
@@ -240,22 +149,7 @@ class SettingsWidget(QWidget):
         combo.addItems(options)
         if current_val in options:
             combo.setCurrentText(current_val)
-        combo.setStyleSheet("""
-            QComboBox {
-                background-color: rgba(25, 12, 3, 240);
-                color: #ffe6cc;
-                border: 1px solid rgba(255, 180, 0, 100);
-                border-radius: 4px;
-                padding: 3px 6px;
-                font-size: 9pt;
-            }
-            QComboBox::drop-down { border: none; }
-            QComboBox QAbstractItemView {
-                background-color: rgba(20, 10, 0, 240);
-                color: #ffe6cc;
-                selection-background-color: rgba(255, 150, 0, 100);
-            }
-        """)
+        combo.setStyleSheet(Theme.get_style("SettingsDropdown"))
         combo.currentTextChanged.connect(callback)
         
         self.ui_elements[key] = combo
@@ -280,20 +174,7 @@ class SettingsWidget(QWidget):
         if is_password:
             line_edit.setEchoMode(QLineEdit.EchoMode.Password)
             
-        line_edit.setStyleSheet("""
-            QLineEdit {
-                background-color: rgba(25, 12, 3, 240);
-                color: #ffe6cc;
-                border: 1px solid rgba(255, 180, 0, 80);
-                border-radius: 4px;
-                padding: 5px;
-                font-size: 9pt;
-            }
-            QLineEdit:focus {
-                border: 1px solid #ffaa00;
-                background-color: rgba(35, 18, 5, 255);
-            }
-        """)
+        line_edit.setStyleSheet(Theme.get_style("SettingsLineEdit"))
         
         line_edit.editingFinished.connect(lambda: callback(key, line_edit.text()))
         self.ui_elements[key] = line_edit
@@ -345,22 +226,7 @@ class SettingsWidget(QWidget):
         # Button to add new WiFi Network Group
         add_net_btn = QPushButton("+ Add WiFi Network")
         add_net_btn.setFixedHeight(28)
-        add_net_btn.setStyleSheet("""
-            QPushButton {
-                text-align: center;
-                padding-bottom: 4px;
-                background-color: rgba(40, 25, 10, 200);
-                color: #ffaa00;
-                border: 1px dashed rgba(255, 170, 0, 120);
-                border-radius: 4px;
-                font-weight: bold;
-                font-size: 8.5pt;
-            }
-            QPushButton:hover {
-                background-color: rgba(70, 45, 15, 255);
-                border: 1px solid #ffaa00;
-            }
-        """)
+        add_net_btn.setStyleSheet(Theme.get_style("SettingsDashedButton"))
         add_net_btn.clicked.connect(self._add_wifi_network)
         lights_layout.addWidget(add_net_btn)
         lights_layout.addSpacing(25)
@@ -418,18 +284,7 @@ class SettingsWidget(QWidget):
                 
                 # Line Edit for key string
                 key_edit = QLineEdit(current_key)
-                key_edit.setStyleSheet("""
-                    QLineEdit {
-                        background-color: rgba(25, 12, 3, 240);
-                        color: #ffe6cc;
-                        border: 1px solid rgba(255, 180, 0, 100);
-                        border-radius: 4px;
-                        padding: 3px 6px;
-                        font-family: 'Courier New';
-                        font-size: 9pt;
-                    }
-                    QLineEdit:focus { border: 1px solid #ffaa00; background-color: rgba(35, 18, 5, 255); }
-                """)
+                key_edit.setStyleSheet(Theme.get_style("SettingsLineEdit"))
                 key_edit.editingFinished.connect(lambda ak=action_key, le=key_edit: self._update_keybind(ak, "key", le.text()))
                 
                 # Dropdown for mode
@@ -437,13 +292,7 @@ class SettingsWidget(QWidget):
                 mode_combo.addItems(["single", "continuous"])
                 mode_combo.setCurrentText(current_mode)
                 mode_combo.setFixedWidth(100)
-                mode_combo.setStyleSheet("""
-                    QComboBox {
-                        background-color: rgba(25, 12, 3, 240); color: #ffe6cc;
-                        border: 1px solid rgba(255, 180, 0, 100); border-radius: 4px; padding: 3px 6px; font-size: 9pt;
-                    }
-                    QComboBox::drop-down { border: none; }
-                """)
+                mode_combo.setStyleSheet(Theme.get_style("SettingsDropdown"))
                 mode_combo.currentTextChanged.connect(lambda text, ak=action_key: self._update_keybind(ak, "mode", text))
                 
                 entry_layout.addWidget(lbl, 1)
@@ -456,10 +305,7 @@ class SettingsWidget(QWidget):
             
             refresh_btn = QPushButton("Refresh Keybinds")
             refresh_btn.setFixedHeight(30)
-            refresh_btn.setStyleSheet("""
-                QPushButton { background-color: rgba(40, 25, 10, 200); color: #ffaa00; border: 1px dashed rgba(255, 170, 0, 120); border-radius: 4px; font-weight: bold; font-size: 9pt; }
-                QPushButton:hover { background-color: rgba(70, 45, 15, 255); border: 1px solid #ffaa00; }
-            """)
+            refresh_btn.setStyleSheet(Theme.get_style("SettingsDashedButton"))
             refresh_btn.clicked.connect(self._refresh_keybinds)
             keybinds_layout.addWidget(refresh_btn)
             
@@ -532,10 +378,7 @@ class SettingsWidget(QWidget):
             
             del_net_btn = QPushButton("Remove Network")
             del_net_btn.setFixedHeight(20)
-            del_net_btn.setStyleSheet("""
-                QPushButton { text-align: center; padding-bottom: 4px; background-color: rgba(180, 30, 30, 120); color: #ffaaaa; border-radius: 3px; font-size: 7.5pt; font-weight: bold; padding: 2px 6px; }
-                QPushButton:hover { background-color: rgba(220, 40, 40, 200); color: #ffffff; }
-            """)
+            del_net_btn.setStyleSheet(Theme.get_style("SmallDangerButton"))
             del_net_btn.clicked.connect(lambda _, n=net_name: self._remove_wifi_network(n))
             
             header_lay.addWidget(net_lbl)
@@ -564,13 +407,9 @@ class SettingsWidget(QWidget):
                 b_ip = self._create_line_edit_raw("IP Address", l_info.get("ip", ""), lambda val, n=net_name, ln=l_name: self._update_light_field(n, ln, "ip", val))
                 b_mac = self._create_line_edit_raw("MAC Address", l_info.get("mac", ""), lambda val, n=net_name, ln=l_name: self._update_light_field(n, ln, "mac", val))
                 
-                # Delete Light Button
                 del_btn = QPushButton("Remove Light")
                 del_btn.setFixedHeight(24)
-                del_btn.setStyleSheet("""
-                    QPushButton { text-align: center; padding-bottom: 4px; background-color: rgba(180, 30, 30, 150); color: #ffcccc; border-radius: 4px; font-size: 8pt; font-weight: bold; }
-                    QPushButton:hover { background-color: rgba(220, 40, 40, 220); color: #ffffff; }
-                """)
+                del_btn.setStyleSheet(Theme.get_style("SmallDangerButton"))
                 del_btn.clicked.connect(lambda _, n=net_name, ln=l_name: self._remove_light(n, ln))
                 
                 block.body_layout.addWidget(b_name)
@@ -582,13 +421,9 @@ class SettingsWidget(QWidget):
                 
                 net_lay.addWidget(block)
                 
-            # Button to add new light to this network
             add_l_btn = QPushButton(f"+ Add Light to {net_name}")
             add_l_btn.setFixedHeight(24)
-            add_l_btn.setStyleSheet("""
-                QPushButton { text-align: center; padding-bottom: 4px; background-color: rgba(30, 20, 5, 180); color: #ffbb44; border: 1px solid rgba(255, 170, 0, 60); border-radius: 4px; font-size: 8pt; }
-                QPushButton:hover { background-color: rgba(60, 40, 10, 220); color: #ffffff; border: 1px solid #ffaa00; }
-            """)
+            add_l_btn.setStyleSheet(Theme.get_style("SettingsActionBtn"))
             add_l_btn.clicked.connect(lambda _, n=net_name: self._add_light(n))
             net_lay.addWidget(add_l_btn)
             
@@ -624,17 +459,7 @@ class SettingsWidget(QWidget):
         
         line_edit = QLineEdit()
         line_edit.setText(str(current_val) if current_val else "")
-        line_edit.setStyleSheet("""
-            QLineEdit {
-                background-color: rgba(15, 8, 2, 220);
-                color: #ffe6cc;
-                border: 1px solid rgba(255, 180, 0, 60);
-                border-radius: 3px;
-                padding: 4px;
-                font-size: 8.5pt;
-            }
-            QLineEdit:focus { border: 1px solid #ffaa00; }
-        """)
+        line_edit.setStyleSheet(Theme.get_style("SettingsLineEdit"))
         line_edit.editingFinished.connect(lambda: callback(line_edit.text()))
         
         lay.addWidget(lbl)
@@ -652,17 +477,7 @@ class SettingsWidget(QWidget):
         combo = QComboBox()
         combo.addItems(options)
         if current_val in options: combo.setCurrentText(current_val)
-        combo.setStyleSheet("""
-            QComboBox {
-                background-color: rgba(15, 8, 2, 220);
-                color: #ffe6cc;
-                border: 1px solid rgba(255, 180, 0, 60);
-                border-radius: 3px;
-                padding: 2px 5px;
-                font-size: 8.5pt;
-            }
-            QComboBox::drop-down { border: none; }
-        """)
+        combo.setStyleSheet(Theme.get_style("SettingsDropdown"))
         combo.currentTextChanged.connect(callback)
         
         lay.addWidget(lbl, 1)

@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from clTheme import Theme
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QStackedWidget, QFrame, QScrollArea, QSizePolicy
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -14,13 +15,7 @@ class UpNextWidget(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("UpNextContainer")
-        self.setStyleSheet("""
-            QFrame#UpNextContainer {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(45, 22, 6, 0.75), stop:1 rgba(25, 11, 2, 0.75));
-                border: 1px solid rgba(255, 160, 0, 0.3);
-                border-radius: 12px;
-            }
-        """)
+        self.setStyleSheet(Theme.get_style("UpNextContainer"))
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(12, 10, 12, 10)
         self.layout.setSpacing(6)
@@ -29,16 +24,16 @@ class UpNextWidget(QFrame):
         self.header_layout.setContentsMargins(0, 0, 0, 0)
         
         self.btn_back = QPushButton("< Back")
-        self.btn_back.setStyleSheet("QPushButton { color: #ffaa00; background: transparent; border: none; font-weight: bold; font-size: 10px; } QPushButton:hover { color: #ffffff; }")
+        self.btn_back.setStyleSheet(Theme.get_style("DrawerBackButton"))
         self.btn_back.clicked.connect(self.reset_to_upcoming)
         self.btn_back.hide()
         
         self.lbl_title = QLabel("UP NEXT")
-        self.lbl_title.setStyleSheet("color: #ffaa00; font-size: 10px; font-weight: 800; letter-spacing: 1px; border: none; background: transparent;")
+        self.lbl_title.setStyleSheet(Theme.get_style("BadgeLabel"))
         self.lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         self.btn_add_event = QPushButton("+ Event")
-        self.btn_add_event.setStyleSheet("QPushButton { color: #ffaa00; background: rgba(255,150,0,0.15); border: 1px solid rgba(255,150,0,0.4); border-radius: 4px; padding: 2px 6px; font-weight: bold; font-size: 10px; } QPushButton:hover { background: rgba(255,150,0,0.3); color: #ffffff; }")
+        self.btn_add_event.setStyleSheet(Theme.get_style("SettingsActionBtn"))
         self.btn_add_event.clicked.connect(self.add_event_signal.emit)
         self.btn_add_event.hide()
         
@@ -58,11 +53,7 @@ class UpNextWidget(QFrame):
         self.scroll = QScrollArea(self)
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll.setStyleSheet("""
-            QScrollArea { background: transparent; border: none; }
-            QScrollBar:vertical { width: 5px; background: rgba(0,0,0,30); border-radius: 2px; }
-            QScrollBar::handle:vertical { background: rgba(255,170,0,100); border-radius: 2px; }
-        """)
+        self.scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
         
         self.scroll_content = QWidget()
         self.scroll_content.setStyleSheet("background: transparent;")
@@ -118,7 +109,7 @@ class UpNextWidget(QFrame):
                 
         if not display_events:
             lbl = QLabel("No events" if self.mode == "day" else "No upcoming events")
-            lbl.setStyleSheet("color: rgba(255, 200, 150, 0.6); font-style: italic; font-size: 11px; border: none; background: transparent;")
+            lbl.setStyleSheet(Theme.get_style("DimLabel"))
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.events_layout.addWidget(lbl)
             return
@@ -136,26 +127,17 @@ class UpNextWidget(QFrame):
                 
             # Create a styled event card rectangle
             card = QFrame()
-            card.setStyleSheet("""
-                QFrame {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(50, 25, 8, 0.85), stop:1 rgba(30, 14, 3, 0.85));
-                    border-left: 4px solid #ff8c00;
-                    border-top: 1px solid rgba(255, 160, 0, 0.3);
-                    border-right: 1px solid rgba(255, 160, 0, 0.3);
-                    border-bottom: 1px solid rgba(255, 160, 0, 0.3);
-                    border-radius: 8px;
-                }
-            """)
+            card.setStyleSheet(Theme.get_style("EventCard"))
             card_layout = QVBoxLayout(card)
             card_layout.setContentsMargins(10, 7, 10, 7)
             card_layout.setSpacing(2)
             
             lbl_ev_title = QLabel(ev['summary'])
-            lbl_ev_title.setStyleSheet("color: #ffffff; font-weight: 800; font-size: 12px; border: none; background: transparent;")
+            lbl_ev_title.setStyleSheet(Theme.get_style("EventTitleLabel"))
             lbl_ev_title.setWordWrap(True)
             
             lbl_ev_time = QLabel(f"{day_str} at {time_str}")
-            lbl_ev_time.setStyleSheet("color: #ffaa00; font-size: 10px; font-weight: 600; border: none; background: transparent;")
+            lbl_ev_time.setStyleSheet(Theme.get_style("SubtitleLabel"))
             
             card_layout.addWidget(lbl_ev_title)
             card_layout.addWidget(lbl_ev_time)
@@ -184,41 +166,22 @@ class WidgetCarousel(QWidget):
         
         # Navigation bar frame (Floating Glass Pill)
         self.nav_frame = QFrame()
-        self.nav_frame.setStyleSheet("""
-            QFrame {
-                background: rgba(35, 17, 4, 0.85);
-                border: 1px solid rgba(255, 160, 0, 0.35);
-                border-radius: 15px;
-            }
-        """)
+        self.nav_frame.setStyleSheet(Theme.get_style("CarouselNav"))
         nav_layout = QHBoxLayout(self.nav_frame)
         nav_layout.setContentsMargins(8, 3, 8, 3)
         
-        btn_style = """
-            QPushButton {
-                text-align: center;
-                padding-bottom: 4px;
-                background: transparent;
-                color: #ffaa00;
-                font-weight: bold;
-                font-size: 14px;
-                border: none;
-            }
-            QPushButton:hover { color: #ffffff; }
-        """
-        
         self.btn_prev = QPushButton("❮")
-        self.btn_prev.setStyleSheet(btn_style)
+        self.btn_prev.setStyleSheet(Theme.get_style("TransparentButton"))
         self.btn_prev.setFixedSize(25, 25)
         self.btn_prev.clicked.connect(self.prev_slide)
         
         self.btn_next = QPushButton("❯")
-        self.btn_next.setStyleSheet(btn_style)
+        self.btn_next.setStyleSheet(Theme.get_style("TransparentButton"))
         self.btn_next.setFixedSize(25, 25)
         self.btn_next.clicked.connect(self.next_slide)
         
         self.lbl_indicator = QLabel("To-Do List")
-        self.lbl_indicator.setStyleSheet("color: #ffcc66; font-weight: 800; font-size: 12px; letter-spacing: 0.5px; border: none; background: transparent;")
+        self.lbl_indicator.setStyleSheet(Theme.get_style("BadgeLabel"))
         self.lbl_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         nav_layout.addWidget(self.btn_prev)
@@ -258,12 +221,7 @@ class DashboardDrawer(QWidget):
         super().__init__(parent)
         self.setObjectName("DashboardDrawer")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet("""
-            #DashboardDrawer {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #180a02, stop:0.5 #120601, stop:1 #0c0400);
-                border-left: 2px solid qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffaa00, stop:0.5 #ff7700, stop:1 #ffbb33);
-            }
-        """)
+        self.setStyleSheet(Theme.get_style("DashboardDrawer"))
         
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(12, 12, 12, 12)
@@ -279,11 +237,7 @@ class DashboardDrawer(QWidget):
         # Divider line
         divider = QFrame()
         divider.setFrameShape(QFrame.Shape.HLine)
-        divider.setStyleSheet("""
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 transparent, stop:0.5 rgba(255, 170, 0, 0.4), stop:1 transparent);
-            height: 1px;
-            border: none;
-        """)
+        divider.setStyleSheet(Theme.get_style("DrawerDivider"))
         
         # Carousel (Bottom Quarter, 25%)
         self.carousel = WidgetCarousel(self)
