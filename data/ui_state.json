@@ -2,74 +2,74 @@
   "drawer_open": false,
   "carousel_tab": 0,
   "reminder_widget": {
-    "visible": true
+    "visible": false
   },
   "active_widgets": {
     "widget_todo_list": {
       "visible": false,
       "pos": [
-        1431,
-        317
+        1316,
+        592
       ],
       "size": [
-        350,
-        400
+        168,
+        73
       ],
       "is_unpinned": false
     },
     "widget_settings": {
       "visible": true,
       "pos": [
-        917,
-        63
+        837,
+        76
       ],
       "size": [
         325,
-        424
+        417
       ],
       "is_unpinned": false
     },
     "widget_updates": {
       "visible": true,
       "pos": [
-        472,
-        64
+        229,
+        215
       ],
       "size": [
-        311,
-        162
+        362,
+        315
       ],
       "is_unpinned": false
     },
     "widget_media_controls": {
-      "visible": true,
+      "visible": false,
       "pos": [
-        81,
-        97
+        25,
+        70
       ],
       "size": [
-        172,
-        192
+        147,
+        141
       ],
       "is_unpinned": false
     },
     "widget_light_controls": {
-      "visible": true,
+      "visible": false,
       "pos": [
-        5,
-        343
+        238,
+        70
       ],
       "size": [
-        392,
-        157
+        143,
+        120
       ],
       "is_unpinned": false
     }
   },
-  "current_monitor_idx": 1,
+  "current_monitor_idx": 0,
   "screen_size": [
-    1920,
-    1080
+    1366,
+    768
   ],
   "is_fullscreen": true
 }

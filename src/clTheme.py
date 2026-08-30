@@ -160,7 +160,7 @@ class Theme:
                 QPushButton:hover {{ background-color: rgba(255, 50, 0, 80); color: #ffffff; }}
             """
         elif component == "LogViewer":
-            return f"background: rgba(10, 5, 0, 200); color: {cls.C_PRIMARY}; font-size: {cls.F_TINY}; border: 1px solid {cls.C_BORDER}; border-radius: 4px;"
+            return f"background: rgba(10, 5, 0, 200); color: {cls.C_PRIMARY}; border: 1px solid {cls.C_BORDER}; border-radius: 4px;"
         elif component == "RebootButton":
             return f"""
                 QPushButton {{ text-align: center; padding-bottom: 4px; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(200, 30, 0, 0.4), stop:1 rgba(150, 10, 0, 0.4)); color: #ffcccc; border-radius: 6px; border: 1px solid rgba(255, 50, 0, 0.5); font-weight: bold; font-size: {cls.F_NORMAL}; margin: 5px 15px 10px 15px; }}

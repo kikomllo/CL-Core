@@ -4,6 +4,7 @@ from clTheme import Theme
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QTextEdit
 from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QFont, QColor, QTextCursor
+from ui.clZoomTextEdit import ZoomTextEdit
 
 class LogWidget(QWidget):
     def __init__(self, parent=None):
@@ -12,7 +13,7 @@ class LogWidget(QWidget):
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
         
-        self.text_edit = QTextEdit()
+        self.text_edit = ZoomTextEdit()
         self.text_edit.setReadOnly(True)
         self.text_edit.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         
