@@ -2,68 +2,69 @@
   "drawer_open": false,
   "carousel_tab": 0,
   "reminder_widget": {
-    "visible": true,
+    "visible": false,
     "pos": [
-      1680,
-      925
+      1126,
+      613
     ]
   },
   "active_widgets": {
     "widget_todo_list": {
       "visible": true,
       "pos": [
-        722,
-        44
+        53,
+        58
       ],
       "size": [
         350,
         424
       ]
     },
-    "widget_updates": {
+    "widget_settings": {
       "visible": false,
       "pos": [
-        925,
-        30
-      ],
-      "size": [
-        638,
-        405
-      ]
-    },
-    "widget_settings": {
-      "visible": true,
-      "pos": [
-        385,
-        47
+        474,
+        33
       ],
       "size": [
         325,
         409
       ]
     },
-    "widget_light_controls": {
+    "widget_updates": {
       "visible": true,
       "pos": [
-        35,
-        46
+        946,
+        250
       ],
       "size": [
-        340,
-        218
+        306,
+        261
       ]
     },
     "widget_media_controls": {
-      "visible": false,
+      "visible": true,
       "pos": [
-        875,
-        464
+        425,
+        470
       ],
       "size": [
-        150,
-        50
+        153,
+        148
+      ]
+    },
+    "widget_light_controls": {
+      "visible": true,
+      "pos": [
+        517,
+        110
+      ],
+      "size": [
+        340,
+        123
       ]
     }
   },
-  "current_monitor_idx": 0
+  "current_monitor_idx": 0,
+  "is_fullscreen": true
 }
