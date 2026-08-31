@@ -32,9 +32,20 @@ assets/tts_*.mp3
 .vscode/
 .idea/
 .DS_Store
+.DS_Store?
 *.swp
 *.swo
-.DS_Store?
+Thumbs.db
+
+# Dynamic Data / State
+data/todos/
+data/reminders/
+data/alarms/
+data/events/
+data/scratch/
+data/ui_state.json
+data/monitor_registry.json
+config/ui_state.json
 
 # Project specific
 notes.txt
