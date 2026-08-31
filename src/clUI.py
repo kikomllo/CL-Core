@@ -744,6 +744,20 @@ class JarvisUI(QWidget):
         
         # Text Input Workaround
         self.text_input = QLineEdit(self)
+        
+        from PyQt6.QtCore import QObject, QEvent
+        class FocusFilter(QObject):
+            def eventFilter(self, obj, event):
+                if event.type() == QEvent.Type.FocusIn:
+                    import logging
+                    logging.info(f"[DEBUG FOCUS] text_input focusInEvent. Reason: {event.reason()}")
+                elif event.type() == QEvent.Type.FocusOut:
+                    import logging
+                    logging.info(f"[DEBUG FOCUS] text_input focusOutEvent. Reason: {event.reason()}")
+                return False
+
+        self.focus_filter = FocusFilter()
+        self.text_input.installEventFilter(self.focus_filter)
 
         self.text_input.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.text_input.returnPressed.connect(self.submit_text_command)
@@ -1329,8 +1343,24 @@ class JarvisUI(QWidget):
     def update_animation(self):
         self.visualizer.update_animation()
 
+    def focusInEvent(self, event):
+        import logging
+        logging.info(f"[DEBUG FOCUS] JarvisUI focusInEvent. Reason: {event.reason()}")
+        super().focusInEvent(event)
+
+    def focusOutEvent(self, event):
+        import logging
+        logging.info(f"[DEBUG FOCUS] JarvisUI focusOutEvent. Reason: {event.reason()}")
+        super().focusOutEvent(event)
+
+    def keyPressEvent(self, event):
+        import logging
+        logging.info(f"[DEBUG KEY] JarvisUI keyPressEvent: key={event.key()} text={event.text()}")
+        super().keyPressEvent(event)
+
     def mousePressEvent(self, event):
         super().mousePressEvent(event)
+
     def submit_text_command(self):
         if getattr(self, 'text_input', None) is None: return
         text = self.text_input.text().strip()
@@ -1394,17 +1424,20 @@ class JarvisUI(QWidget):
                 self.hide()
                 QApplication.processEvents()
 
+            # Set attributes BEFORE changing window flags, because setWindowFlags 
+            # might recreate the native Wayland surface using the current attributes.
+            # If WA_ShowWithoutActivating is True during recreation, Wayland denies focus permanently.
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+            if sys.platform != "win32":
+                self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+            self.clearMask()
+            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
+
             flags = Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
             if sys.platform == "win32":
                 flags |= Qt.WindowType.WindowStaysOnTopHint
             self.setWindowFlags(flags)
             logging.info("[DEBUG UI] Window flags set.")
-            
-            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-            if sys.platform != "win32":
-                self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
-            self.clearMask()
-            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
             
             self.is_fullscreen = True
 
@@ -1581,6 +1614,11 @@ class JarvisUI(QWidget):
             
             self.hide()
             
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            if sys.platform != "win32":
+                self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+
             flags = (
                 Qt.WindowType.FramelessWindowHint | 
                 Qt.WindowType.WindowStaysOnTopHint | 
@@ -1590,10 +1628,6 @@ class JarvisUI(QWidget):
                 flags |= Qt.WindowType.WindowTransparentForInput
                 
             self.setWindowFlags(flags)
-            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-            if sys.platform != "win32":
-                self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
             
             screens = UIScaler.get().get_stable_screens()
             idx = UIScaler.get().get_primary_monitor_idx()

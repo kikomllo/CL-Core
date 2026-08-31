@@ -251,7 +251,6 @@ class TodoWidget(QWidget):
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setContentsMargins(s(15), s(15), s(15), s(30))
         scroll_layout.setSpacing(s(12))
-        scroll_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         
         scroll.setWidget(scroll_content)
         page_layout.addWidget(scroll)
@@ -315,6 +314,7 @@ class TodoWidget(QWidget):
                 lbl = QLabel("No pending tasks.")
                 lbl.setStyleSheet(Theme.get_style("DimLabel"))
                 layout.addWidget(lbl)
+                layout.addStretch()
                 continue
                 
             for t in tasks:
@@ -339,13 +339,16 @@ class TodoWidget(QWidget):
                 if is_completed:
                     lbl.setStyleSheet(lbl.styleSheet() + " color: " + Theme.C_TEXT_DIM + "; text-decoration: line-through;")
                 
-                task_layout.addWidget(chk)
-                task_layout.addWidget(lbl, 1)
+                # Align items to top to prevent checkboxes from centering strangely on multi-line text
+                task_layout.addWidget(chk, 0, Qt.AlignmentFlag.AlignTop)
+                task_layout.addWidget(lbl, 1, Qt.AlignmentFlag.AlignTop)
                 
                 # Make the entire row toggle the checkbox
                 task_widget.mouseReleaseEvent = lambda e, c=chk: c.setChecked(not c.isChecked()) if e.button() == Qt.MouseButton.LeftButton else None
                 chk.stateChanged.connect(lambda state, tid=t["id"]: self.toggle_task(tid, state))
                 layout.addWidget(task_widget)
+                
+            layout.addStretch()
         
         # Restore the previously selected tab if possible
         for i in range(self.tabs.count()):
