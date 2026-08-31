@@ -7,7 +7,7 @@
             "en",
             "pt"
         ],
-        "stt_model": "small",
+        "stt_model": "base",
         "stt_processing_mode": "sequential",
         "hardware": "cpu",
         "enable_followup": false,
