@@ -725,7 +725,7 @@ class JarvisUI(QWidget):
         
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_animation)
-        self.timer.start(1000 // 60)
+        self.timer.start(1000 // 15)
         
         self.occlusion_timer = QTimer(self)
         self.occlusion_timer.timeout.connect(self._check_occlusion)
@@ -1206,6 +1206,13 @@ class JarvisUI(QWidget):
     def set_state(self, state):
         self.state = state
         self.visualizer.set_state(state, self.is_fullscreen)
+        
+        # Low-Power Idle Mode: Drop to 15 FPS to save CPU, snap to 60 FPS when active
+        if state == "IDLE":
+            self.timer.setInterval(1000 // 15)
+        else:
+            self.timer.setInterval(1000 // 60)
+            
         if state == "IDLE":
             if not self.is_fullscreen:
                 for w_id in list(self.active_widgets.keys()):
