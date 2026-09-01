@@ -6,10 +6,11 @@ from typing import Dict, List, Tuple, Any
 class IntentEngine:
     """Stateless, CPU-Optimized Fuzzy Intent Parser."""
 
-    def __init__(self, intents_data: Dict[str, Any], word_to_number: Dict[str, str], abort_keywords: List[str], conversational_data: Dict[str, str] = None):
+    def __init__(self, intents_data: Dict[str, Any], word_to_number: Dict[str, str], abort_keywords: List[str], conversational_data: Dict[str, str] = None, decline_keywords: List[str] = None):
         self.intents_data = intents_data
         self.word_to_number = word_to_number
         self.abort_keywords = abort_keywords
+        self.decline_keywords = decline_keywords or []
         self.conversational_data = conversational_data or {}  # Store the responses here
         
         self.flat_templates: List[str] = []
@@ -64,6 +65,10 @@ class IntentEngine:
     def is_abort_command(self, text: str) -> bool:
         """Checks if the payload contains an abort command."""
         return any(kw in text for kw in self.abort_keywords)
+
+    def is_decline_command(self, text: str) -> bool:
+        """Checks if the payload is declining a follow-up prompt (e.g. "Anything else, sir?")."""
+        return any(kw in text for kw in self.decline_keywords)
 
     def extract_variables(self, chunk: str, intent_match: Dict[str, Any]) -> Dict[str, Any]:
         """Fuzzy-friendly slot extraction supporting single and multi-variable templates."""

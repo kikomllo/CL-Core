@@ -30,6 +30,7 @@ jellyfish==1.2.1
 joblib==1.5.3
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
+llama-cpp-python>=0.2.85
 markdown-it-py==4.2.0
 mdurl==0.1.2
 MouseInfo==0.1.3

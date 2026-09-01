@@ -43,15 +43,54 @@ def main():
             
     if should_install:
         print("[BOOT] Checking/Installing dependencies from requirements.txt (This may take a moment)...")
+        log_file = os.path.abspath(os.path.join("logs", "pip_install.log"))
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        
         try:
-            subprocess.run([pip_exe, "install", "-r", req_file], check=True)
+            # Stream pip output to both the console and a log file simultaneously
+            with open(log_file, "w", encoding="utf-8") as f:
+                proc = subprocess.Popen([pip_exe, "install", "-r", req_file], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                for line in proc.stdout:
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+                    f.write(line)
+                proc.wait()
+                
+                if proc.returncode != 0:
+                    raise subprocess.CalledProcessError(proc.returncode, proc.args)
+                    
             # Save timestamp
             with open(timestamp_file, "w") as f:
                 f.write(str(os.path.getmtime(req_file)))
             print("[BOOT] Dependencies successfully updated.")
-        except subprocess.CalledProcessError as e:
-            print(f"[BOOT] ERROR: Failed to install dependencies: {e}")
-            print("[BOOT] Will attempt to continue anyway...")
+            
+        except subprocess.CalledProcessError:
+            print("\n" + "="*70)
+            print("[BOOT] FATAL ERROR: Failed to install Python dependencies.")
+            print(f"[BOOT] The full installation log has been saved to: {log_file}")
+            print("\n[BOOT] This is likely because your system is missing C++ build tools required by the AI model.")
+            
+            if not is_windows:
+                print("[BOOT] REQUIRED ACTION: Please run the following command in your terminal:")
+                print("[BOOT]   sudo apt update && sudo apt install build-essential cmake")
+            else:
+                print("[BOOT] REQUIRED ACTION: Please install Visual Studio Build Tools (Desktop development with C++) and CMake.")
+                
+            print("="*70 + "\n")
+            print("[BOOT] Halting boot process.")
+            
+            # Autonomously pop open the log file for the user to see the exact C++ error
+            try:
+                if is_windows:
+                    os.startfile(log_file)
+                elif sys.platform == "darwin":
+                    subprocess.call(["open", log_file])
+                else:
+                    subprocess.call(["xdg-open", log_file])
+            except Exception:
+                pass
+                
+            sys.exit(1)
             
     # 3. Launch the supervisor
     print(f"[BOOT] Launching Ecosystem Supervisor ({'Windows' if is_windows else 'Linux'} Native)...")

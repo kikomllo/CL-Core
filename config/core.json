@@ -1,90 +1,72 @@
 {
-    "ecosystem": {
-        "mode": "NORMAL"
-    },
     "settings": {
-        "languages": [
-            "en",
-            "pt"
-        ],
-        "stt_model": "base",
-        "stt_processing_mode": "sequential",
-        "hardware": "cpu",
-        "enable_followup": false,
-        "silent_mode": true,
-        "last_light_target": "bedroom",
-        "ecosystem_state": "normal"
-    },
-    "vad_settings": {
-        "energy_threshold_normal": 300,
-        "attention_mode_multiplier": 2.5,
-        "silence_timeout_seconds": 1.2
-    },
-    "alarm_settings": {
-        "tts_prompt": "Wake up, sir! Alarm activated. Please speak the deactivation code to dismiss.",
-        "default_challenge": "turn off alarm",
-        "max_ring_duration_seconds": 300
+        "ecosystem_state": "debug",
+        "enable_followup": true,
+        "silent_mode": false,
+        "debug_mqtt": false,
+        "slm_settings": {
+            "enabled": true,
+            "model_path": "models/jarvis-brain-v2-q4_k_m.gguf",
+            "threads": 4,
+            "context_size": 1024,
+            "temperature": 0.1,
+            "gpu_layers": 0
+        },
+        "last_light_target": "living_room"
     },
     "nlp_rules": {
-        "stt_corrections": {
-            "lease the alarms": "list the alarms",
-            "lease alarms": "list alarms",
-            "least alarms": "list alarms",
-            "jervis": "jarvis",
-            "garvis": "jarvis",
-            "charvis": "jarvis",
-            "javis": "jarvis",
-            "jarves": "jarvis",
-            "yervis": "jarvis",
-            "travis": "jarvis",
-            "harvest": "jarvis",
-            "poz miezyk": "pause music",
-            "boss music": "pause music",
-            "paws music": "pause music",
-            "play missing": "play music",
-            "stop the using": "stop the music",
-            "met the music": "play the song"
-        },
-        "autocorrect": {
-            " dot ": ".",
-            " ponto ": ".",
-            " dotcom": ".com",
-            " pontocom": ".com",
-            "dot com": ".com",
-            "ponto com": ".com"
-        },
         "abort_keywords": [
-            "nevermind",
-            "no thanks",
-            "nah",
-            "nothing",
-            "nope",
             "abort",
             "cancel",
-            "forget it"
+            "nevermind",
+            "stop"
+        ],
+        "decline_keywords": [
+            "no thanks",
+            "no thank you",
+            "nothing else",
+            "that's all",
+            "that'll be all",
+            "that is all",
+            "i'm good",
+            "i am good",
+            "we're good",
+            "all good",
+            "nope"
+        ],
+        "compound_keywords": [
+            "and",
+            "also",
+            "then",
+            "plus"
+        ],
+        "correction_keywords": [
+            "scratch that",
+            "actually",
+            "instead",
+            "no wait",
+            "never mind that",
+            "correction"
         ],
         "word_to_number": {
-            "max": "100",
-            "hundred": "100",
-            "ninety": "90",
-            "eighty": "80",
-            "seventy": "70",
-            "sixty": "60",
-            "fifty": "50",
-            "forty": "40",
-            "thirty": "30",
-            "twenty": "20",
-            "ten": "10",
-            "nine": "9",
-            "eight": "8",
-            "seven": "7",
-            "six": "6",
-            "five": "5",
-            "four": "4",
-            "three": "3",
-            "two": "2",
+            "zero": "0",
             "one": "1",
-            "zero": "0"
+            "two": "2",
+            "three": "3",
+            "four": "4",
+            "five": "5",
+            "six": "6",
+            "seven": "7",
+            "eight": "8",
+            "nine": "9",
+            "ten": "10"
+        },
+        "stt_corrections": {
+            "jervis": "jarvis",
+            "jarves": "jarvis"
         }
+    },
+    "ecosystem": {
+        "mode": "DEBUG"
     }
 }

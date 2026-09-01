@@ -35,11 +35,20 @@
       "kill the light",
       "power off the light",
       "deactivate the light",
+      "shut off the light",
+      "switch off the light",
+      "cut the light",
+      "lights off",
       "turn off the {light_target}",
       "turn the {light_target} off",
       "kill the {light_target}",
       "power off the {light_target}",
-      "turn off {light_target}"
+      "turn off {light_target}",
+      "shut off the {light_target}",
+      "switch off the {light_target}",
+      "cut the {light_target}",
+      "{light_target} off",
+      "kill the {light_target} light"
     ],
     "action_id": "light.set",
     "action_args": {
@@ -133,7 +142,15 @@
       "play playlist {playlist_name}",
       "put on my {playlist_name} playlist",
       "play my playlist {playlist_name}",
-      "my playlist {playlist_name}"
+      "my playlist {playlist_name}",
+      "play some {playlist_name}",
+      "play {playlist_name} music",
+      "put on some {playlist_name}",
+      "play {playlist_name}",
+      "{playlist_name} music please",
+      "put on {playlist_name}",
+      "i want to hear some {playlist_name}",
+      "play me some {playlist_name}"
     ],
     "action_id": "spotify.control",
     "action_args": {
