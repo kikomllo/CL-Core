@@ -97,6 +97,51 @@ class CentralDaemon:
         self.dialogue_history.append({"role": role, "content": content})
         self.last_interaction_time = now
 
+    async def _speak_natural_reply(self, client: aiomqtt.Client, user_text: str, should_followup: bool, fallback_payload: Dict[str, Any]) -> None:
+        """
+        Generates a natural-language spoken confirmation via the SLM for a
+        Fast-Path command, decoupled from action dispatch — the MQTT action
+        has already been published before this is scheduled as a background
+        task, so a slow reply never delays the actual effect. Falls back to
+        the static tts_request template (the prior, always-templated
+        behavior) if the SLM is disabled, times out, or returns no reply, so
+        the user is never left without a spoken response.
+
+        Note: this re-runs full SLM classification on text the Fast-Path
+        already handled, just to reuse its "reply" field and discard the
+        action — simple and reuses the tested inference path, but wasteful
+        and occasionally slightly mismatched in phrasing (e.g. a generic
+        light reply instead of naming the exact target) since it's an
+        independent re-classification rather than being told what already
+        executed. Acceptable for now; a dedicated reply-only prompt is
+        planned once the training data is reworked for phrasing variety.
+        """
+        reply_text = None
+        if self.slm.enabled:
+            try:
+                snapshot = self._get_system_snapshot()
+                result = await asyncio.wait_for(
+                    self.slm.parse_intent_async(user_text, snapshot, list(self.dialogue_history)),
+                    timeout=3.0
+                )
+                reply_text = result.get("reply") if result else None
+            except asyncio.TimeoutError:
+                logging.warning("[DAEMON] Natural reply generation timed out; falling back to template.")
+            except Exception as e:
+                logging.error(f"[DAEMON] Natural reply generation failed: {e}")
+
+        if reply_text:
+            final_reply = reply_text
+            if should_followup:
+                final_reply += " Anything else sir?"
+            await client.publish("jarvis/sys/speak", json.dumps({
+                "text": final_reply,
+                "request_reply": should_followup
+            }))
+            self._update_dialogue_history("assistant", final_reply)
+        else:
+            await client.publish("jarvis/sys/tts_request", json.dumps(fallback_payload))
+
     def _is_complex_request(self, text: str, original_transcript: str) -> bool:
         """Evaluates sentence structure rather than relying on hardcoded dictionaries."""
         # 1. Hesitation / Punctuation check (Whisper adds commas/question marks when people stumble)
@@ -183,7 +228,14 @@ class CentralDaemon:
         # decline can never be swallowed by a more specific active_context.
         if self.nlp.is_decline_command(clean_text):
             self.active_context["type"] = None
-            return [({"action": "speak", "text": "Alright, sir."}, "system.speak")], None
+            # Empty actions -> the run() loop's "nothing recognized" branch,
+            # which publishes mic_state/audio_process idle and does NOT speak
+            # anything. That's the desired behavior here: silently close out,
+            # no TTS. (It also logs a generic "[UNMATCHED STT]" warning since
+            # that branch doesn't distinguish "declined" from "unrecognized"
+            # — logged here first so the real reason is visible too.)
+            logging.info(f"[DAEMON] Follow-up declined ('{clean_text}'); returning to idle silently.")
+            return [], None
 
         # 2. State Timeout Check
         if self.active_context["type"] and time.time() > self.active_context["expires_at"]:
@@ -613,13 +665,19 @@ class CentralDaemon:
                                                     "request_reply": should_followup
                                                 }))
                                                 
-                                            # 4. Handle Dynamic Template Requests
+                                            # 4. Handle Dynamic Template Requests -> try a natural
+                                            # SLM-generated reply first, as a non-blocking background
+                                            # task (the action above already published), falling back
+                                            # to the static template if the SLM can't produce one in time.
                                             elif not is_spotify_status and not is_silent and not self.silent_mode:
-                                                await client.publish("jarvis/sys/tts_request", json.dumps({
+                                                fallback_payload = {
                                                     "target_topic": topic_out,
                                                     "command": payload_out,
                                                     "append_followup": should_followup
-                                                }))
+                                                }
+                                                asyncio.create_task(self._speak_natural_reply(
+                                                    client, clean_text, should_followup, fallback_payload
+                                                ))
                                         
                                         if self.active_context["type"] is not None and not self.silent_mode:
                                             final_mic_state = "request_reply"

@@ -60,6 +60,14 @@ class VoiceSensor:
     MAX_RECORD_SECONDS: int = 10
     INITIAL_SILENCE_SECONDS: float = 3.0
     SILENCE_LIMIT_SECONDS: float = 2.5
+    # Fraction of chunks in the trailing SILENCE_LIMIT_SECONDS window that
+    # must be below sil_thresh to call it silence. Speech is inherently
+    # spiky (syllables, pauses between words), and a single chunk crossing
+    # the threshold used to hard-reset the whole counter to zero — so an
+    # isolated ambient noise blip during trailing silence cost the full
+    # window all over again. A ratio tolerates occasional blips (from either
+    # source) while still requiring the window to be overwhelmingly quiet.
+    SILENCE_RATIO_THRESHOLD: float = 0.85
 
     MIN_BASELINE: int = 100              
     VOICE_ACT_BUFFER: float = 1.40  
@@ -256,7 +264,16 @@ class VoiceSensor:
         loudness_factor = min(max((raw_baseline - 300.0) / 1700.0, 0.0), 1.0)
         
         base_act_mod = 1.15
-        base_sil_mod = 1.05
+        # Was 1.05 — only a 5% margin above baseline in quiet rooms (baseline
+        # itself is a 75th-percentile snapshot of recent ambient noise, so
+        # it's already an imprecise estimate). Normal steady room noise
+        # regularly drifts by more than 5% around that estimate, so isolated
+        # blips crossing the cutoff were common — see SILENCE_RATIO_THRESHOLD
+        # above, which is what actually makes those blips tolerable now.
+        # Widened this too anyway to give more headroom; still comfortably
+        # below base_act_mod so activation sensitivity in quiet rooms is
+        # unchanged.
+        base_sil_mod = 1.10
         
         act_mod = base_act_mod + (loudness_factor * (self.VOICE_ACT_BUFFER - base_act_mod))
         sil_mod = base_sil_mod + (loudness_factor * (self.SILENCE_CUT_BUFFER - base_sil_mod))
@@ -301,7 +318,8 @@ class VoiceSensor:
         silence_limit_chunks = int(self.RATE / self.CHUNK * self.SILENCE_LIMIT_SECONDS)
         wait_limit_chunks = int(self.RATE / self.CHUNK * wait_limit)
         
-        silence_counter, wait_counter = 0, 0
+        wait_counter = 0
+        silence_window: Deque[int] = collections.deque(maxlen=silence_limit_chunks)
         started_speaking = is_already_speaking
         
         last_rms = 0
@@ -339,36 +357,39 @@ class VoiceSensor:
             
             if not started_speaking:
                 if rms > act_thresh:
-                    started_speaking, silence_counter = True, 0
+                    started_speaking = True
+                    silence_window.clear()
                     if not self.attention_mode:
                         self._publish("jarvis/sys/mic_state", {"state": "recording"})
                 else:
                     wait_counter += 1
             else:
                 rms_delta = abs(rms - last_rms)
-                
-                if rms_delta < (act_thresh * 0.15): 
+
+                if rms_delta < (act_thresh * 0.15):
                     flatline_counter += 1
                 else:
                     flatline_counter = 0
-                
-                if rms < sil_thresh: 
-                    silence_counter += 1
-                else: 
-                    silence_counter = 0
-                    
+
+                silence_window.append(1 if rms < sil_thresh else 0)
+
             if getattr(self, "ptt_active", False):
-                started_speaking, silence_counter, flatline_counter = True, 0, 0
+                started_speaking, flatline_counter = True, 0
+                silence_window.clear()
                 was_ptt = True
             elif was_ptt:
                 logging.info("PTT Released -> Breaking recording loop.")
                 break
-                    
+
             last_rms = rms
 
-            if started_speaking and (silence_counter >= silence_limit_chunks or flatline_counter >= FLATLINE_LIMIT_CHUNKS):
+            is_silent = (
+                len(silence_window) >= silence_limit_chunks
+                and (sum(silence_window) / len(silence_window)) >= self.SILENCE_RATIO_THRESHOLD
+            )
+            if started_speaking and (is_silent or flatline_counter >= FLATLINE_LIMIT_CHUNKS):
                 if not self.attention_mode:
-                    reason = "Silence" if silence_counter >= silence_limit_chunks else "Volume Flatline"
+                    reason = "Silence" if is_silent else "Volume Flatline"
                     logging.info(f"{reason} Detected! Audio captured.")
                 break
                 
