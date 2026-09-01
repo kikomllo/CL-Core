@@ -6,12 +6,15 @@ import json
 import logging
 import time
 import datetime
+import collections
+import re
 import aiomqtt
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Optional
 
 # --- CUSTOM MODULES ---
 from utils.clConfigLoader import ConfigLoader
 from nlp.clIntentEngine import IntentEngine
+from nlp.clSLM import SLMInferenceEngine
 from utils.clActionRouter import ActionRouter
 
 # --- LOGGING SETUP ---
@@ -23,41 +26,51 @@ setup_logging('DAEMON')
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+
 class CentralDaemon:
-    """MQTT Orchestrator & State Machine"""
-    
+    """MQTT Orchestrator with Dialogue State Memory & Hybrid Cognitive Routing."""
+
     def __init__(self):
         self.loader = ConfigLoader()
         self.action_router = ActionRouter()
-        
+
         intents_data = self.loader.load_and_validate("intents.json", "intents_schema.json")
         core_data = self.loader.load_json("core.json")
-        
         responses_data = self.loader.load_json("responses.json")
         self.responses_data = responses_data
-        
+
         nlp_rules = core_data.get("nlp_rules", {})
         word_to_number = nlp_rules.get("word_to_number", {})
-        abort_keywords = nlp_rules.get("abort_keywords", ["abort", "cancel", "nevermind"])
-        
+        abort_keywords = nlp_rules.get("abort_keywords", ["abort", "cancel", "nevermind", "stop"])
+        decline_keywords = nlp_rules.get("decline_keywords", ["no thanks", "no thank you", "nothing else", "that's all", "nope"])
+        self.compound_keywords = nlp_rules.get("compound_keywords", ["and", "also", "then", "plus"])
+        self.correction_keywords = nlp_rules.get("correction_keywords", ["scratch that", "actually", "instead", "no wait", "never mind that"])
+
         self.stt_corrections = nlp_rules.get("stt_corrections", {})
-        
-        # --- UNIFIED STATE MACHINE ---
+
+        # --- UNIFIED STATE MACHINE & DIALOGUE MEMORY ---
         self.active_context = {
             "type": None, 
             "expires_at": 0.0
         }
-        
+        self.dialogue_history = collections.deque(maxlen=6)  # Last 3 conversation turns (user + assistant)
+        self.last_interaction_time = 0.0
+
         self.tts_state: str = "idle"
         self.mic_state: str = "idle"
         self.is_ducked: bool = False
         self.attention_mode: bool = False
         self.pending_mic_request: bool = False
         self.is_spotify_playing: bool = False
-        
+        self.current_track: str = "None"
+        self.last_light_target: str = "all"
+
         conversational_data = responses_data.get("conversational", {})
-        self.nlp = IntentEngine(intents_data, word_to_number, abort_keywords, conversational_data)
-        
+        self.nlp = IntentEngine(intents_data, word_to_number, abort_keywords, conversational_data, decline_keywords)
+
+        # Initialize SLM Cognitive Engine
+        self.slm = SLMInferenceEngine(core_data)
+
         self.intents_file_path = os.path.join(self.loader.config_dir, "intents.json")
         self.last_intents_mtime = os.stat(self.intents_file_path).st_mtime if os.path.exists(self.intents_file_path) else 0
 
@@ -66,6 +79,42 @@ class CentralDaemon:
 
         self.followups_enabled = core_data.get("settings", {}).get("enable_followup", True)
         self.silent_mode = core_data.get("settings", {}).get("silent_mode", False)
+
+    # -------------------------------------------------------------------------
+    # STATE & TELEMETRY HELPERS
+    # -------------------------------------------------------------------------
+    def _get_system_snapshot(self) -> str:
+        """Compiles real-time environment telemetry for the SLM context."""
+        media = f"Playing '{self.current_track}'" if self.is_spotify_playing else "Paused/Idle"
+        ctx = self.active_context.get("type") or "None"
+        return f"Spotify: {media} | ActiveContext: {ctx} | LastTargetLight: {self.last_light_target}"
+
+    def _update_dialogue_history(self, role: str, content: str) -> None:
+        now = time.time()
+        # Invalidate stale conversation history older than 60 seconds
+        if now - self.last_interaction_time > 60.0:
+            self.dialogue_history.clear()
+        self.dialogue_history.append({"role": role, "content": content})
+        self.last_interaction_time = now
+
+    def _is_complex_request(self, text: str, original_transcript: str) -> bool:
+        """Evaluates sentence structure rather than relying on hardcoded dictionaries."""
+        # 1. Hesitation / Punctuation check (Whisper adds commas/question marks when people stumble)
+        if any(p in original_transcript for p in [',', '?', '.', '...']):
+            return True
+            
+        # 2. Length check (Simple commands rarely exceed 6-7 words)
+        words = text.split()
+        if len(words) > 8:
+            return True
+            
+        # 3. Action density check (If it contains multiple distinct triggers)
+        action_verbs = {"turn", "switch", "play", "pause", "set", "remind", "create", "stop"}
+        found_verbs = [w for w in words if w in action_verbs]
+        if len(found_verbs) > 1:
+            return True
+            
+        return False
 
     def _optimize_intent_queue(self, intents: List[Tuple[Dict[str, Any], str]]) -> List[Tuple[Dict[str, Any], str]]:
         """
@@ -80,142 +129,192 @@ class CentralDaemon:
                 optimized_map[target_topic] = command.copy()
             
         return [(cmd, topic) for topic, cmd in optimized_map.items()]
-    
+
     def sanitize_transcription(self, text: str) -> str:
         """
         MIDDLEWARE: Intercepts known STT phonetic hallucinations and corrects them
         using exact core.json mappings and rapidfuzz phonetic matching before intent processing.
         """
         cleaned_text = text.lower().strip()
-        import re
         from rapidfuzz import fuzz
-        
+
         # 1. Configured dictionary replacements
         for hallucination, correction in self.stt_corrections.items():
             if hallucination in cleaned_text:
                 cleaned_text = re.sub(rf'\b{re.escape(hallucination)}\b', correction, cleaned_text, flags=re.IGNORECASE)
                 logging.info(f"[STT INTERCEPTOR] Replaced hallucination '{hallucination}' -> '{correction}'")
-                
+
         # 2. Phonetic fuzzy replacement for wake words
         words = cleaned_text.split()
         for i, w in enumerate(words[:3]):
             clean_w = re.sub(r'[^\w]', '', w)
             if len(clean_w) >= 4 and fuzz.ratio(clean_w, "jarvis") >= 75:
                 words[i] = w.replace(clean_w, "jarvis")
-                
+
         return " ".join(words)
 
-    def route_voice_command(self, payload_data: str) -> List[Tuple[Dict[str, Any], str]]:
-        import re
-        
+    # -------------------------------------------------------------------------
+    # HYBRID ROUTING SWITCHBOARD
+    # -------------------------------------------------------------------------
+    async def route_voice_command(self, payload_data: str) -> Tuple[List[Tuple[Dict[str, Any], str]], Optional[str]]:
+        """
+        Hybrid Intent Switchboard:
+        Pass 1: Active Interactive Context Check (Alarms, Prompts, Device Naming)
+        Pass 2: Global Abort Check
+        Pass 3: Fast-Path Regex/Fuzzy Matching (<10ms)
+        Pass 4: Smart-Path SLM Cognitive Decoder (150-300ms on CPU)
+        """
         sanitized_payload = self.sanitize_transcription(payload_data)
         clean_text = self.nlp.normalize_text(sanitized_payload)
 
         # 1. Global Abort Check
         if self.nlp.is_abort_command(clean_text):
-            self.active_context["type"] = None  # Purge active state
-            return [({"action": "abort"}, "jarvis/sys/control")]
+            self.active_context["type"] = None
+            self.dialogue_history.clear()
+            return [({"action": "abort"}, "system.abort")], "Cancelled."
+
+        # 1b. Follow-up Decline Check. There's no dedicated active_context state
+        # tracking "we just asked Anything else, sir?" — the mic simply reopens
+        # via request_reply after any command. Without this check, a reply like
+        # "no thanks" fell through to Fast-Path/Smart-Path matching like any
+        # fresh command and could get misclassified as a repeat of the last
+        # action (e.g. re-triggering light.set off and re-prompting, looping).
+        # Checked before any interactive-context/intent-parsing pass so a
+        # decline can never be swallowed by a more specific active_context.
+        if self.nlp.is_decline_command(clean_text):
+            self.active_context["type"] = None
+            return [({"action": "speak", "text": "Alright, sir."}, "system.speak")], None
 
         # 2. State Timeout Check
         if self.active_context["type"] and time.time() > self.active_context["expires_at"]:
             logging.info(f"[STATE] Active context '{self.active_context['type']}' expired.")
             self.active_context["type"] = None
 
-        # --- EXTRACT FIRST DIGIT FOR INDEX ROUTING ---
+        # Extract digit for index routing
         extracted_digits = re.findall(r'\d+', clean_text)
         choice_num = int(extracted_digits[0]) if extracted_digits else None
 
-        # 3. Contextual Routing
+        # 3. Interactive Context Routing (Preserved Exactly)
         if self.active_context["type"] == "spotify_choice" and choice_num is not None:
             self.active_context["type"] = None
-            return [({"action": "play_choice", "choice_index": choice_num}, "pc/spotify/control")]
+            return [({"action": "play_choice", "choice_index": choice_num}, "spotify.control")], None
 
         if self.active_context["type"] == "discovery_choice" and choice_num is not None:
             self.active_context["type"] = None
-            return [({"action": "save_discovery", "index": choice_num}, "system/discovery")]
+            return [({"action": "save_discovery", "index": choice_num}, "system.discovery")], None
 
         if self.active_context["type"] == "discovery_name":
             temp_name = self.active_context.get("temp_name", "unknown")
             self.active_context["type"] = None
             if clean_text.lower() == "skip" or self.nlp.is_abort_command(clean_text):
-                return [({"action": "abort"}, "jarvis/sys/control")]
-            return [({"action": "intent_rename_light", "target_str": f"{temp_name} to {clean_text}"}, "home/room/all/set")]
+                return [({"action": "abort"}, "system.abort")], None
+            return [({"action": "intent_rename_light", "target_str": f"{temp_name} to {clean_text}"}, "light.set")], None
 
         if self.active_context["type"] == "light_remove_target":
             self.active_context["type"] = None
-            if self.nlp.is_abort_command(clean_text): return [({"action": "abort"}, "jarvis/sys/control")]
-            return [({"action": "intent_remove_light", "target_str": clean_text}, "home/room/all/set")]
+            if self.nlp.is_abort_command(clean_text): return [({"action": "abort"}, "system.abort")], None
+            return [({"action": "intent_remove_light", "target_str": clean_text}, "light.set")], None
 
         if self.active_context["type"] == "light_default_target":
             self.active_context["type"] = None
-            if self.nlp.is_abort_command(clean_text): return [({"action": "abort"}, "jarvis/sys/control")]
-            return [({"action": "intent_set_default_light", "target_str": clean_text}, "home/room/all/set")]
+            if self.nlp.is_abort_command(clean_text): return [({"action": "abort"}, "system.abort")], None
+            return [({"action": "intent_set_default_light", "target_str": clean_text}, "light.set")], None
 
         if self.active_context["type"] == "todo_add_target":
             self.active_context["type"] = None
-            if self.nlp.is_abort_command(clean_text): return [({"action": "abort"}, "jarvis/sys/control")]
-            return [({"action": "create", "task": clean_text}, "jarvis/sys/todo/create")]
+            if self.nlp.is_abort_command(clean_text): return [({"action": "abort"}, "system.abort")], None
+            return [({"action": "create", "task": clean_text}, "utilities.todo_create")], None
 
         if self.active_context["type"] == "calendar_add_target":
             self.active_context["type"] = None
-            if self.nlp.is_abort_command(clean_text): return [({"action": "abort"}, "jarvis/sys/control")]
-            return [({"action": "create", "event": clean_text}, "jarvis/sys/calendar/create")]
+            if self.nlp.is_abort_command(clean_text): return [({"action": "abort"}, "system.abort")], None
+            return [({"action": "create", "event": clean_text}, "utilities.calendar_create")], None
 
         if self.active_context["type"] == "calendar_time_target":
             event_name = self.active_context.get("event", "unknown")
             self.active_context["type"] = None
-            if self.nlp.is_abort_command(clean_text): return [({"action": "abort"}, "jarvis/sys/control")]
-            return [({"action": "create", "event": event_name, "time_str": clean_text}, "jarvis/sys/calendar/create")]
+            if self.nlp.is_abort_command(clean_text): return [({"action": "abort"}, "system.abort")], None
+            return [({"action": "create", "event": event_name, "time_str": clean_text}, "utilities.calendar_create")], None
 
         if self.active_context["type"] == "alarm_delete":
             alarms = self.active_context.get("alarms", [])
             self.active_context = {"type": None, "expires_at": 0.0}
             if clean_text.lower() in ["all", "everything", "all alarms"]:
-                return [({"action": "delete", "id": "all"}, "jarvis/sys/alarm/control")]
+                return [({"action": "delete", "id": "all"}, "utilities.alarm_control")], None
             elif choice_num is not None and 0 <= choice_num < len(alarms):
                 selected_id = alarms[choice_num].get("id")
-                return [({"action": "delete", "id": selected_id}, "jarvis/sys/alarm/control")]
+                return [({"action": "delete", "id": selected_id}, "utilities.alarm_control")], None
             elif self.nlp.is_abort_command(clean_text):
-                return [({"action": "abort"}, "jarvis/sys/control")]
+                return [({"action": "abort"}, "system.abort")], None
 
         if self.active_context["type"] == "light_rename_target":
             self.active_context["type"] = None
-            if self.nlp.is_abort_command(clean_text): return [({"action": "abort"}, "jarvis/sys/control")]
+            if self.nlp.is_abort_command(clean_text): return [({"action": "abort"}, "system.abort")], None
+
         if self.active_context["type"] == "alarm_ringing":
             alarm_id = self.active_context.get("alarm_id")
             expected = str(self.active_context.get("expected_answer", "turn off alarm")).lower().strip()
-            
             raw_intents = self.nlp.parse(clean_text)
-            is_deactivate_intent = any(topic == "jarvis/sys/alarm/deactivate" for _, topic in raw_intents)
+            is_deactivate_intent = any(topic in ["jarvis/sys/alarm/deactivate", "utilities.alarm_deactivate"] for _, topic in raw_intents)
             
             if expected in clean_text or is_deactivate_intent or any(w in clean_text for w in ["stop", "off", "awake", "dismiss", "disable", "cancel"]):
                 logging.info(f"[ALARM] Deactivation challenge passed for alarm {alarm_id}.")
                 self.active_context = {"type": None, "expires_at": 0.0}
                 return [
-                    ({"id": alarm_id, "action": "deactivate"}, "jarvis/sys/alarm/deactivate"),
-                    ({"text": "Alarm deactivated, sir.", "skip_ducking": True}, "jarvis/sys/speak")
-                ]
+                    ({"id": alarm_id, "action": "deactivate"}, "utilities.alarm_deactivate"),
+                    ({"text": "Alarm deactivated, sir.", "skip_ducking": True}, "system.speak")
+                ], None
             elif not clean_text or clean_text in ["you", "a", "it", "hey jarvis"]:
                 logging.info(f"[ALARM] Standalone wake word received during alarm {alarm_id}. Opening microphone...")
-                return [({"text": "Yes, sir? Say disable alarm.", "request_reply": True, "skip_ducking": True}, "jarvis/sys/speak")]
+                return [({"text": "Yes, sir? Say disable alarm.", "request_reply": True, "skip_ducking": True}, "system.speak")], None
             else:
                 logging.warning(f"[ALARM] Deactivation challenge failed for text '{clean_text}'.")
-                return [({"text": "Say disable alarm to turn it off.", "request_reply": True, "skip_ducking": True}, "jarvis/sys/speak")]
+                return [({"text": "Say disable alarm to turn it off.", "request_reply": True, "skip_ducking": True}, "system.speak")], None
 
-        # 4. Standard NLP Parsing & Shadowing Execution
-        raw_intents = self.nlp.parse(clean_text, sanitized_payload)
-        return self._optimize_intent_queue(raw_intents)
-    
+        # 4. Standard Fast-Path (0.01s Pattern Match)
+        if not self._is_complex_request(clean_text, payload_data):
+            raw_intents = self.nlp.parse(clean_text, sanitized_payload)
+            if raw_intents:
+                self._update_dialogue_history("user", clean_text)
+                return self._optimize_intent_queue(raw_intents), None
+
+        # 5. Smart-Path (SLM Cognitive Decoder)
+        if self.slm.enabled:
+            logging.info(f"[DAEMON] Fast-Path missed/compound detected. Routing to SLM Smart-Path: '{clean_text}'")
+            snapshot = self._get_system_snapshot()
+            slm_result = await self.slm.parse_intent_async(clean_text, snapshot, list(self.dialogue_history))
+
+            if slm_result and "actions" in slm_result and slm_result["actions"]:
+                logging.info(f"[SLM REASONING] {slm_result.get('thought', 'N/A')}")
+                actions_list = []
+                for act in slm_result["actions"]:
+                    action_id = act.pop("action_id", "")
+                    if action_id:
+                        actions_list.append((act, action_id))
+
+                reply = slm_result.get("reply")
+                self._update_dialogue_history("user", clean_text)
+                if reply:
+                    self._update_dialogue_history("assistant", reply)
+
+                return self._optimize_intent_queue(actions_list), reply
+
+        # 6. Final Fallback if SLM is inactive or returned empty
+        fallback_intents = self.nlp.parse(clean_text, sanitized_payload)
+        self._update_dialogue_history("user", clean_text)
+        return self._optimize_intent_queue(fallback_intents), None
+
+    # -------------------------------------------------------------------------
+    # AUDIO EVALUATOR & TIMEOUTS
+    # -------------------------------------------------------------------------
     async def evaluate_ducking(self, client: aiomqtt.Client):
         """Single source of truth for volume ducking logic."""
         if not self.is_spotify_playing and not self.is_ducked:
             return
             
         should_duck = False
-        
         if self.tts_state == "active":
             should_duck = True
-            
         elif self.mic_state in ["recording", "listening"] and not self.attention_mode:
             should_duck = True
             
@@ -235,7 +334,6 @@ class CentralDaemon:
                 self.active_context = {"type": None, "expires_at": 0.0}
                 await client.publish("jarvis/sys/ui_options", json.dumps({"options": []}))
                 await client.publish("jarvis/sys/mic_control", json.dumps({"action": "cancel"}))
-                
                 await self.evaluate_ducking(client)
                     
     async def _watch_configs(self):
@@ -261,9 +359,11 @@ class CentralDaemon:
             except Exception as e:
                 logging.error(f"[CONFIG] Error reloading configs: {e}")
 
+    # -------------------------------------------------------------------------
+    # MAIN MESSAGE LOOP
+    # -------------------------------------------------------------------------
     async def run(self) -> None:
         logging.info("Central Daemon Online. Connecting to MQTT broker...")
-        
         attempt = 0
         while True:
             try:
@@ -272,10 +372,10 @@ class CentralDaemon:
                     logging.info("MQTT broker connected. Subscribing to topics...")
                     monitor_task = asyncio.create_task(self.monitor_timeouts(client))
                     config_task = asyncio.create_task(self._watch_configs())
+
                     await client.subscribe("jarvis/sensor/voice")
                     await client.subscribe("jarvis/feedback")
                     await client.subscribe("jarvis/sys/speak")
-                    
                     await client.subscribe("jarvis/sys/tts_state")
                     await client.subscribe("jarvis/sys/mic_state")
                     await client.subscribe("jarvis/sys/mic_control")
@@ -301,7 +401,7 @@ class CentralDaemon:
                                     "expected_answer": payload.get("expected_answer", "turn off alarm"),
                                     "expires_at": time.time() + 300.0
                                 }
-                                logging.info(f"[DAEMON] Alarm {payload.get('id')} ringing! Locking interface into alarm_ringing context.")
+                                logging.info(f"[DAEMON] Alarm {payload.get('id')} ringing! Locking interface.")
                             except json.JSONDecodeError:
                                 pass
 
@@ -309,13 +409,13 @@ class CentralDaemon:
                             if self.active_context["type"] == "alarm_ringing":
                                 logging.info("[DAEMON] Alarm deactivated. Releasing interface context.")
                                 self.active_context = {"type": None, "expires_at": 0.0}
-                                # Request Daily Briefing automatically after disabling morning alarm
                                 await client.publish("jarvis/sys/calendar/request", json.dumps({"action": "daily_briefing"}))
 
                         elif topic == "jarvis/sys/abort":
                             logging.info("[SYSTEM] Universal Abort received. Clearing contexts.")
                             self.active_context = {"type": None, "expires_at": 0.0}
                             self.pending_mic_request = False
+                            self.dialogue_history.clear()
 
                         elif topic == "jarvis/sys/speak":
                             try:
@@ -360,6 +460,7 @@ class CentralDaemon:
                             try:
                                 payload = json.loads(payload_data)
                                 self.is_spotify_playing = (payload.get("status") == "Playing")
+                                self.current_track = payload.get("title", "Unknown")
                             except Exception:
                                 pass
 
@@ -369,12 +470,9 @@ class CentralDaemon:
                                 action_cmd = payload.get("action")
                                 
                                 if action_cmd in ["toggle_followup", "followup_on", "followup_off"]:
-                                    if action_cmd == "followup_on":
-                                        self.followups_enabled = True
-                                    elif action_cmd == "followup_off":
-                                        self.followups_enabled = False
-                                    else:
-                                        self.followups_enabled = not self.followups_enabled
+                                    if action_cmd == "followup_on": self.followups_enabled = True
+                                    elif action_cmd == "followup_off": self.followups_enabled = False
+                                    else: self.followups_enabled = not self.followups_enabled
                                         
                                     try:
                                         def update_cb(core):
@@ -389,12 +487,9 @@ class CentralDaemon:
                                         await client.publish("jarvis/sys/speak", json.dumps({"text": f"Follow ups are now {state_str}."}))
                                         
                                 elif action_cmd in ["toggle_silent_mode", "silent_mode_on", "silent_mode_off"]:
-                                    if action_cmd == "silent_mode_on":
-                                        self.silent_mode = True
-                                    elif action_cmd == "silent_mode_off":
-                                        self.silent_mode = False
-                                    else:
-                                        self.silent_mode = not self.silent_mode
+                                    if action_cmd == "silent_mode_on": self.silent_mode = True
+                                    elif action_cmd == "silent_mode_off": self.silent_mode = False
+                                    else: self.silent_mode = not self.silent_mode
                                         
                                     try:
                                         def update_cb(core):
@@ -421,29 +516,26 @@ class CentralDaemon:
                                 text_payload = payload_data
                                 audio_path = ""
                                 
-                            # --- 1. DAEMON-LEVEL WAKE WORD EXTRACTION ---
                             raw_payload = self.sanitize_transcription(text_payload)
                             
-                            import re
                             ww_pattern = r'^(?:hey\s+|hi\s+|ok\s+|a\s+|uh\s+|ha\s+|eh\s+)?jarvis\b[.,!?]*\s*'
                             is_wakeword_present = bool(re.search(ww_pattern, raw_payload, flags=re.IGNORECASE))
                             if is_wakeword_present:
                                 raw_payload = re.sub(ww_pattern, '', raw_payload, flags=re.IGNORECASE).strip()
                                     
-                            # --- 2. NORMALIZE THE REMAINDER ---
                             clean_text = self.nlp.normalize_text(raw_payload)
                             logging.info(f"[VOICE INPUT] Raw: '{text_payload}' | Extracted: '{raw_payload}' | Normalized: '{clean_text}'")
                             
-                            # If only the wake word was spoken, respond and await reply
+                            # Standalone Wake Word Check
                             if is_wakeword_present and not raw_payload:
                                 import random
                                 speak_responses = self.responses_data.get("mqtt", {}).get("jarvis/sys/speak", {})
                                 choices = speak_responses.get("standalone_wakeword", ["Yes sir?"])
                                 response_text = random.choice(choices)
-                                intents = [({"text": response_text, "request_reply": True, "skip_ducking": True, "ignore_silent": True}, "jarvis/sys/speak")]
+                                intents = [({"text": response_text, "request_reply": True, "skip_ducking": True, "ignore_silent": True}, "system.speak")]
+                                spoken_reply = None
                             else:
-                                # Pass only the extracted command to the intent router
-                                intents = self.route_voice_command(raw_payload)
+                                intents, spoken_reply = await self.route_voice_command(raw_payload)
                             
                             if intents:
                                 final_mic_state = "open_window" if (self.followups_enabled and not self.silent_mode) else None
@@ -455,33 +547,28 @@ class CentralDaemon:
                                     if action_id == "system.abort" or (action_id == "jarvis/sys/control" and command.get("action") == "abort"):
                                         logging.info("[SYSTEM] Abort sequence initiated via voice command.")
                                         await client.publish("jarvis/sys/abort", json.dumps({"action": "abort"}))
-                                        
                                         await self.evaluate_ducking(client)
-                                        
                                         final_mic_state = None  
                                         break
 
-                                    
-                                    # --- Intercept and route conversational intents ---
                                     elif action_id == "system.speak" and command.get("action") == "speak":
                                         logging.info("[DAEMON] Routing conversational intent to TTS.")
                                         await client.publish("jarvis/sys/speak", json.dumps({
                                             "text": command.get("text"),
                                             "request_reply": False
                                         }))
-                                        
                                         final_mic_state = None 
                                         continue
 
                                     elif action_id:
-                                        topic, payload = self.action_router.prepare(action_id, **command)
+                                        topic_out, payload_out = self.action_router.prepare(action_id, **command)
                                         
-                                        if not topic:
+                                        if not topic_out:
                                             logging.error(f"[DAEMON] Failed to resolve action_id: {action_id}")
                                             continue
                                             
-                                        action = payload.get("action", "")
-                                        is_silent = payload.get("silent", False)
+                                        action = payload_out.get("action", "")
+                                        is_silent = payload_out.get("silent", False)
                                         is_spotify_status = (action_id == "spotify.control" and action.startswith("status_"))
                                         
                                         if action_id == "state.change" and action:
@@ -495,20 +582,43 @@ class CentralDaemon:
                                             except Exception as e:
                                                 logging.error(f"Failed to persist ecosystem state to core.json: {e}")
 
-                                        logging.info(f"Routing intent -> {action_id} on {topic}: {payload}")
-                                        await client.publish(topic, json.dumps(payload))
+                                        logging.info(f"Routing intent -> {action_id} on {topic_out}: {payload_out}")
+                                        await client.publish(topic_out, json.dumps(payload_out))
                                         
+                                        # Voice synthesis trigger
                                         if action_id != "system.speak":
-                                            if payload.get("text") and not is_silent and not self.silent_mode:
+                                            # 1. Determine if this command qualifies for a follow-up
+                                            is_media_play = (action_id == "spotify.control" and action == "play")
+                                            should_followup = (self.followups_enabled and not self.silent_mode and not is_media_play and action != "discover")
+
+                                            # 2. Handle SLM Custom Replies
+                                            if spoken_reply and not self.silent_mode:
+                                                final_reply = spoken_reply
+                                                if should_followup:
+                                                    final_reply += " Anything else sir?"
+                                                    
                                                 await client.publish("jarvis/sys/speak", json.dumps({
-                                                    "text": payload.get("text"),
-                                                    "request_reply": False
+                                                    "text": final_reply,
+                                                    "request_reply": should_followup
                                                 }))
+                                                
+                                            # 3. Handle Legacy ActionRouter Text
+                                            elif payload_out.get("text") and not is_silent and not self.silent_mode:
+                                                final_text = payload_out.get("text")
+                                                if should_followup:
+                                                    final_text += " Anything else sir?"
+                                                    
+                                                await client.publish("jarvis/sys/speak", json.dumps({
+                                                    "text": final_text,
+                                                    "request_reply": should_followup
+                                                }))
+                                                
+                                            # 4. Handle Dynamic Template Requests
                                             elif not is_spotify_status and not is_silent and not self.silent_mode:
                                                 await client.publish("jarvis/sys/tts_request", json.dumps({
-                                                    "target_topic": topic,
-                                                    "command": payload,
-                                                    "append_followup": self.followups_enabled and not self.silent_mode and action != "discover"
+                                                    "target_topic": topic_out,
+                                                    "command": payload_out,
+                                                    "append_followup": should_followup
                                                 }))
                                         
                                         if self.active_context["type"] is not None and not self.silent_mode:
@@ -517,7 +627,7 @@ class CentralDaemon:
                                 if final_mic_state and final_mic_state != "request_reply":
                                     await client.publish("jarvis/sys/mic_control", json.dumps({"action": final_mic_state}))
                             else:
-                                # --- 3. STANDALONE WAKE WORD FALLBACK ---
+                                # Standalone wake word fallback
                                 hallucinations = ["thank you", "thanks", "thanks for watching", "you", "a", "it"]
                                 is_clean_empty = not clean_text or clean_text in hallucinations
                                 
@@ -525,13 +635,12 @@ class CentralDaemon:
                                     logging.info("[DAEMON] Standalone wake word detected. Prompting user...")
                                     greeting = "Hello Sir, what can I do?" if not getattr(self, 'already_spoke', False) else "Yes sir?"
                                     self.already_spoke = True
-                                    
                                     await client.publish("jarvis/sys/speak", json.dumps({
                                         "text": greeting,
                                         "request_reply": True
                                     }))
                                 else:
-                                    logging.warning(f"[UNMATCHED STT] Could not resolve any intent for: '{payload_data}' | Clean text: '{clean_text}'")
+                                    logging.warning(f"[UNMATCHED STT] Could not resolve intent for: '{text_payload}' | Clean text: '{clean_text}'")
                                     await self.evaluate_ducking(client)
                                         
                             await client.publish("jarvis/sys/audio_process", json.dumps({"state": "idle"}))
@@ -653,10 +762,8 @@ class CentralDaemon:
                                             pass 
                                         else:
                                             text_to_speak = msg if isinstance(msg, str) else str(msg)
-                                            
                                             await client.publish("jarvis/sys/mic_control", json.dumps({"action": "cancel"}))
                                             await client.publish("jarvis/sys/tts_stop", "stop")
-                                            
                                             await client.publish("jarvis/sys/speak", json.dumps({
                                                 "text": text_to_speak,
                                                 "request_reply": self.followups_enabled

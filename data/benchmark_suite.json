@@ -1,0 +1,191 @@
+[
+  {
+    "category": "Light On (Simple)",
+    "prompt": "turn on the kitchen light",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: kitchen",
+    "expected_actions": [{"action_id": "light.set", "action": "on", "light_target": "kitchen"}]
+  },
+  {
+    "category": "Light Off (Simple)",
+    "prompt": "kill the bedroom light",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: bedroom",
+    "expected_actions": [{"action_id": "light.set", "action": "off", "light_target": "bedroom"}]
+  },
+  {
+    "category": "Light Dim",
+    "prompt": "dim the desk to 30 percent",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: desk",
+    "expected_actions": [{"action_id": "light.set", "action": "on", "lum": 30, "light_target": "desk"}]
+  },
+  {
+    "category": "Light Color",
+    "prompt": "set the living room to red",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: living room",
+    "expected_actions": [{"action_id": "light.set", "action": "on", "light_target": "living room", "color": "red"}]
+  },
+  {
+    "category": "Spotify Play",
+    "prompt": "play some jazz",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: all",
+    "expected_actions": [{"action_id": "spotify.control", "action": "play", "playlist_name": "jazz"}]
+  },
+  {
+    "category": "Spotify Pause",
+    "prompt": "pause the music",
+    "state": "Spotify: Playing ('Resonance') | ActiveContext: None | LastTargetLight: desk",
+    "expected_actions": [{"action_id": "spotify.control", "action": "pause"}]
+  },
+  {
+    "category": "Spotify Next",
+    "prompt": "skip this song",
+    "state": "Spotify: Playing ('Blinding Lights') | ActiveContext: None | LastTargetLight: all",
+    "expected_actions": [{"action_id": "spotify.control", "action": "next"}]
+  },
+  {
+    "category": "Spotify Volume",
+    "prompt": "set volume to 50 percent",
+    "state": "Spotify: Playing ('Starboy') | ActiveContext: None | LastTargetLight: all",
+    "expected_actions": [{"action_id": "spotify.control", "action": "volume", "volume": 50}]
+  },
+  {
+    "category": "Alarm Create",
+    "prompt": "set an alarm for 7 am",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: bedroom",
+    "expected_actions": [{"action_id": "alarm.create", "time_str": "7 am"}]
+  },
+  {
+    "category": "Alarm List",
+    "prompt": "show my alarms",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: all",
+    "expected_actions": [{"action_id": "alarm.control", "action": "list"}]
+  },
+  {
+    "category": "Todo Create",
+    "prompt": "add buy groceries to my todo list",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: all",
+    "expected_actions": [{"action_id": "todo.create", "task": "buy groceries"}]
+  },
+  {
+    "category": "Reminder Set",
+    "prompt": "remind me to call mom in 30 minutes",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: desk",
+    "expected_actions": [{"action_id": "reminder.create", "task": "call mom", "time": "30 minutes"}]
+  },
+  {
+    "category": "Calendar Read",
+    "prompt": "what is on my calendar",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: all",
+    "expected_actions": [{"action_id": "calendar.read"}]
+  },
+  {
+    "category": "UI Fullscreen",
+    "prompt": "go to fullscreen mode",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: all",
+    "expected_actions": [{"action_id": "ui.fullscreen"}]
+  },
+  {
+    "category": "Attention Mode On",
+    "prompt": "enter attention mode",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: all",
+    "expected_actions": [{"action_id": "mic.state", "action": "attention_on"}]
+  },
+  {
+    "category": "System Restart",
+    "prompt": "restart all modules",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: all",
+    "expected_actions": [{"action_id": "system.restart_all"}]
+  },
+  {
+    "category": "Check Updates",
+    "prompt": "check for updates",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: all",
+    "expected_actions": [{"action_id": "updates.check"}]
+  },
+  {
+    "category": "Compound: Light+Music",
+    "prompt": "dim the lights to 30 percent and play some synthwave",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: all",
+    "expected_actions": [
+      {"action_id": "light.set", "action": "on", "lum": 30},
+      {"action_id": "spotify.control", "action": "play"}
+    ]
+  },
+  {
+    "category": "Compound: Light+Alarm",
+    "prompt": "turn off the bedroom light and set an alarm for 7 am",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: bedroom",
+    "expected_actions": [
+      {"action_id": "light.set", "action": "off"},
+      {"action_id": "alarm.create"}
+    ]
+  },
+  {
+    "category": "Compound: Todo+Music",
+    "prompt": "add finish the report to my todo list and then play some lofi",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: all",
+    "expected_actions": [
+      {"action_id": "todo.create"},
+      {"action_id": "spotify.control", "action": "play"}
+    ]
+  },
+  {
+    "category": "Self-Correction",
+    "prompt": "turn on the desk light... wait, scratch that, turn on the living room lights instead",
+    "state": "Spotify: Playing ('Resonance') | ActiveContext: None | LastTargetLight: desk",
+    "expected_actions": [{"action_id": "light.set", "action": "on", "light_target": "living room"}]
+  },
+  {
+    "category": "Correction: Domain Switch",
+    "prompt": "turn on the light, actually, play some music instead",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: all",
+    "expected_actions": [{"action_id": "spotify.control", "action": "play"}]
+  },
+  {
+    "category": "Context: Pronoun (it off)",
+    "prompt": "turn it off",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: desk",
+    "expected_actions": [{"action_id": "light.set", "action": "off", "light_target": "desk"}]
+  },
+  {
+    "category": "Context: Pronoun (brighter)",
+    "prompt": "make it brighter",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: kitchen",
+    "expected_actions": [{"action_id": "light.set", "light_target": "kitchen"}]
+  },
+  {
+    "category": "Context: Spotify Pause",
+    "prompt": "pause",
+    "state": "Spotify: Playing ('Blinding Lights') | ActiveContext: None | LastTargetLight: all",
+    "expected_actions": [{"action_id": "spotify.control", "action": "pause"}]
+  },
+  {
+    "category": "Noise: Gibberish",
+    "prompt": "top",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: all",
+    "expected_actions": []
+  },
+  {
+    "category": "Noise: Hesitation",
+    "prompt": "um yeah so",
+    "state": "Spotify: Playing ('Jazz') | ActiveContext: None | LastTargetLight: desk",
+    "expected_actions": []
+  },
+  {
+    "category": "OOS: Weather",
+    "prompt": "what's the weather like",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: all",
+    "expected_actions": []
+  },
+  {
+    "category": "OOS: Math",
+    "prompt": "what's 2 plus 2",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: all",
+    "expected_actions": []
+  },
+  {
+    "category": "OOS: Joke",
+    "prompt": "tell me a joke",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: desk",
+    "expected_actions": []
+  }
+]
