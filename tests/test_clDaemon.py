@@ -94,6 +94,19 @@ class TestDaemonCoreLogic:
         assert len(intents) == 1
         assert intents[0][1] == "system.restart_all"
 
+    @pytest.mark.asyncio
+    async def test_noise_after_a_real_command_does_not_repeat_it(self, daemon):
+        """A garbled/noise follow-up transcription must not get handed to
+        Smart-Path with dialogue history in its prompt -- that combination
+        tends to just repeat the prior action instead of recognizing there's
+        nothing to do (see: a real 'lower the brightness' followed by a
+        misheard 'nothing things' re-triggering the same brightness_down)."""
+        first_intents, _ = await daemon.route_voice_command("lower the brightness")
+        assert len(first_intents) == 1
+
+        noise_intents, _ = await daemon.route_voice_command("nothing things")
+        assert noise_intents == []
+
 class TestDaemonStateTraps:
     """Tests context-aware locks that override standard NLP routing using the new Unified State Machine."""
 

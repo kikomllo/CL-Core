@@ -1,9 +1,20 @@
+import json
 import pytest
 import os
 import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 from nlp.clIntentEngine import IntentEngine
+
+@pytest.fixture(scope="module")
+def real_engine():
+    """IntentEngine built from the real config/intents.json -- needed for
+    tests that check behavior across the actual priority-word vocabulary,
+    not the minimal mock intent used by the other fixture below."""
+    intents_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'intents.json')
+    with open(intents_path, 'r', encoding='utf-8') as f:
+        intents = json.load(f)
+    return IntentEngine(intents, {}, ["abort"], {}, ["no thanks"])
 
 @pytest.fixture(scope="module")
 def engine():
@@ -76,3 +87,28 @@ class TestNLPEngineLogic:
         }
         result = engine.extract_variables("set brightness to 40 percent", intent_match)
         assert result["lum"] == 40
+
+
+class TestSmartPathVocabularyGate:
+    """has_recognizable_content() gates whether a garbled/noise transcription
+    ever reaches the Smart-Path SLM -- without it, dialogue history in the
+    prompt makes the model tend to just repeat the last real action instead
+    of recognizing there's nothing to do."""
+
+    @pytest.mark.parametrize("text", [
+        "nothing things",
+        "ajervus in a bold living room life",
+        "",
+        "um yeah so",
+    ])
+    def test_noise_has_no_recognizable_content(self, real_engine, text):
+        assert real_engine.has_recognizable_content(text) is False
+
+    @pytest.mark.parametrize("text", [
+        "could you turn on the living room why please",
+        "yes please lowering the brightness of the living room light",
+        "turn on the lights and play some jazz",
+        "lower the brightness",
+    ])
+    def test_real_commands_have_recognizable_content(self, real_engine, text):
+        assert real_engine.has_recognizable_content(text) is True
