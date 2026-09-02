@@ -10,6 +10,7 @@ import colorsys
 from typing import Optional, Dict, Any, List, Tuple
 from tapo import ApiClient
 from pywizlight import wizlight, PilotBuilder, discovery as wiz_discovery
+from pywizlight.utils import hex_to_percent, percent_to_hex
 import aiomqtt
 
 # NEW: Import your centralized env loader
@@ -221,14 +222,15 @@ class LightManager:
         return False
 
     # --- CONCURRENT LIGHT EXECUTION ENGINE ---
-    async def control_bulb(self, toggle: bool = False, on: bool = False, off: bool = False, 
-                           color: str = None, lum: int = None, temp: int = None, retry_attempt: bool = False, target_name: str = "all") -> None:
-        
+    def _resolve_targets(self, target_name: str = "all") -> List[Tuple[str, str, str, str]]:
+        """Resolves a spoken target name to concrete (name, ip, mac, type) light
+        entries, handling 'all'/generic-light synonyms and the sticky last-target
+        memory used when a target isn't named at all."""
         all_synonyms = {"all", "all lights", "all the lights", "everything", "every light"}
         generic_targets = {"light", "the light", "lights", "the lights", ""}
-        
+
         target_name_clean = str(target_name).lower().strip() if target_name else ""
-        
+
         if target_name_clean in generic_targets:
             effective_target = getattr(self, 'last_target', 'all')
         elif target_name_clean in all_synonyms:
@@ -254,12 +256,17 @@ class LightManager:
                     self.last_target = name
                     self._save_last_target(name)
                     break
-            
+
             if not targets and self.bulb_ip:
                  targets.append(("default", self.bulb_ip, self.bulb_mac, self.light_type))
-                 
+
         if not targets:
             raise ValueError("No matching lights found to execute command.")
+        return targets
+
+    async def control_bulb(self, toggle: bool = False, on: bool = False, off: bool = False,
+                           color: str = None, lum: int = None, temp: int = None, retry_attempt: bool = False, target_name: str = "all") -> None:
+        targets = self._resolve_targets(target_name)
 
         async def execute_single(name, ip, mac, l_type):
             try:
@@ -271,6 +278,38 @@ class LightManager:
                 logging.error(f"Hardware communication error for {name}: {e}")
 
         await asyncio.gather(*(execute_single(*t) for t in targets))
+
+    # Default step (percentage points) for a relative "lower/raise the brightness"
+    # request that doesn't name a specific percentage.
+    BRIGHTNESS_STEP = 20
+
+    async def adjust_brightness(self, direction: str, target_name: str = "all") -> None:
+        """Reads each target light's current brightness and nudges it up or
+        down by BRIGHTNESS_STEP, clamped to 1-100."""
+        targets = self._resolve_targets(target_name)
+        delta = self.BRIGHTNESS_STEP if direction == "up" else -self.BRIGHTNESS_STEP
+
+        async def adjust_single(name, ip, mac, l_type):
+            try:
+                if l_type == "wiz":
+                    bulb = wizlight(ip)
+                    await asyncio.wait_for(bulb.updateState(), timeout=3.0)
+                    current_hex = bulb.state[0].get_brightness() if bulb.state and bulb.state[0] else None
+                    current_percent = hex_to_percent(current_hex) if current_hex is not None else 50
+                    new_percent = max(1, min(100, current_percent + delta))
+                    await self._execute_wiz_target(ip, False, True, False, None, new_percent, None)
+                else:
+                    model = os.getenv("TAPO_MODEL", "l530").lower()
+                    get_device = getattr(self.tapo_client, model, self.tapo_client.l530)
+                    device = await get_device(ip)
+                    info = await asyncio.wait_for(device.get_device_info(), timeout=3.0)
+                    current_percent = getattr(info, 'brightness', 50) or 50
+                    new_percent = max(1, min(100, current_percent + delta))
+                    await self._execute_tapo_target(ip, False, True, False, None, new_percent, None)
+            except Exception as e:
+                logging.error(f"Hardware communication error for {name}: {e}")
+
+        await asyncio.gather(*(adjust_single(*t) for t in targets))
         
     async def _execute_wiz_target(self, ip, toggle, on, off, color, lum, temp):
         bulb = wizlight(ip)
@@ -284,7 +323,8 @@ class LightManager:
             return
 
         if on or lum is not None or temp is not None or color:
-            brightness = lum if lum is not None else 255
+            # PilotBuilder.brightness expects a 0-255 value, not the 0-100 percent lum already is.
+            brightness = percent_to_hex(lum) if lum is not None else 255
             if color:
                 c_data = self.color_matrix.get(color.lower().strip())
                 if c_data:
@@ -692,11 +732,17 @@ async def mqtt_service_listener(manager: LightManager) -> None:
                             is_silent = payload_data.get("silent", False)
                             light_target = payload_data.get("light_target", "")
                             try:
-                                await manager.control_bulb(
-                                    on=(action_cmd == "on"), off=(action_cmd == "off"), toggle=(action_cmd == "toggle"),
-                                    color=payload_data.get("color"), lum=payload_data.get("lum"), temp=payload_data.get("temp"),
-                                    target_name=light_target
-                                )
+                                if action_cmd in ("brightness_up", "brightness_down"):
+                                    await manager.adjust_brightness(
+                                        direction="up" if action_cmd == "brightness_up" else "down",
+                                        target_name=light_target
+                                    )
+                                else:
+                                    await manager.control_bulb(
+                                        on=(action_cmd == "on"), off=(action_cmd == "off"), toggle=(action_cmd == "toggle"),
+                                        color=payload_data.get("color"), lum=payload_data.get("lum"), temp=payload_data.get("temp"),
+                                        target_name=light_target
+                                    )
                                 await mqtt_client.publish("jarvis/feedback", json.dumps({
                                     "device": "smart_lights", "status": "success",
                                     "message": f"Successfully shifted hardware targets to '{action_cmd}' state.",

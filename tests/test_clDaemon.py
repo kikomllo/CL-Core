@@ -43,6 +43,12 @@ class TestDaemonCoreLogic:
         ("make the lights 100 percent.", "on", "lum", 100),
         ("plz set brightness to 75 percent.", "on", "lum", 75),
 
+        # Relative brightness (must not collide with the absolute {lum} templates above)
+        ("lower the brightness", "brightness_down", None, None),
+        ("increase the brightness", "brightness_up", None, None),
+        ("make it dimmer", "brightness_down", None, None),
+        ("make it brighter", "brightness_up", None, None),
+
         # --- 3. SYSTEM MODULES & VARIABLES ---
         ("enter attention mode", "attention_on", None, None),
         ("exit work mode", "attention_off", None, None),

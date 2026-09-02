@@ -5,6 +5,7 @@ from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 from clControl import LightManager, poll_light_status
+from pywizlight.utils import percent_to_hex
 
 @pytest.fixture
 def manager():
@@ -141,6 +142,69 @@ class TestControlEdgeCases:
         
         # Provide non-hex color string
         await manager.control_bulb(color="not_a_hex_color", target_name="bedroom")
-        
+
         # Execution shouldn't crash.
         assert True
+
+class TestBrightness:
+    @pytest.mark.asyncio
+    async def test_wiz_absolute_lum_converts_percent_correctly(self, manager, mocker):
+        """lum is a 0-100 percent, but PilotBuilder.brightness expects a 0-255
+        value it converts back to percent internally -- passing lum straight
+        through used to land at roughly 40% of the requested level."""
+        mock_wiz = mocker.patch('clControl.wizlight')
+        mock_wiz.return_value.turn_on = mocker.AsyncMock()
+
+        await manager._execute_wiz_target("192.168.1.10", False, True, False, None, 60, None)
+
+        mock_wiz.return_value.turn_on.assert_called_once()
+        pilot_builder = mock_wiz.return_value.turn_on.call_args[0][0]
+        assert pilot_builder.pilot_params["dimming"] == 60
+
+    @pytest.mark.asyncio
+    async def test_adjust_brightness_down_steps_from_current_level(self, manager, mocker):
+        manager.lights = {"bedroom": {"ip": "192.168.1.10", "mac": "AA", "type": "wiz"}}
+        manager.last_target = "bedroom"
+
+        mock_wiz = mocker.patch('clControl.wizlight')
+        mock_state = MagicMock()
+        mock_state.get_brightness.return_value = percent_to_hex(50)  # currently at 50%
+        mock_wiz.return_value.updateState = mocker.AsyncMock()
+        mock_wiz.return_value.state = [mock_state]
+
+        mock_execute = mocker.patch.object(manager, '_execute_wiz_target', new=mocker.AsyncMock())
+        await manager.adjust_brightness("down", target_name="bedroom")
+
+        mock_execute.assert_called_once_with("192.168.1.10", False, True, False, None, 30, None)
+
+    @pytest.mark.asyncio
+    async def test_adjust_brightness_up_clamps_at_100(self, manager, mocker):
+        manager.lights = {"bedroom": {"ip": "192.168.1.10", "mac": "AA", "type": "wiz"}}
+        manager.last_target = "bedroom"
+
+        mock_wiz = mocker.patch('clControl.wizlight')
+        mock_state = MagicMock()
+        mock_state.get_brightness.return_value = percent_to_hex(90)
+        mock_wiz.return_value.updateState = mocker.AsyncMock()
+        mock_wiz.return_value.state = [mock_state]
+
+        mock_execute = mocker.patch.object(manager, '_execute_wiz_target', new=mocker.AsyncMock())
+        await manager.adjust_brightness("up", target_name="bedroom")
+
+        mock_execute.assert_called_once_with("192.168.1.10", False, True, False, None, 100, None)
+
+    @pytest.mark.asyncio
+    async def test_adjust_brightness_down_clamps_at_1(self, manager, mocker):
+        manager.lights = {"bedroom": {"ip": "192.168.1.10", "mac": "AA", "type": "wiz"}}
+        manager.last_target = "bedroom"
+
+        mock_wiz = mocker.patch('clControl.wizlight')
+        mock_state = MagicMock()
+        mock_state.get_brightness.return_value = percent_to_hex(10)
+        mock_wiz.return_value.updateState = mocker.AsyncMock()
+        mock_wiz.return_value.state = [mock_state]
+
+        mock_execute = mocker.patch.object(manager, '_execute_wiz_target', new=mocker.AsyncMock())
+        await manager.adjust_brightness("down", target_name="bedroom")
+
+        mock_execute.assert_called_once_with("192.168.1.10", False, True, False, None, 1, None)

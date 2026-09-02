@@ -60,6 +60,8 @@ action-value ::=
     "\"attention_off\"" |
     "\"attention_on\"" |
     "\"background\"" |
+    "\"brightness_down\"" |
+    "\"brightness_up\"" |
     "\"debug\"" |
     "\"delete\"" |
     "\"delete_all\"" |

@@ -114,6 +114,41 @@
       "action": "on"
     }
   },
+  "light_brightness_up": {
+    "priority_words": [
+      "brighter",
+      "brighten",
+      "increase"
+    ],
+    "templates": [
+      "increase the brightness",
+      "raise the brightness",
+      "turn up the brightness",
+      "make it brighter"
+    ],
+    "action_id": "light.set",
+    "action_args": {
+      "action": "brightness_up"
+    }
+  },
+  "light_brightness_down": {
+    "priority_words": [
+      "dimmer",
+      "dim",
+      "decrease",
+      "lower"
+    ],
+    "templates": [
+      "decrease the brightness",
+      "lower the brightness",
+      "turn down the brightness",
+      "make it dimmer"
+    ],
+    "action_id": "light.set",
+    "action_args": {
+      "action": "brightness_down"
+    }
+  },
   "spotify_play_generic": {
     "priority_words": [
       "resume",
