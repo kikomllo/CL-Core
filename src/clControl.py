@@ -640,7 +640,7 @@ async def mqtt_service_listener(manager: LightManager) -> None:
                                     manager.lights[new_name] = manager.lights.pop(match)
                                     manager._save_devices()
                                     msg = f"Renamed {match.replace('_', ' ')} to {new_name.replace('_', ' ')}."
-                                    await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "message": msg, "silent": True}))
+                                    await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "message": msg}))
                                 else:
                                     msg = f"Could not find a light matching {old_name}."
                                     await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "error", "message": msg}))
@@ -658,14 +658,14 @@ async def mqtt_service_listener(manager: LightManager) -> None:
                                 manager.lights.clear()
                                 manager._save_devices()
                                 msg = "Removed all saved lights."
-                                await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "message": msg, "silent": True}))
+                                await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "message": msg}))
                             else:
                                 match = _match_light(target_str, manager.lights)
                                 if match:
                                     del manager.lights[match]
                                     manager._save_devices()
                                     msg = f"Removed {match.replace('_', ' ')}."
-                                    await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "message": msg, "silent": True}))
+                                    await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "message": msg}))
                                 else:
                                     msg = f"Could not find a light matching {target_str}."
                                     await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "error", "message": msg}))
@@ -681,7 +681,7 @@ async def mqtt_service_listener(manager: LightManager) -> None:
                                 dev = manager.lights[match]
                                 manager.update_env_credentials(dev['ip'], dev['mac'], dev['type'])
                                 msg = f"Set {match.replace('_', ' ')} as the default legacy light."
-                                await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "message": msg, "silent": True}))
+                                await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "message": msg}))
                             else:
                                 msg = f"Could not find a light matching {target_str}."
                                 await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "error", "message": msg}))

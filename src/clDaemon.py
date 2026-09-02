@@ -14,7 +14,7 @@ from typing import Dict, List, Tuple, Any, Optional
 # --- CUSTOM MODULES ---
 from utils.clConfigLoader import ConfigLoader
 from nlp.clIntentEngine import IntentEngine
-from nlp.clSLM import SLMInferenceEngine
+from nlp.clSLM import SLMInferenceEngine, ReplySLMEngine
 from utils.clActionRouter import ActionRouter
 
 # --- LOGGING SETUP ---
@@ -70,6 +70,8 @@ class CentralDaemon:
 
         # Initialize SLM Cognitive Engine
         self.slm = SLMInferenceEngine(core_data)
+        # Initialize the small dedicated personality/reply engine
+        self.reply_slm = ReplySLMEngine(core_data)
 
         self.intents_file_path = os.path.join(self.loader.config_dir, "intents.json")
         self.last_intents_mtime = os.stat(self.intents_file_path).st_mtime if os.path.exists(self.intents_file_path) else 0
@@ -96,6 +98,36 @@ class CentralDaemon:
             self.dialogue_history.clear()
         self.dialogue_history.append({"role": role, "content": content})
         self.last_interaction_time = now
+
+    async def _speak_natural_reply(
+        self, client: aiomqtt.Client, action_id: str, args: Dict[str, Any],
+        user_text: str, should_followup: bool, fallback_payload: Dict[str, Any]
+    ) -> None:
+        """Generates a spoken confirmation via the reply SLM, decoupled from
+        action dispatch -- the MQTT action has already been published before
+        this runs as a background task, so a slow reply never delays the
+        actual effect. Falls back to the static tts_request template if the
+        reply model is disabled, times out, or returns nothing."""
+        reply_text = None
+        if self.reply_slm.enabled:
+            try:
+                reply_text = await asyncio.wait_for(
+                    self.reply_slm.generate_reply_async(action_id, args, user_text, should_followup),
+                    timeout=4.0
+                )
+            except asyncio.TimeoutError:
+                logging.warning("[DAEMON] Reply generation timed out; falling back to template.")
+            except Exception as e:
+                logging.error(f"[DAEMON] Reply generation failed: {e}")
+
+        if reply_text:
+            await client.publish("jarvis/sys/speak", json.dumps({
+                "text": reply_text,
+                "request_reply": should_followup
+            }))
+            self._update_dialogue_history("assistant", reply_text)
+        else:
+            await client.publish("jarvis/sys/tts_request", json.dumps(fallback_payload))
 
     def _is_complex_request(self, text: str, original_transcript: str) -> bool:
         """Evaluates sentence structure rather than relying on hardcoded dictionaries."""
@@ -581,24 +613,43 @@ class CentralDaemon:
                                             is_media_play = (action_id == "spotify.control" and action == "play")
                                             should_followup = (self.followups_enabled and not self.silent_mode and not is_media_play and action != "discover")
 
+                                            # These system.discovery sub-actions can silently no-op or
+                                            # ask a clarifying question instead of doing what they say
+                                            # (e.g. a rename with no "to" in it) -- the actuator reports
+                                            # the real outcome asynchronously over jarvis/feedback, so an
+                                            # optimistic reply here would sometimes announce success (or
+                                            # get interrupted mid-sentence) for something that didn't
+                                            # actually happen. Let the actuator's own feedback speak for
+                                            # these instead of guessing before the outcome is known.
+                                            is_uncertain_light_op = action_id == "system.discovery" and action in (
+                                                "intent_rename_light", "intent_remove_light", "intent_set_default_light"
+                                            )
+
                                             # 3. Handle Legacy ActionRouter Text
                                             if payload_out.get("text") and not is_silent and not self.silent_mode:
                                                 final_text = payload_out.get("text")
                                                 if should_followup:
                                                     final_text += " Anything else sir?"
-                                                    
+
                                                 await client.publish("jarvis/sys/speak", json.dumps({
                                                     "text": final_text,
                                                     "request_reply": should_followup
                                                 }))
-                                                
-                                            # 4. Handle Dynamic Template Requests
-                                            elif not is_spotify_status and not is_silent and not self.silent_mode:
-                                                await client.publish("jarvis/sys/tts_request", json.dumps({
+
+                                            # 4. Handle Dynamic Template Requests -> try the reply SLM
+                                            # first, as a non-blocking background task (the action
+                                            # above already published), falling back to the static
+                                            # template if the reply model can't produce one in time.
+                                            elif not is_spotify_status and not is_uncertain_light_op and not is_silent and not self.silent_mode:
+                                                args_for_reply = {k: v for k, v in command.items() if k != "audio_path"}
+                                                fallback_payload = {
                                                     "target_topic": topic_out,
                                                     "command": payload_out,
                                                     "append_followup": should_followup
-                                                }))
+                                                }
+                                                asyncio.create_task(self._speak_natural_reply(
+                                                    client, action_id, args_for_reply, clean_text, should_followup, fallback_payload
+                                                ))
                                         
                                         if self.active_context["type"] is not None and not self.silent_mode:
                                             final_mic_state = "request_reply"

@@ -2,7 +2,7 @@
     "settings": {
         "ecosystem_state": "debug",
         "enable_followup": true,
-        "silent_mode": true,
+        "silent_mode": false,
         "debug_mqtt": false,
         "slm_settings": {
             "enabled": true,
@@ -10,6 +10,14 @@
             "threads": 4,
             "context_size": 1024,
             "temperature": 0.1,
+            "gpu_layers": 0
+        },
+        "reply_slm_settings": {
+            "enabled": true,
+            "model_path": "models/SmolLM2-360M-Instruct.Q8_0.gguf",
+            "threads": 2,
+            "context_size": 256,
+            "temperature": 0.7,
             "gpu_layers": 0
         },
         "last_light_target": "living_room"
