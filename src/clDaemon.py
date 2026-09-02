@@ -304,8 +304,12 @@ class CentralDaemon:
                 self._update_dialogue_history("user", clean_text)
                 return self._optimize_intent_queue(raw_intents), None
 
-        # 5. Smart-Path (SLM Cognitive Decoder)
-        if self.slm.enabled:
+        # 5. Smart-Path (SLM Cognitive Decoder) -- gated on the text actually
+        # containing some recognized command vocabulary. Without this, a
+        # garbled/noise transcription with dialogue history in its prompt
+        # tends to just repeat the last real action instead of correctly
+        # recognizing there's nothing to do.
+        if self.slm.enabled and self.nlp.has_recognizable_content(clean_text):
             logging.info(f"[DAEMON] Fast-Path missed/compound detected. Routing to SLM Smart-Path: '{clean_text}'")
             snapshot = self._get_system_snapshot()
             slm_result = await self.slm.parse_intent_async(clean_text, snapshot, list(self.dialogue_history))

@@ -70,6 +70,24 @@ class IntentEngine:
         """Checks if the payload is declining a follow-up prompt (e.g. "Anything else, sir?")."""
         return any(kw in text for kw in self.decline_keywords)
 
+    def has_recognizable_content(self, text: str) -> bool:
+        """Cheap sanity check for gating the Smart-Path escalation: does this
+        text contain at least one word this system actually has a command
+        for (any intent's priority_words)? A garbled/noise transcription
+        that shares no real vocabulary with any known command has no
+        business being handed to the SLM -- with dialogue history in the
+        prompt, it tends to just repeat the last real action instead of
+        recognizing there's nothing to do."""
+        words = set(re.findall(r"[a-z0-9']+", text.lower()))
+        if not words:
+            return False
+        for config in self.intents_data.values():
+            for pw in config.get("priority_words", []):
+                pw_words = pw.lower().split()
+                if all(w in words for w in pw_words):
+                    return True
+        return False
+
     def extract_variables(self, chunk: str, intent_match: Dict[str, Any]) -> Dict[str, Any]:
         """Fuzzy-friendly slot extraction supporting single and multi-variable templates."""
         payload = intent_match.get("action_args", {}).copy()
