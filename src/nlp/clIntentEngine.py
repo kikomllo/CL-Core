@@ -182,6 +182,17 @@ class IntentEngine:
                 
         return None
 
+    def _match_tier(self, intent_info: Dict[str, Any], payload: Dict[str, Any]) -> int:
+        """Match-quality tier used as a tiebreak among equally-scored candidates:
+        2 = variable-free template (exact/near-exact, most certain), 1 = every
+        variable in the template was actually extracted, 0 = a multi-variable
+        template whose regex didn't match and fell back to a single-variable
+        guess (only the first variable got filled)."""
+        var_names = re.findall(r'\{(\w+)\}', intent_info["original_template"])
+        if not var_names:
+            return 2
+        return 1 if all(v in payload for v in var_names) else 0
+
     def parse(self, text: str, raw_text: str = None) -> List[Tuple[Dict[str, Any], str]]:
         """Parses a normalized text string into actionable intents."""
         text = text.replace(",", "")
@@ -248,9 +259,9 @@ class IntentEngine:
                     scored_matches.append((match_str, intent_info, payload, final_score))
             
             valid_matches = [m for m in scored_matches if m[3] >= 80]
-            
+
             if valid_matches:
-                valid_matches.sort(key=lambda x: (x[3], len(x[1]["original_template"])), reverse=True)
+                valid_matches.sort(key=lambda x: (x[3], self._match_tier(x[1], x[2]), len(x[1]["original_template"])), reverse=True)
                 best_match = valid_matches[0]
                 executed_intents.append((best_match[2], best_match[1]["action_id"]))
             else:

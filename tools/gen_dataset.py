@@ -79,15 +79,7 @@ OUT_OF_SCOPE = [
     "what's 2 plus 2", "how do I cook pasta", "who won the game last night",
 ]
 
-# Natural reply phrases, one per intent (not per raw action value). Several
-# intents share the same action_id/action combo (e.g. alarm_create,
-# todo_add, jarvis_reminder_set and calendar_add are all "*.create" with no
-# "action" field), so keying off the action value collapsed them into one
-# generic, ungrammatical fallback ("Executing create") that broke the
-# otherwise-universal "-ing" gerund convention used everywhere else in the
-# dataset. That inconsistency is what taught the SLM to invent its own
-# broken gerunds at inference time (e.g. "Createing", "Attention_oning").
-# Every intent gets its own correct, distinct, -ing-form phrase here instead.
+# Canonical spoken reply phrase per intent.
 INTENT_REPLY_PHRASES = {
     "light_on": "Turning on",
     "light_off": "Turning off",
@@ -141,22 +133,8 @@ INTENT_REPLY_PHRASES = {
     "system_show_logs": "Opening the logs",
 }
 
-# Intents that need boosted representation to fix dataset imbalances.
-# light_off/light_dim/spotify_play_playlist were raised after benchmark_slm.py
-# runs kept misclassifying them (see data/benchmark_suite.json categories
-# "Light Off (Simple)", "Light Dim", "Spotify Play").
+# Per-intent sampling weight boosts for underrepresented intents.
 BOOSTED_INTENTS = {
-    # light_on/light_color/light_dim all share action_args["action"]=="on", so
-    # their combined weight was outweighing light_off's boost.
-    # IMPORTANT: balance this pair by trading weight between "on" and "off"
-    # sides (as below), not by piling more weight onto light_off alone — an
-    # earlier attempt did that and grew the total weighted pool from ~51 to
-    # ~71 units, which diluted every one of the ~50 other trainable intents'
-    # share of the fixed 1200-sample draw and caused new, unrelated
-    # cross-domain misclassifications (light->alarm, todo->spotify, etc.)
-    # that weren't present before. Same principle applies to gen_compound_samples'
-    # combos and gen_correction_samples' correction_pairs: balance on/off by
-    # swapping entries, not by only adding "off" ones.
     "light_off": 5,
     "light_color": 2,
     "light_dim": 2,
@@ -242,12 +220,7 @@ def fill_template(template: str, intent_config: Dict[str, Any]) -> tuple:
         action_args["artist_name"] = a
 
     if "{search_query}" in filled:
-        # TRACKS only, deliberately excluding PLAYLISTS: spotify_play_playlist's
-        # "play some {playlist_name}" template used the same PLAYLISTS pool,
-        # so identical surface text (e.g. "play some jazz") was being trained
-        # with two different, mutually exclusive field labels depending on
-        # which intent got sampled — label noise that showed up as the model
-        # losing confidence in the whole action, not just the field name.
+        # TRACKS only, so this doesn't collide with spotify_play_playlist's playlist_name pool.
         q = random.choice(TRACKS)
         filled = filled.replace("{search_query}", q)
         action_args["search_query"] = q
@@ -330,17 +303,7 @@ def gen_compound_samples(intents: Dict[str, Any], count: int) -> List[Dict]:
     """Generate compound intent samples combining 2 different action domains."""
     records = []
 
-    # Define sensible compound combos.
-    # light_on/light_dim/light_color all resolve to action_args["action"]=="on",
-    # so counting combos naively (light_on vs light_off) undercounts the real
-    # skew: of the 10 light-involving combos here, 5 resolve to "on" and 5 to
-    # "off". Balanced by swapping which intent each pairing uses (light_off
-    # <-> spotify_play_specific, light_off <-> todo_add below) rather than
-    # appending new combos — appending grows the list and dilutes every other
-    # (non-light) combo's share of the fixed draw count, which is what
-    # caused unrelated cross-domain misclassifications in an earlier attempt
-    # at this same fix. See also gen_correction_samples for the same
-    # swap-not-append fix applied to correction_pairs.
+    # Compound intent pairings, balanced for light on/off representation.
     combos = [
         # (intent_key_1, intent_key_2, connector)
         ("light_dim", "spotify_play_generic", "and"),
@@ -394,13 +357,7 @@ def gen_compound_samples(intents: Dict[str, Any], count: int) -> List[Dict]:
 def gen_correction_samples(intents: Dict[str, Any], count: int) -> List[Dict]:
     """Generate self-correction samples where the user changes their mind mid-sentence."""
     records = []
-    # Only the second element of each pair becomes the training label. This
-    # list stays at 6 pairs (not 8) — an earlier fix appended 2 more instead
-    # of rebalancing within the original list, which diluted every other
-    # correction pair's share of the fixed draw count. Balanced here by
-    # flipping the (spotify_play_generic, light_on) pair to end in light_off
-    # instead: 2 pairs now terminate "on" (light_on, light_color), 2 in "off"
-    # (light_off, light_off), 2 are non-light (spotify_play_generic, jarvis_reminder_set).
+    # Self-correction pairs; only the second element becomes the training label.
     correction_pairs = [
         ("light_on", "light_on"),       # Change target
         ("light_on", "light_off"),      # Change action
@@ -453,11 +410,7 @@ def gen_contextual_inference_samples(count: int) -> List[Dict]:
     records = []
     
     contextual_templates = [
-        # Pronoun resolution from LastTargetLight.
-        # weight=3 on this one: it's the only template producing action="off"
-        # among the 4 light-pronoun templates below, while the other 3
-        # (brighter/dim/color) all produce action="on" — left at uniform
-        # random.choice() this alone skewed the aggregate on/off split.
+        # Pronoun resolution from LastTargetLight, weighted for on/off balance.
         {
             "user_variants": ["turn it off", "switch it off", "kill it", "turn that off"],
             "state_key": "LastTargetLight",
@@ -559,13 +512,8 @@ def gen_noise_rejection_samples(count: int) -> List[Dict]:
 
 
 # ─── GRAMMAR GENERATION ──────────────────────────────────────────────────────
-# The GBNF grammar used at inference time (config/grammars/intent_schema.gbnf)
-# must stay in lockstep with what this generator actually produces. Previously
-# "action_id" and "action" were left as free-form strings, which let the model
-# hallucinate values outside the trained vocabulary (e.g. echoing the action_id
-# back as the "action" value, or copying stray input words). Deriving both
-# enums straight from intents.json closes that gap and keeps them from drifting
-# out of sync as intents are added.
+# Derives the action_id/action enums for the inference-time GBNF grammar
+# (config/grammars/intent_schema.gbnf) straight from intents.json.
 
 OPEN_STRING_FIELDS = [
     "light_target", "color", "playlist_name", "track_name", "artist_name",

@@ -38,12 +38,7 @@ class SLMInferenceEngine:
 
         self.llm: Optional[Any] = None
         self.grammar: Optional[Any] = None
-        # llama-cpp-python is not safe for concurrent calls against a single
-        # Llama instance. Decoupled reply generation (clDaemon.py) can now
-        # run as a background task alongside a fresh classification call for
-        # the next command, so every entry point into inference must be
-        # serialized through this lock rather than assuming callers never
-        # overlap.
+        # Serializes concurrent inference calls against the shared Llama instance.
         self._lock = asyncio.Lock()
 
         if self.enabled:

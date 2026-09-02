@@ -60,13 +60,7 @@ class VoiceSensor:
     MAX_RECORD_SECONDS: int = 10
     INITIAL_SILENCE_SECONDS: float = 3.0
     SILENCE_LIMIT_SECONDS: float = 2.5
-    # Fraction of chunks in the trailing SILENCE_LIMIT_SECONDS window that
-    # must be below sil_thresh to call it silence. Speech is inherently
-    # spiky (syllables, pauses between words), and a single chunk crossing
-    # the threshold used to hard-reset the whole counter to zero — so an
-    # isolated ambient noise blip during trailing silence cost the full
-    # window all over again. A ratio tolerates occasional blips (from either
-    # source) while still requiring the window to be overwhelmingly quiet.
+    # Fraction of the trailing window that must be quiet to call it silence.
     SILENCE_RATIO_THRESHOLD: float = 0.85
 
     MIN_BASELINE: int = 100              
@@ -264,15 +258,7 @@ class VoiceSensor:
         loudness_factor = min(max((raw_baseline - 300.0) / 1700.0, 0.0), 1.0)
         
         base_act_mod = 1.15
-        # Was 1.05 — only a 5% margin above baseline in quiet rooms (baseline
-        # itself is a 75th-percentile snapshot of recent ambient noise, so
-        # it's already an imprecise estimate). Normal steady room noise
-        # regularly drifts by more than 5% around that estimate, so isolated
-        # blips crossing the cutoff were common — see SILENCE_RATIO_THRESHOLD
-        # above, which is what actually makes those blips tolerable now.
-        # Widened this too anyway to give more headroom; still comfortably
-        # below base_act_mod so activation sensitivity in quiet rooms is
-        # unchanged.
+        # Silence-cutoff margin above baseline in quiet rooms.
         base_sil_mod = 1.10
         
         act_mod = base_act_mod + (loudness_factor * (self.VOICE_ACT_BUFFER - base_act_mod))

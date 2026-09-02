@@ -77,16 +77,7 @@ else:
     OUTPUT_DIR = "outputs"
     GGUF_OUTPUT_DIR = "jarvis-brain-v2"
 
-# Wipe any stale output from a previous run. Kaggle's "Persistence: Files"
-# setting (recommended in this file's setup instructions) keeps OUTPUT_DIR
-# and GGUF_OUTPUT_DIR on disk *across separate notebook runs*. Cell 7's
-# model.save_pretrained_gguf() does not clean GGUF_OUTPUT_DIR before writing
-# into it, so a rerun can leave a mix of old and new tokenizer/vocab/config
-# files sitting alongside newly merged weights — a mismatched tokenizer and
-# model produces exactly the kind of garbled, foreign-character, malformed-
-# JSON output seen across repeated benchmark runs here, and it compounds
-# with every additional run that writes into the same directory without
-# clearing it first. Every run now starts from a guaranteed-clean directory.
+# Wipe stale output dirs from a previous run before training starts fresh.
 import shutil
 for _stale_dir in (OUTPUT_DIR, GGUF_OUTPUT_DIR):
     if os.path.exists(_stale_dir):
@@ -122,13 +113,7 @@ from transformers import TrainingArguments
 
 max_seq_length = 768  # Sized for compound/correction prompts
 
-# Guard against a corrupted HF cache entry: if a Kaggle session got killed or
-# hit a network hiccup mid-download, config.json (or any other cached file)
-# for the auto-resolved 4-bit repo can be left truncated/empty, which raises
-# "not a valid JSON file" on every subsequent run until the cache is cleared
-# (Kaggle's "Persistence: Files" setting keeps this across restarts). Scan
-# known cache roots and nuke any snapshot dir for this model whose config.json
-# fails to parse, so from_pretrained() below re-downloads it cleanly.
+# Clears any corrupted cached model files so from_pretrained() re-downloads cleanly.
 import glob
 import json
 import shutil
@@ -165,10 +150,7 @@ model, tokenizer = FastLanguageModel.from_pretrained(
 )
 
 # 2. Configure LoRA adapters
-# r/alpha raised from 16/32 — benchmark_slm.py runs showed genuine
-# misclassifications (not just grammar hallucination) between close
-# intents (light on/off, spotify play vs status_queue), which pointed
-# at undercapacity more than undertraining.
+# LoRA adapter capacity for intent classification.
 model = FastLanguageModel.get_peft_model(
     model,
     r=32,
@@ -200,13 +182,7 @@ def formatting_prompts_func(examples):
 dataset = load_dataset("json", data_files=DATASET_PATH, split="train")
 dataset = dataset.map(formatting_prompts_func, batched=True)
 
-# Held-out eval split. Without this, only training loss is visible during
-# fine-tuning — which trends toward zero regardless of whether the model is
-# still learning generalizable structure or has started memorizing surface
-# noise (exact prefix wording, template phrasing). A training run that hit
-# train_loss=0.027 by epoch 7 with no eval signal shipped an overfit
-# checkpoint that produced garbled text on the benchmark's non-templated
-# phrasing. eval_loss below is what actually tells you when to stop.
+# Held-out eval split so eval_loss is visible alongside training loss.
 split_dataset = dataset.train_test_split(test_size=0.08, seed=3407)
 train_dataset = split_dataset["train"]
 eval_dataset = split_dataset["test"]
@@ -237,8 +213,6 @@ trainer = SFTTrainer(
         per_device_eval_batch_size=4,
         gradient_accumulation_steps=2,
         warmup_ratio=0.1,
-        # Back to 7 — the proven-good run used this. eval_strategy below is
-        # for passive visibility only now (see note).
         num_train_epochs=7,
         learning_rate=2e-4,
         fp16=use_fp16,
@@ -249,18 +223,7 @@ trainer = SFTTrainer(
         lr_scheduler_type="cosine",
         seed=3407,
         output_dir=OUTPUT_DIR,
-        # Eval once per epoch purely so eval_loss is visible in the log
-        # (compare it against Training Loss to eyeball overfitting) — it does
-        # NOT change which weights get exported. load_best_model_at_end was
-        # tried here across the last two runs (first with eval_steps=50, then
-        # eval_strategy="epoch") and both came out *more* broken than the
-        # run before it introduced this mechanism at all (garbled text,
-        # eventually outright multilingual token garbage and JSON that
-        # wouldn't close). That's consistent with Unsloth's model wrapping
-        # not round-tripping cleanly through Trainer's standard checkpoint
-        # load_state_dict restore for a 4-bit+LoRA setup. Removed rather than
-        # tuned further — just take the final epoch's model, like the run
-        # that actually worked (28/30) did.
+        # Eval once per epoch for visibility into eval_loss (final checkpoint is still exported).
         eval_strategy="epoch",
         save_strategy="epoch",
         save_total_limit=2,
