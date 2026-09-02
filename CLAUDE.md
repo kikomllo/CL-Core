@@ -16,9 +16,14 @@ CL-Core ("JARVIS Smart Home OS") is an async, local-first home-automation and NL
 
 ### SLM fine-tuning pipeline (`tools/`)
 
-1. `python tools/gen_dataset.py` — regenerates **both** `data/synthetic_lora_dataset.jsonl` and `config/grammars/intent_schema.gbnf` from `config/intents.json` in one pass. These two outputs must stay in lockstep, so the `.gbnf` file is auto-generated and headed "do not hand-edit" — its `action_id`/`action` enums are derived directly from `intents.json`. Change intents, then re-run this script; never hand-edit the grammar.
-2. `tools/kaggle_train.py` — not run locally. Copy its cells into a Kaggle (or Colab) notebook to LoRA-fine-tune `unsloth/Qwen2.5-0.5B-Instruct` on the generated JSONL and export a quantized GGUF.
-3. `python tools/benchmark_slm.py` — runs `data/benchmark_suite.json` against a GGUF under `config/grammars/intent_schema.gbnf` (grammar-constrained decoding via `llama-cpp-python`) and reports per-category pass rates. Run this before promoting a new GGUF into `config/core.json`.
+There are two separate models: the **action model** (Qwen2.5-0.5B-Instruct, grammar-constrained, classifies intent into `action_id`/args) and the **reply model** (SmolLM2-360M-Instruct, no grammar, phrases a spoken JARVIS-voiced confirmation for an already-decided action). A change to `config/intents.json` — a new intent, a changed template — generally needs both models regenerated and retrained together, since the action model's grammar and the reply model's phrase bank both key off the same intent set.
+
+1. `python tools/gen_dataset.py` — regenerates **both** `data/synthetic_lora_dataset.jsonl` and `config/grammars/intent_schema.gbnf` (the action model's inputs) from `config/intents.json` in one pass. These two outputs must stay in lockstep, so the `.gbnf` file is auto-generated and headed "do not hand-edit" — its `action_id`/`action` enums are derived directly from `intents.json`. Change intents, then re-run this script; never hand-edit the grammar.
+2. `python tools/gen_reply_dataset.py` — regenerates `data/reply_lora_dataset.jsonl` (the reply model's input) from `config/intents.json` plus its own hand-written `PHRASE_BANK`/`SLOTTED_PHRASES`/`FOLLOWUP_PHRASES` in the script. A new intent needs a `PHRASE_BANK` entry here to get a spoken confirmation at all; without one it's silently skipped. `tools/listen_reply_samples.py` plays samples from this dataset aloud (matching the live TTS voice exactly) to judge phrasing/tone before committing to a retrain.
+3. Training — not run locally, copy cells into a Kaggle (or Colab) notebook:
+   - `tools/kaggle_train_all.py` — trains **both** models in one notebook run (action model, then frees GPU memory, then reply model); the normal path when both datasets changed together. Needs both `synthetic_lora_dataset.jsonl` and `reply_lora_dataset.jsonl` added as notebook inputs.
+   - `tools/kaggle_train.py` / `tools/kaggle_reply_train.py` — the same two phases as standalone scripts, for retraining just one model.
+4. `python tools/benchmark_slm.py` — runs `data/benchmark_suite.json` against the action model's GGUF under `config/grammars/intent_schema.gbnf` (grammar-constrained decoding via `llama-cpp-python`) and reports per-category pass rates. Run this before promoting a new GGUF into `config/core.json`'s `slm_settings.model_path` (the reply model has no equivalent pass/fail benchmark — judge it by ear via `listen_reply_samples.py` instead, and point `reply_slm_settings.model_path` at it once trained).
 
 ## Architecture
 
