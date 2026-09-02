@@ -2,7 +2,7 @@
     "settings": {
         "ecosystem_state": "debug",
         "enable_followup": true,
-        "silent_mode": false,
+        "silent_mode": true,
         "debug_mqtt": false,
         "slm_settings": {
             "enabled": true,

@@ -113,7 +113,7 @@ class SLMInferenceEngine:
         try:
             output = self.llm(
                 prompt,
-                max_tokens=256,
+                max_tokens=100,
                 stop=["<|im_end|>", "\n\n\n"],
                 grammar=self.grammar,
                 temperature=self.temp
