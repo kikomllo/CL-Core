@@ -98,24 +98,9 @@ class CentralDaemon:
         self.last_interaction_time = now
 
     async def _speak_natural_reply(self, client: aiomqtt.Client, user_text: str, should_followup: bool, fallback_payload: Dict[str, Any]) -> None:
-        """
-        Generates a natural-language spoken confirmation via the SLM for a
-        Fast-Path command, decoupled from action dispatch — the MQTT action
-        has already been published before this is scheduled as a background
-        task, so a slow reply never delays the actual effect. Falls back to
-        the static tts_request template (the prior, always-templated
-        behavior) if the SLM is disabled, times out, or returns no reply, so
-        the user is never left without a spoken response.
-
-        Note: this re-runs full SLM classification on text the Fast-Path
-        already handled, just to reuse its "reply" field and discard the
-        action — simple and reuses the tested inference path, but wasteful
-        and occasionally slightly mismatched in phrasing (e.g. a generic
-        light reply instead of naming the exact target) since it's an
-        independent re-classification rather than being told what already
-        executed. Acceptable for now; a dedicated reply-only prompt is
-        planned once the training data is reworked for phrasing variety.
-        """
+        """Generates a spoken confirmation via the SLM as a background task,
+        decoupled from action dispatch. Falls back to the static tts_request
+        template if the SLM is disabled, times out, or returns no reply."""
         reply_text = None
         if self.slm.enabled:
             try:
@@ -218,22 +203,9 @@ class CentralDaemon:
             self.dialogue_history.clear()
             return [({"action": "abort"}, "system.abort")], "Cancelled."
 
-        # 1b. Follow-up Decline Check. There's no dedicated active_context state
-        # tracking "we just asked Anything else, sir?" — the mic simply reopens
-        # via request_reply after any command. Without this check, a reply like
-        # "no thanks" fell through to Fast-Path/Smart-Path matching like any
-        # fresh command and could get misclassified as a repeat of the last
-        # action (e.g. re-triggering light.set off and re-prompting, looping).
-        # Checked before any interactive-context/intent-parsing pass so a
-        # decline can never be swallowed by a more specific active_context.
+        # 1b. Follow-up Decline Check ("no thanks" to "Anything else, sir?")
         if self.nlp.is_decline_command(clean_text):
             self.active_context["type"] = None
-            # Empty actions -> the run() loop's "nothing recognized" branch,
-            # which publishes mic_state/audio_process idle and does NOT speak
-            # anything. That's the desired behavior here: silently close out,
-            # no TTS. (It also logs a generic "[UNMATCHED STT]" warning since
-            # that branch doesn't distinguish "declined" from "unrecognized"
-            # — logged here first so the real reason is visible too.)
             logging.info(f"[DAEMON] Follow-up declined ('{clean_text}'); returning to idle silently.")
             return [], None
 
@@ -562,9 +534,11 @@ class CentralDaemon:
                         elif topic == "jarvis/sensor/voice":
                             try:
                                 data = json.loads(payload_data)
+                                if not isinstance(data, dict):
+                                    raise ValueError("not a JSON object")
                                 text_payload = data.get("text", "")
                                 audio_path = data.get("audio_path", "")
-                            except json.JSONDecodeError:
+                            except (json.JSONDecodeError, ValueError):
                                 text_payload = payload_data
                                 audio_path = ""
                                 
@@ -665,10 +639,7 @@ class CentralDaemon:
                                                     "request_reply": should_followup
                                                 }))
                                                 
-                                            # 4. Handle Dynamic Template Requests -> try a natural
-                                            # SLM-generated reply first, as a non-blocking background
-                                            # task (the action above already published), falling back
-                                            # to the static template if the SLM can't produce one in time.
+                                            # 4. Handle Dynamic Template Requests -> natural spoken reply
                                             elif not is_spotify_status and not is_silent and not self.silent_mode:
                                                 fallback_payload = {
                                                     "target_topic": topic_out,

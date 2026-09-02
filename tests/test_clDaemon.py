@@ -31,17 +31,14 @@ class TestDaemonCoreLogic:
         ("toggle the light", "toggle", None, None),
         ("set the light to crimson red please", "on", "color", "crimson red"),
         ("make it ocean blue in here", "on", "color", "ocean blue"),
-        ("set the light to light blue", "on", "color", "blue"),
-        
+        ("set the light to light blue", "on", "color", "light blue"),
+
         # Integer Extraction
         ("dim the light to 45 percent", "on", "lum", 45),
         ("make the lights 100 percent.", "on", "lum", 100),
-        ("plz set brightness to 75 percent.", "on", "lum", 75), 
+        ("plz set brightness to 75 percent.", "on", "lum", 75),
 
         # --- 3. SYSTEM MODULES & VARIABLES ---
-        ("restart the framework", "restart_all_modules", None, None),
-        ("restart module voice sensor", "restart_module", "target", "voice sensor"),
-        ("reboot the spotify service", "restart_module", "target", "spotify"),
         ("enter attention mode", "attention_on", None, None),
         ("exit work mode", "attention_off", None, None),
         ("start discovery mode", "discover", None, None),
@@ -49,11 +46,12 @@ class TestDaemonCoreLogic:
         # --- 4. FUZZY FORGIVENESS & INTERNAL GRAMMAR ---
         ("playy some jazz", "play", "search_query", "jazz"),
         ("switch the lightssss", "toggle", None, None),
-        ("set volume to 22 percentt", "volume", "volume", 22), 
+        ("set volume to 22 percentt", "volume", "volume", 22),
         ("play the track dancing in the dark please", "play", "track_name", "dancing in the dark"),
     ])
-    def test_single_intent_routing(self, daemon, spoken_text, expected_action, variable_key, variable_value):
-        intents = daemon.route_voice_command(spoken_text)
+    @pytest.mark.asyncio
+    async def test_single_intent_routing(self, daemon, spoken_text, expected_action, variable_key, variable_value):
+        intents, _ = await daemon.route_voice_command(spoken_text)
         
         assert len(intents) == 1, f"Expected 1 intent for '{spoken_text}', got {len(intents)}"
         payload, topic = intents[0]
@@ -64,31 +62,55 @@ class TestDaemonCoreLogic:
             assert variable_key in payload, f"Missing variable '{variable_key}' in payload"
             assert payload[variable_key] == variable_value, f"Value mismatch for '{variable_key}'"
 
+    # system_restart_module/system_restart_all have no action_args in intents.json,
+    # so their payloads never carry an "action" key -- checked via action_id instead
+    # of the generic action-field pattern test_single_intent_routing above uses.
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("spoken_text, expected_target", [
+        ("restart module voice sensor", "voice sensor"),
+        ("reboot the spotify service", "spotify"),
+    ])
+    async def test_restart_module_routing(self, daemon, spoken_text, expected_target):
+        intents, _ = await daemon.route_voice_command(spoken_text)
+        assert len(intents) == 1
+        payload, action_id = intents[0]
+        assert action_id == "system.restart_module"
+        assert payload.get("target") == expected_target
+
+    @pytest.mark.asyncio
+    async def test_restart_all_exact_template_match(self, daemon):
+        intents, _ = await daemon.route_voice_command("restart the framework")
+        assert len(intents) == 1
+        assert intents[0][1] == "system.restart_all"
+
 class TestDaemonStateTraps:
     """Tests context-aware locks that override standard NLP routing using the new Unified State Machine."""
 
-    def test_global_abort_trap(self, daemon):
-        intents = daemon.route_voice_command("abort sequence")
+    @pytest.mark.asyncio
+    async def test_global_abort_trap(self, daemon):
+        intents, _ = await daemon.route_voice_command("abort sequence")
         assert len(intents) == 1
         assert intents[0][0]["action"] == "abort"
-        assert intents[0][1] == "jarvis/sys/control"
+        assert intents[0][1] == "system.abort"
         assert daemon.active_context["type"] is None
 
-    def test_spotify_choice_trap(self, daemon):
+    @pytest.mark.asyncio
+    async def test_spotify_choice_trap(self, daemon):
         daemon.active_context = {"type": "spotify_choice", "expires_at": time.time() + 20.0}
-        intents = daemon.route_voice_command("3")
-        
+        intents, _ = await daemon.route_voice_command("3")
+
         assert len(intents) == 1
-        assert intents[0][1] == "pc/spotify/control"
+        assert intents[0][1] == "spotify.control"
         assert intents[0][0] == {"action": "play_choice", "choice_index": 3}
         assert daemon.active_context["type"] is None
 
-    def test_discovery_choice_trap(self, daemon):
+    @pytest.mark.asyncio
+    async def test_discovery_choice_trap(self, daemon):
         daemon.active_context = {"type": "discovery_choice", "expires_at": time.time() + 20.0}
-        intents = daemon.route_voice_command("1")
-        
+        intents, _ = await daemon.route_voice_command("1")
+
         assert len(intents) == 1
-        assert intents[0][1] == "system/discovery"
+        assert intents[0][1] == "system.discovery"
         assert intents[0][0] == {"action": "save_discovery", "index": 1}
         assert daemon.active_context["type"] is None
 
@@ -109,7 +131,7 @@ class TestDaemonMQTTIntegration:
         await daemon.run()
         
         publish_calls = mock_mqtt.publish.call_args_list
-        light_calls = [call for call in publish_calls if call[0][0] == "home/room/desk_light/set"]
+        light_calls = [call for call in publish_calls if call[0][0] == "home/room/all/set"]
         
         assert len(light_calls) == 1, "Daemon failed to shadow/merge intents; published multiple times."
         
@@ -164,8 +186,12 @@ class TestDaemonMQTTIntegration:
     @pytest.mark.asyncio
     async def test_silent_mode_suppresses_tts_and_followup(self, daemon, mock_mqtt, message_stream):
         """Tests that enabling silent mode suppresses TTS speak requests and followups."""
+        # The daemon publishes state changes to jarvis/sys/daemon_control and relies on
+        # the broker looping its own publish back to it (it's subscribed to that topic
+        # too); the mock client doesn't do that automatically, so it's simulated here.
         mock_mqtt.messages = message_stream([
             ("jarvis/sensor/voice", "enable silent mode"),
+            ("jarvis/sys/daemon_control", json.dumps({"action": "silent_mode_on"})),
             ("jarvis/sensor/voice", "turn on living room light")
         ])
         
