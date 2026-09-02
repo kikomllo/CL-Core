@@ -4,14 +4,19 @@ import sys
 import json
 import asyncio
 import time
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 from clDaemon import CentralDaemon
 
 @pytest.fixture
 def daemon():
-    return CentralDaemon()
+    d = CentralDaemon()
+    # Several settings-toggle code paths (silent_mode, enable_followup, ecosystem_state)
+    # persist to the real config/core.json via this call -- stub it out so exercising
+    # those paths in a test can't leave the real config mutated on disk.
+    d.loader.update_json_atomic = MagicMock()
+    return d
 
 class TestDaemonCoreLogic:
     """Core NLP pipeline tests: typos, filler words, pluralization, and subsets."""
