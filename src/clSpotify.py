@@ -611,9 +611,19 @@ class SpotifyManager:
             return False, f"Action '{action}' is not recognized."
                 
         except spotipy.exceptions.SpotifyException as e:
-            if e.http_status == 403: 
+            if e.http_status == 403:
                 if action == "play" and not any([track_name, artist_name, playlist_name, search_query, choice_index]):
-                    return False, "Music is already playing."
+                    # A bare "play" 403 here isn't necessarily "already playing" --
+                    # a freshly woken device with no prior queue/context also gets
+                    # refused with the same restriction, so verify against the
+                    # actual playback state instead of assuming.
+                    try:
+                        playback = self._get_current_playback(force_refresh=True)
+                    except Exception:
+                        playback = None
+                    if playback and playback.get("is_playing"):
+                        return False, "Music is already playing."
+                    return False, "Nothing queued to resume. Try naming a song, artist, or playlist."
                 return False, "Action refused. Premium account required or playback restriction."
             elif e.http_status == 404: 
                 return False, "No active device found. Open Spotify first."

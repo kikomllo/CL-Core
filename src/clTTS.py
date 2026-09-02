@@ -94,8 +94,25 @@ class TTSManager:
         temp_file = os.path.join(self.assets_dir, f"tts_{file_hash}.mp3")
 
         if not os.path.exists(temp_file):
-            communicate = edge_tts.Communicate(text, voice, rate="+27%", pitch="-5Hz")
-            await communicate.save(temp_file)
+            # edge-tts needs live internet access for every phrase -- retry once
+            # on a transient network/DNS blip before giving up. On total failure,
+            # still emit the tts_state:idle the daemon waits on to reopen the mic
+            # for a pending follow-up, so a dropped connection can't strand it
+            # waiting for a completion signal that would otherwise never arrive.
+            for attempt in range(2):
+                try:
+                    communicate = edge_tts.Communicate(text, voice, rate="+27%", pitch="-5Hz")
+                    await communicate.save(temp_file)
+                    break
+                except Exception as e:
+                    logging.error(f"[TTS] edge-tts request failed (attempt {attempt + 1}/2): {e}")
+                    if attempt == 0:
+                        await asyncio.sleep(0.5)
+                    else:
+                        if client:
+                            await client.publish("jarvis/sys/tts_state", json.dumps({"state": "idle"}))
+                            await client.publish("jarvis/sys/tts_done", "1")
+                        return
         else:
             try:
                 os.utime(temp_file, None)
