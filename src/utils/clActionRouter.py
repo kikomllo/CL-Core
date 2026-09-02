@@ -3,6 +3,14 @@ import json
 import logging
 import paho.mqtt.publish as publish
 
+_SCHEMA_TYPES = {
+    "string": str,
+    "integer": int,
+    "boolean": bool,
+    "array": list,
+    "object": dict,
+}
+
 class ActionRouter:
     """
     Centralized MQTT dispatcher.
@@ -67,7 +75,19 @@ class ActionRouter:
         schema = action_def.get("schema", {})
         for field, rules in schema.items():
             if field in kwargs:
-                payload[field] = kwargs[field]
+                value = kwargs[field]
+                expected_type = _SCHEMA_TYPES.get(rules.get("type"))
+                # A slot filled with the wrong type (e.g. a garbled fuzzy-match
+                # capture landing in a numeric field) must not reach the
+                # actuator at all -- reject the whole action rather than
+                # forwarding a value the actuator wasn't built to handle.
+                if expected_type and not isinstance(value, expected_type):
+                    logging.error(
+                        f"[ACTION ROUTER] Field '{field}' for action '{action_path}' expected "
+                        f"{rules.get('type')} but got {type(value).__name__} ({value!r}); rejecting."
+                    )
+                    return None, None
+                payload[field] = value
             elif "default" in rules:
                 payload[field] = rules["default"]
             elif rules.get("required", False):

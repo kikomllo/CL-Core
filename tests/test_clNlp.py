@@ -56,3 +56,23 @@ class TestNLPEngineLogic:
         }
         result = engine.extract_variables(chunk, intent_match)
         assert result["color"] == expected_color
+
+    def test_numeric_field_without_a_digit_is_left_unset(self, engine):
+        """A numeric slot (lum/volume/choice_index/index) whose captured span has
+        no digit must not fall back to storing the raw captured text -- that text
+        would later be forwarded to a real actuator expecting an integer."""
+        intent_match = {
+            "action_override": "on",
+            "original_template": "set brightness to {lum}"
+        }
+        chunk = "set brightness to yes please lowering the brightness of the living room light"
+        result = engine.extract_variables(chunk, intent_match)
+        assert "lum" not in result
+
+    def test_numeric_field_with_a_digit_still_extracts(self, engine):
+        intent_match = {
+            "action_override": "on",
+            "original_template": "set brightness to {lum}"
+        }
+        result = engine.extract_variables("set brightness to 40 percent", intent_match)
+        assert result["lum"] == 40

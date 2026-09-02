@@ -83,10 +83,45 @@ class TestSpotifyEdgeCases:
         # Simulate a 401 Unauthorized exception
         mock_search = mocker.patch.object(spotify_manager.sp, 'search')
         mock_search.side_effect = SpotifyException(401, -1, "The access token expired")
-        
+
         mocker.patch.object(spotify_manager, '_ensure_active_device', return_value="device_123")
         success, feedback = spotify_manager.execute_command("play", track_name="Song A")
-        
+
         # It should catch the exception and return a clean error without crashing
         assert success is False
         assert "spotify error" in feedback.lower() or "token" in feedback.lower() or "401" in feedback.lower() or "expired" in feedback.lower()
+
+    def test_bare_play_403_on_freshly_woken_device_is_not_reported_as_already_playing(self, spotify_manager, mocker):
+        """A freshly woken device with no prior queue/context also gets refused
+        with a bare 403 -- that must not be reported as 'already playing' when
+        nothing is actually playing."""
+        from spotipy.exceptions import SpotifyException
+
+        mocker.patch.object(spotify_manager, '_get_active_device', side_effect=[None, "device_123"])
+        mocker.patch.object(spotify_manager, '_wake_up_spotify')
+        mocker.patch.object(spotify_manager, '_get_current_playback', return_value=None)
+        mocker.patch.object(
+            spotify_manager.sp, 'start_playback',
+            side_effect=SpotifyException(403, -1, "Player command failed: Restriction violated")
+        )
+
+        success, feedback = spotify_manager.execute_command("play")
+
+        assert success is False
+        assert "already playing" not in feedback.lower()
+
+    def test_bare_play_403_while_genuinely_playing_reports_already_playing(self, spotify_manager, mocker):
+        from spotipy.exceptions import SpotifyException
+
+        mocker.patch.object(spotify_manager, '_get_active_device', side_effect=[None, "device_123"])
+        mocker.patch.object(spotify_manager, '_wake_up_spotify')
+        mocker.patch.object(spotify_manager, '_get_current_playback', return_value={"is_playing": True})
+        mocker.patch.object(
+            spotify_manager.sp, 'start_playback',
+            side_effect=SpotifyException(403, -1, "Player command failed: Restriction violated")
+        )
+
+        success, feedback = spotify_manager.execute_command("play")
+
+        assert success is False
+        assert "already playing" in feedback.lower()

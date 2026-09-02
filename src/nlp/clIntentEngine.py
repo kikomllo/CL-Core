@@ -144,8 +144,10 @@ class IntentEngine:
                 payload[var_name] = int(variable_value)
             elif var_name in ["lum", "volume", "choice_index", "index"]:
                 nums = re.findall(r'\d+', variable_value)
+                # A numeric slot with no digits in its captured span isn't a
+                # usable value -- leave it unset rather than passing the raw
+                # captured text through as if it were the number.
                 if nums: payload[var_name] = int(nums[0])
-                else: payload[var_name] = variable_value
             elif var_name == "light_target" and any(w in str(variable_value).lower().split() for w in ["all", "everything", "every"]):
                 payload[var_name] = "all"
             else:
