@@ -97,36 +97,6 @@ class CentralDaemon:
         self.dialogue_history.append({"role": role, "content": content})
         self.last_interaction_time = now
 
-    async def _speak_natural_reply(self, client: aiomqtt.Client, user_text: str, should_followup: bool, fallback_payload: Dict[str, Any]) -> None:
-        """Generates a spoken confirmation via the SLM as a background task,
-        decoupled from action dispatch. Falls back to the static tts_request
-        template if the SLM is disabled, times out, or returns no reply."""
-        reply_text = None
-        if self.slm.enabled:
-            try:
-                snapshot = self._get_system_snapshot()
-                result = await asyncio.wait_for(
-                    self.slm.parse_intent_async(user_text, snapshot, list(self.dialogue_history)),
-                    timeout=3.0
-                )
-                reply_text = result.get("reply") if result else None
-            except asyncio.TimeoutError:
-                logging.warning("[DAEMON] Natural reply generation timed out; falling back to template.")
-            except Exception as e:
-                logging.error(f"[DAEMON] Natural reply generation failed: {e}")
-
-        if reply_text:
-            final_reply = reply_text
-            if should_followup:
-                final_reply += " Anything else sir?"
-            await client.publish("jarvis/sys/speak", json.dumps({
-                "text": final_reply,
-                "request_reply": should_followup
-            }))
-            self._update_dialogue_history("assistant", final_reply)
-        else:
-            await client.publish("jarvis/sys/tts_request", json.dumps(fallback_payload))
-
     def _is_complex_request(self, text: str, original_transcript: str) -> bool:
         """Evaluates sentence structure rather than relying on hardcoded dictionaries."""
         # 1. Hesitation / Punctuation check (Whisper adds commas/question marks when people stumble)
@@ -309,19 +279,14 @@ class CentralDaemon:
             slm_result = await self.slm.parse_intent_async(clean_text, snapshot, list(self.dialogue_history))
 
             if slm_result and "actions" in slm_result and slm_result["actions"]:
-                logging.info(f"[SLM REASONING] {slm_result.get('thought', 'N/A')}")
                 actions_list = []
                 for act in slm_result["actions"]:
                     action_id = act.pop("action_id", "")
                     if action_id:
                         actions_list.append((act, action_id))
 
-                reply = slm_result.get("reply")
                 self._update_dialogue_history("user", clean_text)
-                if reply:
-                    self._update_dialogue_history("assistant", reply)
-
-                return self._optimize_intent_queue(actions_list), reply
+                return self._optimize_intent_queue(actions_list), None
 
         # 6. Final Fallback if SLM is inactive or returned empty
         fallback_intents = self.nlp.parse(clean_text, sanitized_payload)
@@ -559,9 +524,8 @@ class CentralDaemon:
                                 choices = speak_responses.get("standalone_wakeword", ["Yes sir?"])
                                 response_text = random.choice(choices)
                                 intents = [({"text": response_text, "request_reply": True, "skip_ducking": True, "ignore_silent": True}, "system.speak")]
-                                spoken_reply = None
                             else:
-                                intents, spoken_reply = await self.route_voice_command(raw_payload)
+                                intents, _ = await self.route_voice_command(raw_payload)
                             
                             if intents:
                                 final_mic_state = "open_window" if (self.followups_enabled and not self.silent_mode) else None
@@ -617,19 +581,8 @@ class CentralDaemon:
                                             is_media_play = (action_id == "spotify.control" and action == "play")
                                             should_followup = (self.followups_enabled and not self.silent_mode and not is_media_play and action != "discover")
 
-                                            # 2. Handle SLM Custom Replies
-                                            if spoken_reply and not self.silent_mode:
-                                                final_reply = spoken_reply
-                                                if should_followup:
-                                                    final_reply += " Anything else sir?"
-                                                    
-                                                await client.publish("jarvis/sys/speak", json.dumps({
-                                                    "text": final_reply,
-                                                    "request_reply": should_followup
-                                                }))
-                                                
                                             # 3. Handle Legacy ActionRouter Text
-                                            elif payload_out.get("text") and not is_silent and not self.silent_mode:
+                                            if payload_out.get("text") and not is_silent and not self.silent_mode:
                                                 final_text = payload_out.get("text")
                                                 if should_followup:
                                                     final_text += " Anything else sir?"
@@ -639,16 +592,13 @@ class CentralDaemon:
                                                     "request_reply": should_followup
                                                 }))
                                                 
-                                            # 4. Handle Dynamic Template Requests -> natural spoken reply
+                                            # 4. Handle Dynamic Template Requests
                                             elif not is_spotify_status and not is_silent and not self.silent_mode:
-                                                fallback_payload = {
+                                                await client.publish("jarvis/sys/tts_request", json.dumps({
                                                     "target_topic": topic_out,
                                                     "command": payload_out,
                                                     "append_followup": should_followup
-                                                }
-                                                asyncio.create_task(self._speak_natural_reply(
-                                                    client, clean_text, should_followup, fallback_payload
-                                                ))
+                                                }))
                                         
                                         if self.active_context["type"] is not None and not self.silent_mode:
                                             final_mic_state = "request_reply"

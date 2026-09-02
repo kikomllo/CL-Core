@@ -44,13 +44,6 @@ STATES_PAUSED = [
 ]
 ALL_STATES = STATES_PLAYING + STATES_PAUSED
 
-# Natural phrasing variations for replies
-ACKNOWLEDGE_PREFIXES = [
-    "On it.", "Done.", "Right away, sir.", "Consider it done.", "Absolutely.",
-    "Sure thing.", "Of course.", "You got it.", "Acknowledged.", "Understood.",
-    "Roger that.", "Will do.", "Already on it.", "As you wish, sir.", "",
-]
-
 CORRECTION_PHRASES = [
     "wait, scratch that,", "actually,", "no wait,", "hold on,",
     "uh, never mind that,", "correction:", "instead,", "wait no,",
@@ -79,60 +72,6 @@ OUT_OF_SCOPE = [
     "what's 2 plus 2", "how do I cook pasta", "who won the game last night",
 ]
 
-# Canonical spoken reply phrase per intent.
-INTENT_REPLY_PHRASES = {
-    "light_on": "Turning on",
-    "light_off": "Turning off",
-    "light_toggle": "Toggling",
-    "light_color": "Changing the color",
-    "light_dim": "Adjusting brightness",
-    "spotify_play_generic": "Resuming playback",
-    "spotify_play_playlist": "Starting your playlist",
-    "spotify_play_specific": "Playing that track",
-    "spotify_pause": "Pausing",
-    "spotify_next": "Skipping to the next track",
-    "spotify_prev": "Going back a track",
-    "spotify_volume": "Setting the volume",
-    "spotify_status_track": "Checking the track",
-    "spotify_status_playlist": "Checking the playlist",
-    "spotify_status_queue": "Checking the queue",
-    "spotify_status_full": "Getting the status",
-    "system_discovery": "Starting discovery",
-    "system_restart_all": "Restarting everything",
-    "system_restart_module": "Restarting that module",
-    "system_attention_on": "Entering attention mode",
-    "system_attention_off": "Exiting attention mode",
-    "system_check_updates": "Checking for updates",
-    "system_update_all": "Installing all updates",
-    "system_mode_debug": "Switching to debug mode",
-    "system_mode_normal": "Switching to normal mode",
-    "system_mode_background": "Switching to background mode",
-    "jarvis_reminder_set": "Setting the reminder",
-    "system_followup_on": "Enabling follow-ups",
-    "system_followup_off": "Disabling follow-ups",
-    "system_silent_mode_on": "Enabling silent mode",
-    "system_silent_mode_off": "Disabling silent mode",
-    "system_silent_mode_toggle": "Toggling silent mode",
-    "system_light_list": "Listing saved lights",
-    "system_light_rename": "Renaming the light",
-    "system_light_delete": "Removing the light",
-    "system_light_default": "Setting the default light",
-    "system_reminder_list": "Listing your reminders",
-    "system_reminder_delete": "Deleting the reminder",
-    "ui_fullscreen": "Switching to fullscreen",
-    "ui_overlay": "Switching to overlay mode",
-    "alarm_create": "Setting the alarm",
-    "alarm_cancel": "Deleting the alarm",
-    "alarm_list": "Listing your alarms",
-    "alarm_delete_all": "Clearing all alarms",
-    "alarm_deactivate": "Stopping the alarm",
-    "todo_add": "Adding that to your list",
-    "todo_list": "Listing your to-dos",
-    "calendar_add": "Adding that to your calendar",
-    "calendar_read": "Checking your calendar",
-    "system_show_logs": "Opening the logs",
-}
-
 # Per-intent sampling weight boosts for underrepresented intents.
 BOOSTED_INTENTS = {
     "light_off": 5,
@@ -150,10 +89,6 @@ def load_intents() -> Dict[str, Any]:
 
 def random_state() -> str:
     return random.choice(ALL_STATES)
-
-
-def random_reply_prefix() -> str:
-    return random.choice(ACKNOWLEDGE_PREFIXES)
 
 
 def variate_phrasing(base: str) -> str:
@@ -284,16 +219,10 @@ def gen_single_intent_samples(intents: Dict[str, Any], count: int) -> List[Dict]
         action_payload = {"action_id": action_id}
         action_payload.update(filled_args)
 
-        prefix = random_reply_prefix()
-        verb_phrase = INTENT_REPLY_PHRASES[intent_name]
-        reply = f"{prefix} {verb_phrase}." if prefix else f"{verb_phrase}."
-        reply = reply.strip()
-
         records.append({
             "state": random_state(),
             "user": user_text,
             "actions": [action_payload],
-            "reply": reply
         })
 
     return records
@@ -341,14 +270,10 @@ def gen_compound_samples(intents: Dict[str, Any], count: int) -> List[Dict]:
         a2 = {"action_id": c2["action_id"]}
         a2.update(args2)
 
-        prefix = random_reply_prefix()
-        reply = f"{prefix} Handling both requests." if prefix else "Both commands processed."
-
         records.append({
             "state": random_state(),
             "user": user_text,
             "actions": [a1, a2],
-            "reply": reply.strip()
         })
 
     return records
@@ -388,18 +313,10 @@ def gen_correction_samples(intents: Dict[str, Any], count: int) -> List[Dict]:
         a2 = {"action_id": c2["action_id"]}
         a2.update(args2)
 
-        replies = [
-            f"Changed my mind noted. {random_reply_prefix()}",
-            f"Understood, switching to the new request.",
-            f"Scratch that, got it. Executing the updated command.",
-            f"{random_reply_prefix()} Corrected.",
-        ]
-
         records.append({
             "state": random_state(),
             "user": user_text,
             "actions": [a2],
-            "reply": random.choice(replies).strip()
         })
 
     return records
@@ -415,39 +332,33 @@ def gen_contextual_inference_samples(count: int) -> List[Dict]:
             "user_variants": ["turn it off", "switch it off", "kill it", "turn that off"],
             "state_key": "LastTargetLight",
             "build_action": lambda target: {"action_id": "light.set", "action": "off", "light_target": target},
-            "reply_fn": lambda target: f"Turning off the {target} light.",
             "weight": 3,
         },
         {
             "user_variants": ["make it brighter", "brighter please", "more light", "turn it up"],
             "state_key": "LastTargetLight",
             "build_action": lambda target: {"action_id": "light.set", "action": "on", "lum": 100, "light_target": target},
-            "reply_fn": lambda target: f"Maxing out the {target} light."
         },
         {
             "user_variants": ["dim it down", "lower the brightness", "make it darker", "less light"],
             "state_key": "LastTargetLight",
             "build_action": lambda target: {"action_id": "light.set", "action": "on", "lum": 20, "light_target": target},
-            "reply_fn": lambda target: f"Dimming the {target} light."
         },
         {
             "user_variants": ["make them red", "change it to blue", "set it to warm white", "purple please"],
             "state_key": "LastTargetLight",
             "build_action": lambda target: {"action_id": "light.set", "action": "on", "light_target": target, "color": "red"},
-            "reply_fn": lambda target: f"Changing the {target} light color."
         },
         # Contextual media commands based on Spotify state
         {
             "user_variants": ["pause", "stop", "pause that", "hold on"],
             "state_key": "Spotify_Playing",
             "build_action": lambda _: {"action_id": "spotify.control", "action": "pause"},
-            "reply_fn": lambda _: "Pausing playback."
         },
         {
             "user_variants": ["resume", "continue", "keep playing", "unpause"],
             "state_key": "Spotify_Paused",
             "build_action": lambda _: {"action_id": "spotify.control", "action": "play"},
-            "reply_fn": lambda _: "Resuming playback."
         },
     ]
 
@@ -468,13 +379,11 @@ def gen_contextual_inference_samples(count: int) -> List[Dict]:
             state = f"Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: {target}"
 
         action = template["build_action"](target)
-        reply = template["reply_fn"](target)
 
         records.append({
             "state": state,
             "user": user_text,
             "actions": [action],
-            "reply": f"{random_reply_prefix()} {reply}".strip()
         })
 
     return records
@@ -490,7 +399,6 @@ def gen_noise_rejection_samples(count: int) -> List[Dict]:
             "state": random_state(),
             "user": noise,
             "actions": [],
-            "reply": random.choice(["", "I didn't catch that, sir.", "Sorry, I didn't understand."])
         })
 
     for _ in range(count // 2):
@@ -500,12 +408,6 @@ def gen_noise_rejection_samples(count: int) -> List[Dict]:
             "state": random_state(),
             "user": user_text,
             "actions": [],
-            "reply": random.choice([
-                "I'm not set up for that yet, sir.",
-                "That's outside my capabilities for now.",
-                "I can't do that yet, but noted for the future.",
-                "Sorry sir, that's not something I can handle right now.",
-            ])
         })
 
     return records
@@ -545,8 +447,10 @@ def build_grammar(action_ids: List[str], actions: List[str]) -> str:
 
     return f"""# AUTO-GENERATED by tools/gen_dataset.py — do not hand-edit.
 # Regenerate with: python tools/gen_dataset.py (edit config/intents.json instead)
-# Root: exactly matches training output schema {{"actions": [...], "reply": "..."}}
-root ::= "{{" ws "\\"actions\\"" ws ":" ws action-array "," ws "\\"reply\\"" ws ":" ws string ws "}}"
+# Root: exactly matches training output schema {{"actions": [...]}}. No "reply"
+# field -- this model only classifies/routes, a separate reply-only model
+# handles spoken phrasing.
+root ::= "{{" ws "\\"actions\\"" ws ":" ws action-array ws "}}"
 
 # Array of actions (can be empty [] or contain objects)
 action-array ::= "[" ws "]" | "[" ws action-object (ws "," ws action-object)* ws "]"
@@ -592,8 +496,7 @@ def format_record(r: Dict[str, Any]) -> Dict[str, Any]:
     """Format into ChatML JSONL matching Qwen fine-tuning spec."""
     system_prompt = f"[STATE]: {r['state']}"
     assistant_output = json.dumps({
-        "actions": r["actions"],
-        "reply": r["reply"]
+        "actions": r["actions"]
     }, ensure_ascii=False)
     return {
         "messages": [
