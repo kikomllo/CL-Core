@@ -16,7 +16,7 @@ import random
 import re
 from typing import Dict, Any, List
 
-OUTPUT_FILE = "data/synthetic_lora_dataset.jsonl"
+OUTPUT_FILE = "training/data/synthetic_lora_dataset.jsonl"
 INTENTS_FILE = "config/intents.json"
 GRAMMAR_FILE = "config/grammars/intent_schema.gbnf"
 

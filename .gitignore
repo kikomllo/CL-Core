@@ -54,3 +54,15 @@ models/
 outputs/
 clControl.bat
 clControl.vbs
+
+# Training outputs -- models are distributed via the HuggingFace download
+# link (see README), not committed here; only the tools/datasets that
+# produce them are versioned.
+training/outputs_action/
+training/outputs_reply/
+training/jarvis-brain-v2/
+training/jarvis-reply-v1/
+training/jarvis-brain-v2_gguf/
+training/jarvis-reply-v1_gguf/
+training/train_all_log.txt
+unsloth_compiled_cache/

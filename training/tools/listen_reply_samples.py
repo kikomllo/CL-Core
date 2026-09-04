@@ -26,7 +26,7 @@ from pygame import mixer
 VOICE = "en-GB-RyanNeural"
 RATE = "+27%"
 PITCH = "-5Hz"
-DATASET_PATH = "data/reply_lora_dataset.jsonl"
+DATASET_PATH = "training/data/reply_lora_dataset.jsonl"
 
 
 def load_samples(path: str):

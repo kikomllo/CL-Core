@@ -6,14 +6,45 @@ Evaluates: JSON validity, action_id accuracy, field accuracy, latency, and empty
 Outputs a detailed per-test report and a final summary with category-level breakdowns.
 """
 
+import argparse
 import os
 import sys
 import json
 import time
 from typing import Dict, Any, List
+
+
+def _register_nvidia_dll_dirs() -> None:
+    """Mirrors src/nlp/clSLM.py's fix -- llama_cpp's own DLL loader never
+    searches pip-installed nvidia-*-cu12 packages' bundled DLL folders, only
+    $CUDA_PATH, so a GPU wheel can fail to import if the system CUDA Toolkit
+    is a different major version. Must run before `import llama_cpp`."""
+    if sys.platform != "win32":
+        return
+    site_packages = os.path.join(os.path.dirname(os.path.dirname(sys.executable)), "Lib", "site-packages")
+    nvidia_dir = os.path.join(site_packages, "nvidia")
+    if not os.path.isdir(nvidia_dir):
+        return
+    for pkg_name in os.listdir(nvidia_dir):
+        bin_dir = os.path.join(nvidia_dir, pkg_name, "bin")
+        if os.path.isdir(bin_dir):
+            try:
+                os.add_dll_directory(bin_dir)
+            except OSError:
+                pass
+
+
+_register_nvidia_dll_dirs()
+
+if sys.platform == "win32":
+    # Piped/redirected stdout on Windows defaults to cp1252, which can't
+    # encode this script's box-drawing/checkmark characters.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 from llama_cpp import Llama, LlamaGrammar
 
-BENCHMARK_PATH = "data/benchmark_suite.json"
+BENCHMARK_PATH = "training/data/benchmark_suite.json"
 MODEL_PATH = "models/jarvis-brain-v2-q4_k_m.gguf"
 GRAMMAR_PATH = "config/grammars/intent_schema.gbnf"
 
@@ -73,7 +104,7 @@ def evaluate_actions(actual: List[Dict[str, Any]], expected: List[Dict[str, Any]
 
 # ─── MAIN BENCHMARK RUNNER ───────────────────────────────────────────────────
 
-def run_benchmark():
+def run_benchmark(model_path: str = MODEL_PATH):
     if not os.path.exists(BENCHMARK_PATH):
         print(f"Error: {BENCHMARK_PATH} not found.")
         sys.exit(1)
@@ -81,12 +112,12 @@ def run_benchmark():
     with open(BENCHMARK_PATH, "r", encoding="utf-8") as f:
         tests = json.load(f)
 
-    if not os.path.exists(MODEL_PATH):
-        print(f"Error: Model file '{MODEL_PATH}' not found.")
+    if not os.path.exists(model_path):
+        print(f"Error: Model file '{model_path}' not found.")
         sys.exit(1)
 
-    print(f"Loading model '{MODEL_PATH}'...")
-    llm = Llama(model_path=MODEL_PATH, n_ctx=1024, n_threads=4, verbose=False)
+    print(f"Loading model '{model_path}'...")
+    llm = Llama(model_path=model_path, n_ctx=1024, n_threads=4, verbose=False)
     
     grammar = None
     if os.path.exists(GRAMMAR_PATH):
@@ -164,7 +195,7 @@ def run_benchmark():
     print(f"\n{'═' * 100}")
     print(f"  BENCHMARK SUMMARY")
     print(f"{'═' * 100}")
-    print(f"  Model:          {os.path.basename(MODEL_PATH)}")
+    print(f"  Model:          {os.path.basename(model_path)}")
     print(f"  Grammar:        {'Enabled' if grammar else 'Disabled'}")
     print(f"  Total Tests:    {total}")
     print(f"  Passed:         {passed}/{total} ({accuracy:.1f}%)")
@@ -185,4 +216,7 @@ def run_benchmark():
 
 
 if __name__ == "__main__":
-    run_benchmark()
+    parser = argparse.ArgumentParser(description="Benchmark the action-classification GGUF against benchmark_suite.json.")
+    parser.add_argument("--model", default=MODEL_PATH, help=f"Path to the GGUF model (default: {MODEL_PATH})")
+    args = parser.parse_args()
+    run_benchmark(args.model)

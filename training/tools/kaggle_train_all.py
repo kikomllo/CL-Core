@@ -51,7 +51,7 @@ IS_KAGGLE = os.path.exists("/kaggle")
 IS_COLAB = os.path.exists("/content")
 
 
-def find_dataset(filename: str, local_subdir: str = "data") -> str:
+def find_dataset(filename: str, local_subdir: str = "training/data") -> str:
     if IS_KAGGLE:
         matches = glob.glob(f"/kaggle/input/**/{filename}", recursive=True)
         return matches[0] if matches else f"/kaggle/input/{filename}"
@@ -63,7 +63,7 @@ def find_dataset(filename: str, local_subdir: str = "data") -> str:
 ACTION_DATASET_PATH = find_dataset("synthetic_lora_dataset.jsonl")
 REPLY_DATASET_PATH = find_dataset("reply_lora_dataset.jsonl")
 
-WORKING_DIR = "/kaggle/working" if IS_KAGGLE else "."
+WORKING_DIR = "/kaggle/working" if IS_KAGGLE else "." if IS_COLAB else "training"
 ACTION_OUTPUT_DIR = f"{WORKING_DIR}/outputs_action"
 ACTION_GGUF_DIR = f"{WORKING_DIR}/jarvis-brain-v2"
 REPLY_OUTPUT_DIR = f"{WORKING_DIR}/outputs_reply"
@@ -131,13 +131,21 @@ def export_to_gguf(model, tokenizer, output_dir: str, final_gguf_name: str, quan
     print(f"\nExporting GGUF to: {output_dir}")
     model.save_pretrained_gguf(output_dir, tokenizer, quantization_method=quant_method)
 
-    gguf_files = [f for f in os.listdir(output_dir) if f.endswith(".gguf")]
-    if gguf_files:
-        print(f"\n{'='*60}\nSUCCESS! Download from the 'Output' tab:")
-        for f in gguf_files:
-            size_mb = os.path.getsize(os.path.join(output_dir, f)) / 1e6
-            print(f"  -> {f} ({size_mb:.1f} MB)")
-        print(f"{'='*60}")
+    # Unsloth's own conversion writes the .gguf into a sibling "<output_dir>_gguf"
+    # directory, not output_dir itself -- check both, preferring the sibling.
+    for search_dir in (f"{output_dir}_gguf", output_dir):
+        if not os.path.isdir(search_dir):
+            continue
+        gguf_files = [f for f in os.listdir(search_dir) if f.endswith(".gguf")]
+        if not gguf_files:
+            continue
+        os.makedirs(output_dir, exist_ok=True)
+        final_gguf = os.path.join(output_dir, final_gguf_name)
+        shutil.move(os.path.join(search_dir, gguf_files[0]), final_gguf)
+        if search_dir != output_dir:
+            shutil.rmtree(search_dir, ignore_errors=True)
+        size_mb = os.path.getsize(final_gguf) / 1e6
+        print(f"\n{'='*60}\nSUCCESS! GGUF ready: {final_gguf} ({size_mb:.1f} MB)\n{'='*60}")
         return
 
     print("WARNING: save_pretrained_gguf did not produce a .gguf file. Attempting manual conversion...")
