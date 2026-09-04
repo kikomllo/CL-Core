@@ -6,6 +6,34 @@ import logging
 import urllib.request
 from typing import Dict, Any, List, Optional
 
+
+def _register_nvidia_dll_dirs() -> None:
+    """llama_cpp's own DLL loader only searches $CUDA_PATH/bin and its own
+    package folder -- it never looks in pip-installed nvidia-*-cu12 packages'
+    bundled DLL folders (nvidia-cublas-cu12, nvidia-cuda-runtime-cu12, etc.),
+    which is where the CUDA-runtime-version-matched DLLs actually live. If the
+    system's own CUDA Toolkit is a different major version (e.g. v13.x, whose
+    DLLs are named cudart64_13.dll etc.), $CUDA_PATH alone can't satisfy a
+    wheel built against CUDA 12.x -- registering these here, before llama_cpp
+    is imported, lets a GPU-enabled wheel load regardless of what's installed
+    system-wide. Windows-only; add_dll_directory doesn't exist elsewhere."""
+    if sys.platform != "win32":
+        return
+    site_packages = os.path.join(os.path.dirname(os.path.dirname(sys.executable)), "Lib", "site-packages")
+    nvidia_dir = os.path.join(site_packages, "nvidia")
+    if not os.path.isdir(nvidia_dir):
+        return
+    for pkg_name in os.listdir(nvidia_dir):
+        bin_dir = os.path.join(nvidia_dir, pkg_name, "bin")
+        if os.path.isdir(bin_dir):
+            try:
+                os.add_dll_directory(bin_dir)
+            except OSError:
+                pass
+
+
+_register_nvidia_dll_dirs()
+
 try:
     from llama_cpp import Llama, LlamaGrammar
     LLAMA_AVAILABLE = True

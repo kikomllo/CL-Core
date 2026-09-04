@@ -1,0 +1,46 @@
+# Local training environment for the SLM fine-tuning pipeline (see CLAUDE.md
+# "SLM fine-tuning pipeline (training/)"). Deliberately separate from the
+# main repo-root requirements.txt: the runtime ecosystem only ever needs
+# llama-cpp-python for *inference*, never this full training stack.
+#
+# Install into a dedicated venv, not the main .venv:
+#   python -m venv training/.venv
+#   training/.venv/Scripts/pip install -r training/requirements.txt
+#   training/.venv/Scripts/pip install --force-reinstall --no-deps torch==<resolved-version> --index-url https://download.pytorch.org/whl/<cuda-tag>
+#
+# IMPORTANT -- install order matters here. unsloth/trl/accelerate pull in
+# their own unpinned `torch` as a transitive dependency and will silently
+# *uninstall* a working CUDA build in favor of a plain CPU-only wheel from
+# PyPI the moment you `pip install` them after torch. So: install everything
+# in this file first and let pip resolve whatever torch version it wants,
+# THEN check what version got installed (`pip show torch`) and force-reinstall
+# just that exact version from the matching CUDA wheel index, with --no-deps
+# so it doesn't re-trigger the same resolution. Re-verify with:
+#   training/.venv/Scripts/python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+#
+# The CUDA tag must be <= your GPU driver's max supported CUDA version (check
+# with `nvidia-smi`) -- see boot.py's _detect_cuda_tag() for the same logic
+# applied to the runtime side. Not every torch version has a build for every
+# CUDA tag; check available tags with e.g.:
+#   pip index versions torch --index-url https://download.pytorch.org/whl/cu128
+#
+# Versions below are pinned to what was verified end-to-end on this repo's
+# dev machine (RTX 2060 Super, driver max CUDA 12.9): a full model+LoRA load
+# via unsloth (4-bit quant through bitsandbytes) completed successfully on
+# GPU. If you're on different hardware/CUDA version, re-resolve following the
+# install-order instructions above, then update these pins.
+
+unsloth==2026.9.2
+trl==0.24.0
+peft==0.20.0
+accelerate==1.14.0
+bitsandbytes==0.50.2
+datasets==4.3.0
+torch==2.11.0+cu128
+
+# Needed for the GGUF export step at the end of each training script
+# (model.save_pretrained_gguf). Same prebuilt-wheel-first approach as the
+# main ecosystem's install (see boot.py) -- the CPU build is enough here,
+# since GGUF quantization/export doesn't need GPU acceleration:
+#   training/.venv/Scripts/pip install --prefer-binary --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu llama-cpp-python
+llama-cpp-python==0.3.35

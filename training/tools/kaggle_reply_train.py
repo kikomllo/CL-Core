@@ -1,6 +1,12 @@
 """
-Kaggle Training Script for CL-Core Jarvis LoRA Fine-Tuning
-===========================================================
+Kaggle Training Script for the JARVIS Reply/Personality SLM
+=============================================================
+
+Second, separate model from kaggle_train.py's action-classification model.
+This one only ever phrases a spoken reply from an already-decided action —
+it never classifies intent and has no grammar constraint — so it uses a
+much smaller base model (SmolLM2-360M-Instruct) for low latency/memory,
+trained on data/reply_lora_dataset.jsonl (see tools/gen_reply_dataset.py).
 
 SETUP INSTRUCTIONS (before running this notebook on Kaggle):
 ------------------------------------------------------------
@@ -10,72 +16,45 @@ SETUP INSTRUCTIONS (before running this notebook on Kaggle):
    - Internet: Enable (required for pip installs + model download)
    - Persistence: Files (keeps output between runs)
 3. Add your dataset:
-   - Upload synthetic_lora_dataset.jsonl as a new Kaggle dataset
-     (e.g. "cl-core-training-data")
+   - Upload reply_lora_dataset.jsonl as a new Kaggle dataset
+     (e.g. "cl-core-reply-training-data")
    - In the notebook, click "+ Add data" and add your dataset
-   - It will appear at: /kaggle/input/cl-core-training-data/synthetic_lora_dataset.jsonl
+   - It will appear at: /kaggle/input/cl-core-reply-training-data/reply_lora_dataset.jsonl
 4. Copy-paste this entire file into a Kaggle notebook code cell
    (or split at the marked section breaks into separate cells)
-
-DIFFERENCES FROM COLAB:
-- Dataset path: /kaggle/input/<dataset-name>/ (read-only)
-- Output path:  /kaggle/working/ (writable, downloadable)
-- GPU: T4 (16GB) or P100 (16GB) — same as Colab free tier
-- Kaggle allows bf16 on T4; Colab free T4 does not reliably
-- 12h session limit (vs Colab's ~4h GPU quota)
 """
 
 # =============================================================================
 # CELL 1: Install Dependencies
 # =============================================================================
-# Uncomment the block that matches your platform.
-#
-# --- KAGGLE (fast, ~2 min) ---
 # !pip install unsloth trl peft accelerate bitsandbytes
-#
-# --- COLAB (needs the xformers pin) ---
-# %%capture
-# !pip install unsloth
-# !pip install --force-reinstall "xformers<0.0.27"
-# !pip install trl peft accelerate bitsandbytes
-#
-# WHY the difference:
-# Kaggle ships pre-installed torch + xformers that are already compatible.
-# The --force-reinstall xformers line reinstalls ALL of PyTorch (~2GB) as a
-# side effect, adding 10-15 min of pointless download + install time.
-# On Colab, the pre-installed xformers version can conflict, so the pin
-# is necessary there but NOT on Kaggle.
 
 # =============================================================================
 # CELL 2: Configuration
 # =============================================================================
 import os
-# Force single GPU — unsloth does NOT support multi-GPU (T4 x2 will crash)
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # unsloth does not support multi-GPU
 import glob
 import torch
 
-# Auto-detect environment
 IS_KAGGLE = os.path.exists("/kaggle")
 IS_COLAB = os.path.exists("/content")
 
-DATASET_FILENAME = "synthetic_lora_dataset.jsonl"
+DATASET_FILENAME = "reply_lora_dataset.jsonl"
 
 if IS_KAGGLE:
-    # Kaggle mounts at: /kaggle/input/datasets/<username>/<dataset-name>/
-    # Auto-discover the dataset instead of hardcoding the path
     matches = glob.glob(f"/kaggle/input/**/{DATASET_FILENAME}", recursive=True)
     DATASET_PATH = matches[0] if matches else f"/kaggle/input/{DATASET_FILENAME}"
     OUTPUT_DIR = "/kaggle/working/outputs"
-    GGUF_OUTPUT_DIR = "/kaggle/working/jarvis-brain-v2"
+    GGUF_OUTPUT_DIR = "/kaggle/working/jarvis-reply-v1"
 elif IS_COLAB:
     DATASET_PATH = DATASET_FILENAME
     OUTPUT_DIR = "outputs"
-    GGUF_OUTPUT_DIR = "jarvis-brain-v2"
+    GGUF_OUTPUT_DIR = "jarvis-reply-v1"
 else:
-    DATASET_PATH = f"data/{DATASET_FILENAME}"
+    DATASET_PATH = f"training/data/{DATASET_FILENAME}"
     OUTPUT_DIR = "outputs"
-    GGUF_OUTPUT_DIR = "jarvis-brain-v2"
+    GGUF_OUTPUT_DIR = "jarvis-reply-v1"
 
 # Wipe stale output dirs from a previous run before training starts fresh.
 import shutil
@@ -84,13 +63,11 @@ for _stale_dir in (OUTPUT_DIR, GGUF_OUTPUT_DIR):
         print(f"[CLEANUP] Removing stale output directory from a previous run: {_stale_dir}")
         shutil.rmtree(_stale_dir, ignore_errors=True)
 
-# Verify dataset exists before burning GPU time
 assert os.path.exists(DATASET_PATH), (
     f"Dataset not found at: {DATASET_PATH}\n"
     f"If on Kaggle, make sure you added your dataset via '+ Add data' in the notebook sidebar."
 )
 
-# GPU diagnostics
 print(f"Environment: {'Kaggle' if IS_KAGGLE else 'Colab' if IS_COLAB else 'Local'}")
 print(f"Dataset: {DATASET_PATH}")
 print(f"CUDA available: {torch.cuda.is_available()}")
@@ -111,12 +88,11 @@ from datasets import load_dataset
 from trl import SFTTrainer
 from transformers import TrainingArguments
 
-max_seq_length = 768  # Sized for compound/correction prompts
+# Replies are short, single-sentence phrasings -- no need for the 768-token
+# window the compound/correction classification prompts required.
+max_seq_length = 256
 
-# Clears any corrupted cached model files so from_pretrained() re-downloads cleanly.
-import glob
 import json
-import shutil
 
 
 def _clear_corrupted_model_cache(repo_substring: str) -> None:
@@ -139,26 +115,27 @@ def _clear_corrupted_model_cache(repo_substring: str) -> None:
                     break
 
 
-_clear_corrupted_model_cache("qwen2.5-0.5b-instruct")
+_clear_corrupted_model_cache("smollm2-360m-instruct")
 
-# 1. Load base model
+# 1. Load base model — small on purpose, this model only phrases, never classifies.
 model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name="unsloth/Qwen2.5-0.5B-Instruct",
+    model_name="unsloth/SmolLM2-360M-Instruct",
     max_seq_length=max_seq_length,
-    dtype=None,        # Auto-detect (float16 on T4/P100)
+    dtype=None,
     load_in_4bit=True,
 )
 
 # 2. Configure LoRA adapters
-# LoRA adapter capacity for intent classification.
+# Lower capacity than the action model -- this task is phrasing/voice, not
+# multi-class discrimination across 50 intents.
 model = FastLanguageModel.get_peft_model(
     model,
-    r=32,
+    r=16,
     target_modules=[
         "q_proj", "k_proj", "v_proj", "o_proj",
         "gate_proj", "up_proj", "down_proj",
     ],
-    lora_alpha=64,
+    lora_alpha=32,
     lora_dropout=0.0,
     bias="none",
     use_gradient_checkpointing="unsloth",
@@ -182,8 +159,7 @@ def formatting_prompts_func(examples):
 dataset = load_dataset("json", data_files=DATASET_PATH, split="train")
 dataset = dataset.map(formatting_prompts_func, batched=True)
 
-# Held-out eval split so eval_loss is visible alongside training loss.
-split_dataset = dataset.train_test_split(test_size=0.08, seed=3407)
+split_dataset = dataset.train_test_split(test_size=0.1, seed=3407)
 train_dataset = split_dataset["train"]
 eval_dataset = split_dataset["test"]
 
@@ -193,8 +169,6 @@ print(f"Sample preview:\n{train_dataset[0]['text'][:300]}...")
 # =============================================================================
 # CELL 5: Train
 # =============================================================================
-
-# Detect bf16 capability — Kaggle T4 supports it, Colab T4 may not
 use_bf16 = is_bfloat16_supported()
 use_fp16 = not use_bf16
 
@@ -209,11 +183,11 @@ trainer = SFTTrainer(
     max_seq_length=max_seq_length,
     dataset_num_proc=2,
     args=TrainingArguments(
-        per_device_train_batch_size=4,
-        per_device_eval_batch_size=4,
-        gradient_accumulation_steps=2,
+        per_device_train_batch_size=8,
+        per_device_eval_batch_size=8,
+        gradient_accumulation_steps=1,
         warmup_ratio=0.1,
-        num_train_epochs=7,
+        num_train_epochs=6,
         learning_rate=2e-4,
         fp16=use_fp16,
         bf16=use_bf16,
@@ -223,14 +197,13 @@ trainer = SFTTrainer(
         lr_scheduler_type="cosine",
         seed=3407,
         output_dir=OUTPUT_DIR,
-        # Eval once per epoch for visibility into eval_loss (final checkpoint is still exported).
         eval_strategy="epoch",
         save_strategy="epoch",
         save_total_limit=2,
     ),
 )
 
-# CRITICAL: Calculate loss ONLY on assistant responses
+# CRITICAL: Calculate loss ONLY on assistant responses, not the action summary/user turn
 trainer = train_on_responses_only(
     trainer,
     instruction_part="<|im_start|>user\n",
@@ -252,34 +225,45 @@ trainer.train()
 # =============================================================================
 import subprocess
 
-# If re-running just this cell after a restart, reload the model from checkpoint
 try:
     model
 except NameError:
     print("Model not in memory — reloading from merged safetensors...")
     from unsloth import FastLanguageModel
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=GGUF_OUTPUT_DIR,  # Load the already-merged safetensors
-        max_seq_length=768,
+        model_name=GGUF_OUTPUT_DIR,
+        max_seq_length=max_seq_length,
         dtype=None,
-        load_in_4bit=False,          # Need full precision for GGUF conversion
+        load_in_4bit=False,
     )
 
 print(f"\nExporting GGUF to: {GGUF_OUTPUT_DIR}")
-model.save_pretrained_gguf(GGUF_OUTPUT_DIR, tokenizer, quantization_method="q4_k_m")
+# q8_0 rather than q4_k_m -- the model is already tiny, so the extra bits are
+# cheap and buy back quality on a task that's all about voice/phrasing.
+model.save_pretrained_gguf(GGUF_OUTPUT_DIR, tokenizer, quantization_method="q8_0")
 
-# Verify the .gguf file was actually created
-gguf_files = [f for f in os.listdir(GGUF_OUTPUT_DIR) if f.endswith(".gguf")]
-if gguf_files:
+# Unsloth's own conversion writes the .gguf into a sibling "<dir>_gguf"
+# directory, not GGUF_OUTPUT_DIR itself -- check both, preferring the sibling.
+final_gguf_name = "jarvis-reply-v1-q8_0.gguf"
+gguf_found = False
+for search_dir in (f"{GGUF_OUTPUT_DIR}_gguf", GGUF_OUTPUT_DIR):
+    if not os.path.isdir(search_dir):
+        continue
+    gguf_files = [f for f in os.listdir(search_dir) if f.endswith(".gguf")]
+    if not gguf_files:
+        continue
+    final_gguf = os.path.join(GGUF_OUTPUT_DIR, final_gguf_name)
+    shutil.move(os.path.join(search_dir, gguf_files[0]), final_gguf)
+    if search_dir != GGUF_OUTPUT_DIR:
+        shutil.rmtree(search_dir, ignore_errors=True)
+    size_mb = os.path.getsize(final_gguf) / 1e6
     print(f"\n{'='*60}")
-    print(f"SUCCESS! Download from the 'Output' tab:")
-    for f in gguf_files:
-        fpath = os.path.join(GGUF_OUTPUT_DIR, f)
-        size_mb = os.path.getsize(fpath) / 1e6
-        print(f"  → {f} ({size_mb:.1f} MB)")
+    print(f"SUCCESS! GGUF ready: {final_gguf} ({size_mb:.1f} MB)")
     print(f"{'='*60}")
-else:
-    # Fallback: manual quantization with llama.cpp
+    gguf_found = True
+    break
+
+if not gguf_found:
     print("WARNING: save_pretrained_gguf did not produce a .gguf file.")
     print("Attempting manual conversion with llama.cpp...")
 
@@ -288,18 +272,14 @@ else:
     quantize_bin = os.path.join(llama_cpp_dir, "build", "bin", "llama-quantize")
 
     fp16_gguf = os.path.join(GGUF_OUTPUT_DIR, "model-fp16.gguf")
-    q4km_gguf = os.path.join(GGUF_OUTPUT_DIR, "jarvis-brain-v2-q4_k_m.gguf")
+    q8_gguf = os.path.join(GGUF_OUTPUT_DIR, "jarvis-reply-v1-q8_0.gguf")
 
-    # Step 1: Convert safetensors → fp16 GGUF
     subprocess.run(["python", convert_script, GGUF_OUTPUT_DIR, "--outfile", fp16_gguf], check=True)
-    # Step 2: Quantize fp16 → Q4_K_M
-    subprocess.run([quantize_bin, fp16_gguf, q4km_gguf, "q4_k_m"], check=True)
-    # Clean up the large fp16 intermediate
-    if os.path.exists(q4km_gguf):
+    subprocess.run([quantize_bin, fp16_gguf, q8_gguf, "q8_0"], check=True)
+    if os.path.exists(q8_gguf):
         os.remove(fp16_gguf)
-        size_mb = os.path.getsize(q4km_gguf) / 1e6
+        size_mb = os.path.getsize(q8_gguf) / 1e6
         print(f"\n{'='*60}")
         print(f"SUCCESS (manual conversion)! Download from 'Output' tab:")
-        print(f"  → jarvis-brain-v2-q4_k_m.gguf ({size_mb:.1f} MB)")
+        print(f"  → jarvis-reply-v1-q8_0.gguf ({size_mb:.1f} MB)")
         print(f"{'='*60}")
-

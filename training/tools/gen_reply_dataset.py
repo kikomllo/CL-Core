@@ -37,7 +37,7 @@ from gen_dataset import (
     variate_phrasing,
 )
 
-OUTPUT_FILE = "data/reply_lora_dataset.jsonl"
+OUTPUT_FILE = "training/data/reply_lora_dataset.jsonl"
 
 # ─── FOLLOW-UP PHRASING ──────────────────────────────────────────────────────
 # Deliberately varied and separate from the base confirmation -- the model
