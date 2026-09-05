@@ -142,6 +142,54 @@ def update_expected_modules():
         if native_cfg.get(desc, True):
             EXPECTED_MODULES.add(desc.lower())
 
+def _wait_for_module_ready(target_mod: str, timeout_s: float = 30.0) -> None:
+    """Polls READY_MODULES on its own thread. Must never be called from
+    on_message itself -- that callback runs on the single MQTT network
+    thread (via loop_start()), the same thread that delivers the
+    module_ready messages this is waiting for, so blocking there would
+    deadlock: the wait could never observe the message that satisfies it."""
+    print(f"[SUPERVISOR] Waiting for {target_mod} to initialize before continuing...")
+    deadline = time.time() + timeout_s
+    while target_mod not in READY_MODULES and time.time() < deadline:
+        time.sleep(0.1)
+    if target_mod in READY_MODULES:
+        print(f"[SUPERVISOR] {target_mod} is ready.")
+    else:
+        print(f"[SUPERVISOR] Timed out waiting for {target_mod} to initialize.")
+
+def _perform_full_reboot() -> None:
+    """The actual restart_all_modules sequence, run on its own thread (never
+    from on_message directly -- see _wait_for_module_ready)."""
+    global MODULES_CONFIG, SYSTEM_HAS_ANNOUNCED
+
+    print("\n" + "="*60)
+    print("[SUPERVISOR] INITIATING FULL ECOSYSTEM REBOOT")
+    print("="*60)
+    for desc, filename in NATIVE_SERVICES:
+        stop_native(filename)
+    time.sleep(1.0)
+
+    MODULES_CONFIG = load_modules_config()
+    SYSTEM_HAS_ANNOUNCED = False
+
+    print("[SUPERVISOR] Starting native host services...")
+    update_expected_modules()
+    native_cfg = MODULES_CONFIG.get("native", {})
+    for desc, filename in NATIVE_SERVICES:
+        if native_cfg.get(desc, True):
+            start_native(desc, filename)
+
+            target_mod = None
+            if "clWhisper" in filename:
+                target_mod = "whisper"
+            elif "clTTS" in filename:
+                target_mod = "tts"
+
+            if target_mod:
+                _wait_for_module_ready(target_mod)
+
+    print("[SUPERVISOR] ECOSYSTEM REBOOT COMPLETE\n" + "="*60)
+
 def start_native(desc, filename):
     print(f"[SUPERVISOR] Launching {filename}...")
     env = os.environ.copy()
@@ -251,39 +299,14 @@ def on_message(client, userdata, msg):
                 os._exit(0)
 
             elif action == "restart_all_modules":
-                print("\n" + "="*60)
-                print("[SUPERVISOR] INITIATING FULL ECOSYSTEM REBOOT")
-                print("="*60)
-                for desc, filename in NATIVE_SERVICES:
-                    stop_native(filename)
-                time.sleep(1.0)
-                
-                global MODULES_CONFIG
-                MODULES_CONFIG = load_modules_config()
-                
-                SYSTEM_HAS_ANNOUNCED = False
-                
-                print("[SUPERVISOR] Starting native host services...")
-                update_expected_modules()
-                native_cfg = MODULES_CONFIG.get("native", {})
-                for desc, filename in NATIVE_SERVICES:
-                    if native_cfg.get(desc, True):
-                        start_native(desc, filename)
-                        
-                        target_mod = None
-                        if "clWhisper" in filename:
-                            target_mod = "whisper"
-                        elif "clTTS" in filename:
-                            target_mod = "tts"
-                            
-                        if target_mod:
-                            print(f"[SUPERVISOR] Waiting for {target_mod} to initialize before continuing...")
-                            timeout = 300
-                            while target_mod not in READY_MODULES and timeout > 0:
-                                time.sleep(0.1)
-                                timeout -= 1
-                        
-                print("[SUPERVISOR] ECOSYSTEM REBOOT COMPLETE\n" + "="*60)
+                # Runs on its own thread -- this whole branch executes inside
+                # on_message, on the single MQTT network thread (loop_start()),
+                # which is also the thread that delivers the module_ready
+                # messages _perform_full_reboot waits on. Running it inline
+                # here deadlocked: the wait could never see the very message
+                # that would satisfy it, since this callback was busy blocking
+                # on it.
+                threading.Thread(target=_perform_full_reboot, daemon=True).start()
 
             elif action == "restart_module":
                 raw_target = str(payload.get("target", "")).lower().strip()

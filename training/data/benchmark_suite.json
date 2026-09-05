@@ -72,6 +72,12 @@
     "expected_actions": [{"action_id": "reminder.create", "task": "call mom", "time": "30 minutes"}]
   },
   {
+    "category": "Reminder Compound Duration (Real Incident)",
+    "prompt": "remind me in 4 hours and 30 minutes",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: all",
+    "expected_actions": [{"action_id": "reminder.create", "time": "4 hours and 30 minutes"}]
+  },
+  {
     "category": "Calendar Read",
     "prompt": "what is on my calendar",
     "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: all",
@@ -150,7 +156,34 @@
     "category": "Context: Pronoun (brighter)",
     "prompt": "make it brighter",
     "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: kitchen",
-    "expected_actions": [{"action_id": "light.set", "light_target": "kitchen"}]
+    "expected_actions": [{"action_id": "light.set", "action": "brightness_up"}]
+  },
+  {
+    "category": "Relative Brightness Down",
+    "prompt": "lower the brightness",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: living room",
+    "expected_actions": [{"action_id": "light.set", "action": "brightness_down"}]
+  },
+  {
+    "category": "Relative Brightness Up",
+    "prompt": "increase the brightness",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: living room",
+    "expected_actions": [{"action_id": "light.set", "action": "brightness_up"}]
+  },
+  {
+    "category": "Relative Brightness (Natural Phrasing)",
+    "prompt": "hey can you make the lights brighter please",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: living room",
+    "expected_actions": [{"action_id": "light.set", "action": "brightness_up"}]
+  },
+  {
+    "category": "Compound: Merge Percent+Color",
+    "prompt": "set the desk light to 50 percent and actually make it red",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: desk",
+    "expected_actions": [
+      {"action_id": "light.set", "lum": 50},
+      {"action_id": "light.set", "color": "red"}
+    ]
   },
   {
     "category": "Context: Spotify Pause",
@@ -168,6 +201,18 @@
     "category": "Noise: Hesitation",
     "prompt": "um yeah so",
     "state": "Spotify: Playing ('Jazz') | ActiveContext: None | LastTargetLight: desk",
+    "expected_actions": []
+  },
+  {
+    "category": "Noise: Garbled STT (Real Incident)",
+    "prompt": "ajervus in a bold living room life",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: living room",
+    "expected_actions": []
+  },
+  {
+    "category": "Noise: Follow-up Silence (Real Incident)",
+    "prompt": "nothing things",
+    "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: living room",
     "expected_actions": []
   },
   {

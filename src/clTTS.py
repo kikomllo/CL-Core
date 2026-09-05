@@ -301,8 +301,9 @@ class TTSManager:
             except KeyError:
                 phrase = raw_phrase 
                 
-            if payload.get("append_followup"):
-                phrase += " Anything else sir?"
+            followup_text = payload.get("followup_text")
+            if followup_text:
+                phrase += f" {followup_text}"
 
             await self.generate_and_play(client, phrase, abort_count=abort_count)
 
