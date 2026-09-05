@@ -7,6 +7,7 @@ import logging
 import time
 import datetime
 import collections
+import random
 import re
 import aiomqtt
 from typing import Dict, List, Tuple, Any, Optional
@@ -64,6 +65,15 @@ class CentralDaemon:
         self.is_spotify_playing: bool = False
         self.current_track: str = "None"
         self.last_light_target: str = "all"
+        # Unknown until the first jarvis/sys/light_status arrives -- default to
+        # "on" so the lights-off suggestion can't fire on a false assumption.
+        self.any_light_on: bool = True
+
+        # --- DYNAMIC PROACTIVE FOLLOW-UPS ---
+        # Per-candidate-id cooldown: candidate_id -> unix timestamp before which
+        # it's ineligible again. Set short on any ask, escalated long on decline.
+        self.suggestion_cooldowns: Dict[str, float] = {}
+        self.pending_suggestion: Optional[str] = None
 
         conversational_data = responses_data.get("conversational", {})
         self.nlp = IntentEngine(intents_data, word_to_number, abort_keywords, conversational_data, decline_keywords)
@@ -82,6 +92,18 @@ class CentralDaemon:
         self.followups_enabled = core_data.get("settings", {}).get("enable_followup", True)
         self.silent_mode = core_data.get("settings", {}).get("silent_mode", False)
 
+        fu_cfg = core_data.get("settings", {}).get("followup_settings", {})
+        self.followup_cooldown_asked_s = float(fu_cfg.get("cooldown_asked_minutes", 15)) * 60
+        self.followup_cooldown_declined_s = float(fu_cfg.get("cooldown_declined_minutes", 60)) * 60
+        self.followup_evening_start_hour = int(fu_cfg.get("evening_start_hour", 19))
+        self.followup_evening_end_hour = int(fu_cfg.get("evening_end_hour", 7))
+        default_candidates = {
+            "generic": {"weight": 3, "fire_probability": 0.45},
+            "lights_off_evening": {"weight": 2, "fire_probability": 0.40},
+            "music_paused": {"weight": 1, "fire_probability": 0.20},
+        }
+        self.followup_candidates_cfg = fu_cfg.get("candidates", default_candidates)
+
     # -------------------------------------------------------------------------
     # STATE & TELEMETRY HELPERS
     # -------------------------------------------------------------------------
@@ -90,6 +112,70 @@ class CentralDaemon:
         media = f"Playing '{self.current_track}'" if self.is_spotify_playing else "Paused/Idle"
         ctx = self.active_context.get("type") or "None"
         return f"Spotify: {media} | ActiveContext: {ctx} | LastTargetLight: {self.last_light_target}"
+
+    def _is_evening_hour(self) -> bool:
+        hour = datetime.datetime.now().hour
+        start, end = self.followup_evening_start_hour, self.followup_evening_end_hour
+        if start <= end:
+            return start <= hour < end
+        return hour >= start or hour < end
+
+    def _roll_followup(self, action_id: str, action: str) -> Tuple[bool, Optional[str]]:
+        """Decides whether -- and what -- to proactively ask after a dispatched
+        action, replacing the old always-on 'anything else' with two
+        independent rolls: which eligible candidate gets considered, then
+        whether it actually fires. Both capped low so this never feels
+        scripted or repeats a just-declined suggestion too soon."""
+        if not self.followups_enabled or self.silent_mode:
+            return False, None
+
+        # Discovery scans are already a lengthy, TTS-heavy interaction --
+        # suppress the whole mechanism rather than piling more speech onto it.
+        if action_id == "system.discovery" and action == "discover":
+            return False, None
+
+        now = time.time()
+        # is_light_on_action guards against jarvis/sys/light_status lagging the
+        # dispatch -- without it, a light just turned on could still look off
+        # here, making the suggestion look like it ignored what just happened.
+        # is_light_off_action is a different guard: turning a light off was
+        # the user's explicit choice, so immediately asking "want it back on?"
+        # contradicts what they just asked for, regardless of any lag.
+        is_light_on_action = (action_id == "light.set" and action == "on")
+        is_light_off_action = (action_id == "light.set" and action == "off")
+        is_media_play_action = (action_id == "spotify.control" and action == "play")
+
+        candidates = []
+        if now >= self.suggestion_cooldowns.get("generic", 0):
+            candidates.append("generic")
+        if (not self.any_light_on and not is_light_on_action and not is_light_off_action
+                and self._is_evening_hour()
+                and now >= self.suggestion_cooldowns.get("lights_off_evening", 0)):
+            candidates.append("lights_off_evening")
+        if (not self.is_spotify_playing and not is_media_play_action
+                and now >= self.suggestion_cooldowns.get("music_paused", 0)):
+            candidates.append("music_paused")
+
+        if not candidates:
+            return False, None
+
+        weights = [self.followup_candidates_cfg.get(c, {}).get("weight", 1) for c in candidates]
+        chosen = random.choices(candidates, weights=weights, k=1)[0]
+
+        fire_probability = self.followup_candidates_cfg.get(chosen, {}).get("fire_probability", 0.0)
+        if random.random() >= fire_probability:
+            return False, None
+
+        # Read live (not cached at init) so responses.json's hot-reload picks
+        # up phrase edits without a restart, same as every other phrase pool.
+        phrase_pool = self.responses_data.get("followup_suggestions", {}).get(chosen, [])
+        if not phrase_pool:
+            logging.warning(f"[DAEMON] No phrases configured for follow-up candidate '{chosen}' in responses.json.")
+            return False, None
+
+        self.suggestion_cooldowns[chosen] = now + self.followup_cooldown_asked_s
+        self.pending_suggestion = chosen
+        return True, random.choice(phrase_pool)
 
     def _update_dialogue_history(self, role: str, content: str) -> None:
         now = time.time()
@@ -101,18 +187,23 @@ class CentralDaemon:
 
     async def _speak_natural_reply(
         self, client: aiomqtt.Client, action_id: str, args: Dict[str, Any],
-        user_text: str, should_followup: bool, fallback_payload: Dict[str, Any]
+        user_text: str, should_followup: bool, suggestion_text: Optional[str],
+        fallback_payload: Dict[str, Any]
     ) -> None:
         """Generates a spoken confirmation via the reply SLM, decoupled from
         action dispatch -- the MQTT action has already been published before
         this runs as a background task, so a slow reply never delays the
         actual effect. Falls back to the static tts_request template if the
-        reply model is disabled, times out, or returns nothing."""
+        reply model is disabled, times out, or returns nothing.
+
+        The daemon (via _roll_followup) now fully owns whether/what to ask as
+        a follow-up, so the model is always asked for just the base
+        confirmation and the chosen suggestion_text is appended afterward."""
         reply_text = None
         if self.reply_slm.enabled:
             try:
                 reply_text = await asyncio.wait_for(
-                    self.reply_slm.generate_reply_async(action_id, args, user_text, should_followup),
+                    self.reply_slm.generate_reply_async(action_id, args, user_text),
                     timeout=4.0
                 )
             except asyncio.TimeoutError:
@@ -121,11 +212,12 @@ class CentralDaemon:
                 logging.error(f"[DAEMON] Reply generation failed: {e}")
 
         if reply_text:
+            final_reply = f"{reply_text} {suggestion_text}" if suggestion_text else reply_text
             await client.publish("jarvis/sys/speak", json.dumps({
-                "text": reply_text,
+                "text": final_reply,
                 "request_reply": should_followup
             }))
-            self._update_dialogue_history("assistant", reply_text)
+            self._update_dialogue_history("assistant", final_reply)
         else:
             await client.publish("jarvis/sys/tts_request", json.dumps(fallback_payload))
 
@@ -205,11 +297,22 @@ class CentralDaemon:
             self.dialogue_history.clear()
             return [({"action": "abort"}, "system.abort")], "Cancelled."
 
-        # 1b. Follow-up Decline Check ("no thanks" to "Anything else, sir?")
+        # 1b. Follow-up Decline Check ("no thanks" to a follow-up/suggestion)
         if self.nlp.is_decline_command(clean_text):
             self.active_context["type"] = None
+            if self.pending_suggestion:
+                # An explicit decline escalates that specific candidate's cooldown
+                # well past the default post-ask cooldown, so it doesn't nag again
+                # too soon -- other candidates are unaffected.
+                self.suggestion_cooldowns[self.pending_suggestion] = time.time() + self.followup_cooldown_declined_s
+                self.pending_suggestion = None
             logging.info(f"[DAEMON] Follow-up declined ('{clean_text}'); returning to idle silently.")
             return [], None
+
+        # Any other response closes the pending-suggestion window without the
+        # stronger decline-cooldown escalation above (e.g. the user answered
+        # with an unrelated command, or literally said "yes" to it).
+        self.pending_suggestion = None
 
         # 2. State Timeout Check
         if self.active_context["type"] and time.time() > self.active_context["expires_at"]:
@@ -312,7 +415,17 @@ class CentralDaemon:
         if self.slm.enabled and self.nlp.has_recognizable_content(clean_text):
             logging.info(f"[DAEMON] Fast-Path missed/compound detected. Routing to SLM Smart-Path: '{clean_text}'")
             snapshot = self._get_system_snapshot()
-            slm_result = await self.slm.parse_intent_async(clean_text, snapshot, list(self.dialogue_history))
+            slm_result = None
+            try:
+                slm_result = await asyncio.wait_for(
+                    self.slm.parse_intent_async(clean_text, snapshot, list(self.dialogue_history)),
+                    timeout=10.0
+                )
+            except asyncio.TimeoutError:
+                # An unbounded await here would silently strand the whole voice
+                # command with no response at all (e.g. if a model is still
+                # loading/downloading) -- fall through to the Fast-Path retry below.
+                logging.warning("[DAEMON] Smart-Path classification timed out; falling back to Fast-Path.")
 
             if slm_result and "actions" in slm_result and slm_result["actions"]:
                 actions_list = []
@@ -408,6 +521,7 @@ class CentralDaemon:
                     await client.subscribe("jarvis/sys/alarm/deactivate")
                     await client.subscribe("jarvis/sys/abort")
                     await client.subscribe("jarvis/sys/media_status")
+                    await client.subscribe("jarvis/sys/light_status")
                     await client.subscribe("jarvis/sys/daemon_control")
                     
                     logging.info("--- DAEMON READY: Listening for commands ---")
@@ -486,6 +600,14 @@ class CentralDaemon:
                                 payload = json.loads(payload_data)
                                 self.is_spotify_playing = (payload.get("status") == "Playing")
                                 self.current_track = payload.get("title", "Unknown")
+                            except Exception:
+                                pass
+
+                        elif topic == "jarvis/sys/light_status":
+                            try:
+                                payload = json.loads(payload_data)
+                                lights = payload.get("lights", [])
+                                self.any_light_on = any(l.get("is_on") for l in lights if not l.get("offline"))
                             except Exception:
                                 pass
 
@@ -613,27 +735,31 @@ class CentralDaemon:
                                         
                                         # Voice synthesis trigger
                                         if action_id != "system.speak":
-                                            # 1. Determine if this command qualifies for a follow-up
-                                            is_media_play = (action_id == "spotify.control" and action == "play")
-                                            should_followup = (self.followups_enabled and not self.silent_mode and not is_media_play and action != "discover")
+                                            # 1. Roll whether -- and what -- to proactively ask as a
+                                            # follow-up (see _roll_followup: two independent rolls,
+                                            # replacing the old always-on "anything else").
+                                            should_followup, suggestion_text = self._roll_followup(action_id, action)
 
-                                            # These system.discovery sub-actions can silently no-op or
-                                            # ask a clarifying question instead of doing what they say
-                                            # (e.g. a rename with no "to" in it) -- the actuator reports
-                                            # the real outcome asynchronously over jarvis/feedback, so an
-                                            # optimistic reply here would sometimes announce success (or
-                                            # get interrupted mid-sentence) for something that didn't
-                                            # actually happen. Let the actuator's own feedback speak for
-                                            # these instead of guessing before the outcome is known.
-                                            is_uncertain_light_op = action_id == "system.discovery" and action in (
-                                                "intent_rename_light", "intent_remove_light", "intent_set_default_light"
+                                            # These actions can report their real outcome only
+                                            # asynchronously (system.discovery's light rename/remove/
+                                            # default can silently no-op or ask a clarifying question;
+                                            # alarm/reminder/calendar creation parse the time in a
+                                            # background thread and clUtilities.py speaks its own
+                                            # "Scheduling..." + final result once that's done) -- an
+                                            # optimistic reply here would talk over or duplicate that,
+                                            # so let the actuator's own feedback speak for these instead.
+                                            actuator_self_reports = (
+                                                (action_id == "system.discovery" and action in (
+                                                    "intent_rename_light", "intent_remove_light", "intent_set_default_light"
+                                                ))
+                                                or action_id in ("alarm.create", "reminder.create", "calendar.create")
                                             )
 
                                             # 3. Handle Legacy ActionRouter Text
                                             if payload_out.get("text") and not is_silent and not self.silent_mode:
                                                 final_text = payload_out.get("text")
-                                                if should_followup:
-                                                    final_text += " Anything else sir?"
+                                                if should_followup and suggestion_text:
+                                                    final_text += f" {suggestion_text}"
 
                                                 await client.publish("jarvis/sys/speak", json.dumps({
                                                     "text": final_text,
@@ -644,15 +770,15 @@ class CentralDaemon:
                                             # first, as a non-blocking background task (the action
                                             # above already published), falling back to the static
                                             # template if the reply model can't produce one in time.
-                                            elif not is_spotify_status and not is_uncertain_light_op and not is_silent and not self.silent_mode:
+                                            elif not is_spotify_status and not actuator_self_reports and not is_silent and not self.silent_mode:
                                                 args_for_reply = {k: v for k, v in command.items() if k != "audio_path"}
                                                 fallback_payload = {
                                                     "target_topic": topic_out,
                                                     "command": payload_out,
-                                                    "append_followup": should_followup
+                                                    "followup_text": suggestion_text if should_followup else None
                                                 }
                                                 asyncio.create_task(self._speak_natural_reply(
-                                                    client, action_id, args_for_reply, clean_text, should_followup, fallback_payload
+                                                    client, action_id, args_for_reply, clean_text, should_followup, suggestion_text, fallback_payload
                                                 ))
                                         
                                         if self.active_context["type"] is not None and not self.silent_mode:

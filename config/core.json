@@ -7,6 +7,7 @@
         "slm_settings": {
             "enabled": true,
             "model_path": "models/jarvis-brain-v2-q4_k_m.gguf",
+            "model_url": "https://huggingface.co/Kikomlo/jarvis-brain-v2/resolve/main/jarvis-brain-v2-q4_k_m.gguf",
             "threads": 4,
             "context_size": 1024,
             "temperature": 0.1,
@@ -15,12 +16,33 @@
         "reply_slm_settings": {
             "enabled": true,
             "model_path": "models/SmolLM2-360M-Instruct.Q8_0.gguf",
+            "model_url": "https://huggingface.co/Kikomlo/jarvis-reply-v1/resolve/main/SmolLM2-360M-Instruct.Q8_0.gguf",
             "threads": 2,
             "context_size": 256,
             "temperature": 0.7,
             "gpu_layers": 0
         },
-        "last_light_target": "living_room"
+        "last_light_target": "living_room",
+        "followup_settings": {
+            "cooldown_asked_minutes": 15,
+            "cooldown_declined_minutes": 60,
+            "evening_start_hour": 19,
+            "evening_end_hour": 7,
+            "candidates": {
+                "generic": {
+                    "weight": 3,
+                    "fire_probability": 0.45
+                },
+                "lights_off_evening": {
+                    "weight": 2,
+                    "fire_probability": 0.4
+                },
+                "music_paused": {
+                    "weight": 1,
+                    "fire_probability": 0.2
+                }
+            }
+        }
     },
     "nlp_rules": {
         "abort_keywords": [
