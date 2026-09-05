@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QLineEdit, QPushButton, QCheckBox, QTabWidget, QInputDialog, QStackedWidget, QSizePolicy
 )
 from clUIScaler import UIScaler
-from PyQt6.QtCore import Qt, QPoint, QTimer
+from PyQt6.QtCore import Qt, QPoint
 
 def s(val):
     return UIScaler.get().scale(val)
@@ -355,14 +355,7 @@ class TodoWidget(QWidget):
             if self.tabs.tabText(i) == self.current_list_name:
                 self.tabs.setCurrentIndex(i)
                 break
-                
-        QTimer.singleShot(50, self._force_resize)
-        
-    def _force_resize(self):
-        self.adjustSize()
-        if self.parentWidget():
-            self.parentWidget().adjustSize()
-                
+
     def toggle_task(self, todo_id, state):
         is_checked = (state == 2)
         try:
