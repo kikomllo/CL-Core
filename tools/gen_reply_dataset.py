@@ -6,8 +6,12 @@ Where that dataset optimizes for classification correctness and class balance, t
 one optimizes for phrasing VARIETY in a consistent voice (JARVIS, from Iron Man) --
 the opposite priority. Collapsing onto one fixed phrase per action was exactly the
 failure mode that made the old combined model's replies feel robotic, so every
-action here has multiple hand-written variants, and follow-up phrasing ("Anything
-else sir?") is drawn from its own varied pool rather than hardcoded.
+action here has multiple hand-written variants.
+
+The model only ever phrases a bare confirmation for one action -- whether (and
+what) to ask as a follow-up is decided entirely by CentralDaemon._roll_followup
+in clDaemon.py and appended after the fact, so this dataset has no follow-up or
+suggestion phrasing of its own to teach.
 
 Output format: ChatML JSONL (system/user/assistant), assistant content is plain
 text (not JSON) -- this model has no grammar constraint, it only ever phrases.
@@ -38,19 +42,6 @@ from gen_dataset import (
 )
 
 OUTPUT_FILE = "data/reply_lora_dataset.jsonl"
-
-# ─── FOLLOW-UP PHRASING ──────────────────────────────────────────────────────
-# Deliberately varied and separate from the base confirmation -- the model
-# should learn to pick a phrasing, not always append the same fixed string.
-FOLLOWUP_PHRASES = [
-    "Will that be all sir?",
-    "Is there anything more I can do for you sir?",
-    "Shall I do anything further?",
-    "Is there anything else you require sir?",
-    "How else might I be of service?",
-    "Anything further sir?",
-    "Will there be anything else?",
-]
 
 # ─── JARVIS VOICE: PHRASE BANK ───────────────────────────────────────────────
 # Keyed by intent name (from intents.json) purely for generation convenience --
@@ -267,41 +258,6 @@ SLOTTED_PHRASES: Dict[str, List[str]] = {
     ],
 }
 
-# ─── PROACTIVE SUGGESTIONS ────────────────────────────────────────────────────
-# Deterministic action -> suggestion pairings (decided here, not left to the
-# model to invent) -- occasionally used in place of a plain follow-up phrase.
-# NOTE: purely conversational flavor right now. If the user replies "yes" to
-# one of these, nothing automatically happens -- the action model has no
-# visibility into what the reply model just asked, so a bare "yes" isn't
-# understood as "do the suggested thing" without separate follow-through
-# plumbing that doesn't exist yet.
-SUGGESTION_PHRASES: Dict[str, List[str]] = {
-    "light_on": [
-        "Would you like some music to go with that?",
-        "Shall I put some music on as well?",
-        "Care for some music while you're at it?",
-    ],
-    "light_off": [
-        "Shall I dim the rest of the house too?",
-    ],
-    "spotify_play_generic": [
-        "Would you like the lights set to match the mood?",
-    ],
-    "spotify_play_playlist": [
-        "Shall I set the mood with the lights as well?",
-    ],
-    "alarm_create": [
-        "Shall I add this to your calendar as well?",
-    ],
-    "jarvis_reminder_set": [
-        "Would you like this added to your calendar as well?",
-    ],
-    "todo_add": [
-        "Shall I set a reminder for that as well?",
-    ],
-}
-SUGGESTION_RATE = 0.4  # fraction of should_followup=True samples, for intents with a pool, that get a suggestion instead of a plain follow-up
-
 NOISE_PHRASES = [
     "I didn't quite catch that sir.", "Forgive me, I didn't catch that.", "Pardon sir?",
     "I'm afraid I missed that.",
@@ -361,20 +317,10 @@ def gen_action_reply_samples(intents: Dict[str, Any], per_intent: int = 8) -> Li
             filled_text, filled_args = fill_template(template, config)
             user_text = variate_phrasing(filled_text)
 
-            should_followup = random.random() < 0.5
-            base_reply = select_phrase(intent_name, filled_args)
-
-            tail = None
-            if should_followup:
-                suggestion_pool = SUGGESTION_PHRASES.get(intent_name)
-                if suggestion_pool and random.random() < SUGGESTION_RATE:
-                    tail = random.choice(suggestion_pool)
-                else:
-                    tail = random.choice(FOLLOWUP_PHRASES)
-            reply = f"{base_reply} {tail}" if tail else base_reply
+            reply = select_phrase(intent_name, filled_args)
 
             summary = render_action_summary(action_id, filled_args)
-            system_line = f"[ACTION] {summary} | followup: {'yes' if should_followup else 'no'}"
+            system_line = f"[ACTION] {summary}"
 
             records.append(format_record(system_line, user_text, reply.strip()))
 
@@ -385,13 +331,11 @@ def gen_noise_oos_reply_samples(count: int) -> List[Dict]:
     records = []
     for _ in range(count // 2):
         user_text = variate_phrasing(random.choice(NOISE_SAMPLES))
-        system_line = "[ACTION] none | followup: no"
-        records.append(format_record(system_line, user_text, random.choice(NOISE_PHRASES)))
+        records.append(format_record("[ACTION] none", user_text, random.choice(NOISE_PHRASES)))
 
     for _ in range(count // 2):
         user_text = variate_phrasing(random.choice(OUT_OF_SCOPE))
-        system_line = "[ACTION] none | followup: no"
-        records.append(format_record(system_line, user_text, random.choice(OOS_PHRASES)))
+        records.append(format_record("[ACTION] none", user_text, random.choice(OOS_PHRASES)))
 
     return records
 
