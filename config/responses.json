@@ -131,6 +131,29 @@
       ]
     }
   },
+  "followup_suggestions": {
+    "generic": [
+      "Will that be all sir?",
+      "Is there anything more I can do for you sir?",
+      "Shall I do anything further?",
+      "Is there anything else you require sir?",
+      "How else might I be of service?",
+      "Anything further sir?",
+      "Will there be anything else?"
+    ],
+    "lights_off_evening": [
+      "Shall I turn on the lights as well sir?",
+      "Would you like some light in here?",
+      "Care for the lights on sir?",
+      "Shall I brighten things up for you?"
+    ],
+    "music_paused": [
+      "Might I suggest some music sir?",
+      "Would you like me to start some music?",
+      "Care for a little music while you're at it?",
+      "Shall I put some music on?"
+    ]
+  },
   "conversational": {
     "Can i put my balls in your jaws": {
       "action": "play",
