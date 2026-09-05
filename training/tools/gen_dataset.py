@@ -29,7 +29,15 @@ PLAYLISTS = ["synthwave", "jazz", "rock", "classical", "lofi", "chill", "ambient
 TRACKS = ["Resonance", "Blinding Lights", "Starboy", "Bohemian Rhapsody", "Stairway to Heaven"]
 ARTISTS = ["Home", "The Weeknd", "Queen", "Led Zeppelin", "Daft Punk"]
 MODULES = ["spotify", "whisper", "mic", "tts", "lights", "ui"]
-TIMES = ["7 am", "8 am", "6:30 am", "9 pm", "10 pm", "5 minutes", "10 minutes", "30 minutes", "1 hour", "2 hours"]
+TIMES = [
+    "7 am", "8 am", "6:30 am", "9 pm", "10 pm",
+    "5 minutes", "10 minutes", "30 minutes", "45 minutes", "1 hour", "2 hours", "3 hours",
+    # Compound durations ("X hours and Y minutes") -- without these the model only
+    # ever saw single-unit values, so given "4 hours and 30 minutes" it grabbed
+    # just the trailing "30 minutes" instead of extracting the whole phrase.
+    "1 hour and 30 minutes", "1 hour and 15 minutes", "2 hours and 15 minutes",
+    "2 hours and 45 minutes", "4 hours and 30 minutes", "5 hours and 20 minutes",
+]
 TASKS = ["buy groceries", "call mom", "finish the report", "clean the kitchen", "take out the trash", "water the plants"]
 EVENTS = ["dentist appointment", "team meeting", "lunch with Alex", "gym session", "project deadline"]
 VOLUMES = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
@@ -70,6 +78,26 @@ OUT_OF_SCOPE = [
     "send an email to john", "take a screenshot", "open google chrome",
     "book a flight to london", "order food from uber eats",
     "what's 2 plus 2", "how do I cook pasta", "who won the game last night",
+]
+
+# Real garbled Whisper mis-transcriptions from live testing, plus the
+# building blocks to synthesize more like them -- distinct from NOISE_SAMPLES
+# (clean short filler) and OUT_OF_SCOPE (grammatically valid but off-topic).
+# These name-drop real domain vocabulary inside an incoherent sentence, which
+# neither of the other two categories does; without this, the model only
+# ever learned to reject clean noise, not noise that sounds command-adjacent.
+REAL_GARBLED_INCIDENTS = [
+    "ajervus in a bold living room life",
+    "nothing things",
+]
+GARBLED_TOPICS = LIGHT_TARGETS + COLORS + [
+    "brightness", "volume", "spotify", "alarm", "reminder", "todo", "calendar", "playlist",
+]
+GARBLED_FILLERS = [
+    "in a bold", "over there and stuff", "somewhere maybe", "or whatever",
+    "the situation right now", "yesterday for some reason", "and things today",
+    "about the whole thing", "near the old days", "moment happened again",
+    "was walking around", "kind of a big deal", "or something like that",
 ]
 
 # Per-intent sampling weight boosts for underrepresented intents.
@@ -247,6 +275,17 @@ def gen_compound_samples(intents: Dict[str, Any], count: int) -> List[Dict]:
         ("light_dim", "spotify_volume", "and"),
         ("jarvis_reminder_set", "spotify_pause", "and"),
         ("todo_add", "spotify_play_generic", "and then"),
+        # Same-target, non-conflicting attributes (brightness + colour) joined
+        # with a plain conjunction -- distinct from gen_correction_samples'
+        # "X... actually Y" pattern below, which teaches a full replace.
+        # Without this, "set it to 50 percent and actually make it red" was
+        # learned as a hard correction and dropped the percent entirely.
+        # Both orders and a few connectors, so the merge generalizes rather
+        # than just memorizing one exact phrasing.
+        ("light_dim", "light_color", "and actually"),
+        ("light_dim", "light_color", "and"),
+        ("light_dim", "light_color", "and also"),
+        ("light_color", "light_dim", "and actually"),
     ]
 
     for _ in range(count):
@@ -262,6 +301,14 @@ def gen_compound_samples(intents: Dict[str, Any], count: int) -> List[Dict]:
 
         filled1, args1 = fill_template(t1, c1)
         filled2, args2 = fill_template(t2, c2)
+
+        # If both halves name a light_target, keep it the same light instead
+        # of two independently-random ones -- otherwise a same-domain compound
+        # (e.g. light_dim + light_color) would train on "dim the kitchen light
+        # ... make the desk light red" as if that were one coherent command.
+        if "light_target" in args1 and "light_target" in args2 and args1["light_target"] != args2["light_target"]:
+            filled2 = filled2.replace(args2["light_target"], args1["light_target"])
+            args2["light_target"] = args1["light_target"]
 
         user_text = variate_phrasing(f"{filled1} {connector} {filled2}")
 
@@ -306,7 +353,14 @@ def gen_correction_samples(intents: Dict[str, Any], count: int) -> List[Dict]:
         filled2, args2 = fill_template(t2, c2)
 
         correction = random.choice(CORRECTION_PHRASES)
-        user_text = f"{filled1}... {correction} {filled2}"
+        # Vary the pause style ("..." vs a comma) so the replace/correction
+        # behavior generalizes across how Whisper actually renders a pause,
+        # instead of only ever seeing "...". Without this, a comma-style
+        # correction (real example: "turn on the light, actually, play some
+        # music instead") had no reinforcement of its own and drifted toward
+        # whatever a same-word "and actually" merge pattern taught elsewhere.
+        separator = "..." if random.random() < 0.5 else ","
+        user_text = f"{filled1}{separator} {correction} {filled2}"
         if random.random() < 0.3:
             user_text = variate_phrasing(user_text)
 
@@ -335,12 +389,18 @@ def gen_contextual_inference_samples(count: int) -> List[Dict]:
             "weight": 3,
         },
         {
-            "user_variants": ["make it brighter", "brighter please", "more light", "turn it up"],
+            # "make it brighter" is deliberately excluded here -- it's one of
+            # light_brightness_up's own templates, and having it here too
+            # taught two contradictory labels (fixed lum:100 vs. a relative
+            # brightness_up step) for the exact same phrase.
+            "user_variants": ["brighter please", "more light", "turn it up"],
             "state_key": "LastTargetLight",
             "build_action": lambda target: {"action_id": "light.set", "action": "on", "lum": 100, "light_target": target},
         },
         {
-            "user_variants": ["dim it down", "lower the brightness", "make it darker", "less light"],
+            # Same reasoning: "lower the brightness" belongs to
+            # light_brightness_down only.
+            "user_variants": ["dim it down", "make it darker", "less light"],
             "state_key": "LastTargetLight",
             "build_action": lambda target: {"action_id": "light.set", "action": "on", "lum": 20, "light_target": target},
         },
@@ -404,6 +464,29 @@ def gen_noise_rejection_samples(count: int) -> List[Dict]:
     for _ in range(count // 2):
         oos = random.choice(OUT_OF_SCOPE)
         user_text = variate_phrasing(oos)
+        records.append({
+            "state": random_state(),
+            "user": user_text,
+            "actions": [],
+        })
+
+    return records
+
+
+def gen_garbled_stt_samples(count: int) -> List[Dict]:
+    """Realistic garbled Whisper-style mis-transcriptions that happen to
+    contain real domain vocabulary but have no coherent command structure --
+    should still return empty actions."""
+    records = []
+    for _ in range(count):
+        if random.random() < 0.1:
+            user_text = random.choice(REAL_GARBLED_INCIDENTS)
+        else:
+            topic = random.choice(GARBLED_TOPICS)
+            filler1 = random.choice(GARBLED_FILLERS)
+            filler2 = random.choice(GARBLED_FILLERS)
+            user_text = f"{topic} {filler1} {filler2}".strip()
+
         records.append({
             "state": random_state(),
             "user": user_text,
@@ -519,8 +602,9 @@ def main():
     corrections = gen_correction_samples(intents, 350)         # 14%
     contextual = gen_contextual_inference_samples(200)          # 8%
     noise = gen_noise_rejection_samples(375)                    # 15%
+    garbled = gen_garbled_stt_samples(300)                      # realistic garbled STT, on top of clean noise/OOS above
 
-    all_records = singles + compounds + corrections + contextual + noise
+    all_records = singles + compounds + corrections + contextual + noise + garbled
     random.shuffle(all_records)
 
     # Deduplicate by user prompt text

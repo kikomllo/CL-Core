@@ -41,20 +41,66 @@ except ImportError:
     LLAMA_AVAILABLE = False
 
 
+def _download_progress_hook(label: str, count, block_size, total_size):
+    """Displays a clean terminal progress bar during a model download."""
+    if total_size == -1: return
+    percent = int(count * block_size * 100 / total_size)
+    percent = max(0, min(percent, 100))
+    bar = ('█' * int(percent / 2)).ljust(50, '-')
+    sys.stdout.write(f"\r\033[K[{label} DOWNLOAD] |{bar}| {percent}%")
+    sys.stdout.flush()
+
+
+def ensure_gguf_exists(model_path: str, model_url: str, label: str) -> bool:
+    """Checks if a GGUF exists locally, downloading it from model_url if not.
+    model_url is read from core.json (slm_settings.model_url /
+    reply_slm_settings.model_url) -- it's a project-specific fine-tune with
+    no fixed upstream, so there's no hardcoded fallback URL to guess from."""
+    if os.path.exists(model_path):
+        return True
+
+    if not model_url:
+        logging.error(
+            f"[{label}] Model not found at {model_path} and no model_url is configured "
+            f"in core.json to fetch it from. Train it (see tools/kaggle_train.py) or set "
+            f"model_url to a direct download link for the .gguf file."
+        )
+        return False
+
+    logging.info(f"[{label}] Model not found locally. Downloading from configured model_url...")
+    os.makedirs(os.path.dirname(model_path), exist_ok=True)
+
+    try:
+        urllib.request.urlretrieve(
+            model_url, model_path,
+            reporthook=lambda c, b, t: _download_progress_hook(label, c, b, t)
+        )
+        sys.stdout.write("\n")
+        logging.info(f"[{label}] Download complete! Model saved to local workspace.")
+        return True
+    except Exception as e:
+        sys.stdout.write("\n")
+        logging.error(f"[{label}] Autonomous download failed: {e}.")
+        if os.path.exists(model_path):
+            os.remove(model_path)  # Clean up corrupted partial downloads
+        return False
+
+
 class SLMInferenceEngine:
     """Asynchronous low-latency cognitive engine with autonomous model fetching."""
 
     def __init__(self, core_config: Dict[str, Any]):
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
         slm_cfg = core_config.get("settings", {}).get("slm_settings", {})
-        
+
         self.enabled = slm_cfg.get("enabled", True) and LLAMA_AVAILABLE
         model_rel_path = slm_cfg.get("model_path", "models/jarvis-brain-v2-q4_k_m.gguf")
         self.model_path = os.path.abspath(os.path.join(self.base_dir, "..", "..", model_rel_path))
-        
-        # HuggingFace direct download link for this specific model
-        self.model_url = "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
-        
+
+        # Direct download link for this fine-tuned model's .gguf file (e.g. a
+        # Hugging Face "resolve/main/..." URL) -- set in config/core.json.
+        self.model_url = slm_cfg.get("model_url", "")
+
         self.n_threads = int(slm_cfg.get("threads", 4))
         self.n_ctx = int(slm_cfg.get("context_size", 1024))
         self.temp = float(slm_cfg.get("temperature", 0.1))
@@ -72,37 +118,8 @@ class SLMInferenceEngine:
         if self.enabled:
             self._load_engine()
 
-    def _download_progress_hook(self, count, block_size, total_size):
-        """Displays a clean terminal progress bar during model download."""
-        if total_size == -1: return
-        percent = int(count * block_size * 100 / total_size)
-        percent = max(0, min(percent, 100))
-        bar = ('█' * int(percent / 2)).ljust(50, '-')
-        sys.stdout.write(f"\r\033[K[SLM DOWNLOAD] |{bar}| {percent}%")
-        sys.stdout.flush()
-
-    def _ensure_model_exists(self) -> bool:
-        """Checks if model exists, downloads it if not."""
-        if os.path.exists(self.model_path):
-            return True
-
-        logging.info(f"[SLM] Model not found locally. Initiating autonomous download (~350MB)...")
-        os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
-        
-        try:
-            urllib.request.urlretrieve(self.model_url, self.model_path, reporthook=self._download_progress_hook)
-            sys.stdout.write("\n")
-            logging.info("[SLM] Download complete! Model saved to local workspace.")
-            return True
-        except Exception as e:
-            sys.stdout.write("\n")
-            logging.error(f"[SLM] Autonomous download failed: {e}. SLM fallback disabled.")
-            if os.path.exists(self.model_path):
-                os.remove(self.model_path) # Clean up corrupted partial downloads
-            return False
-
     def _load_engine(self) -> None:
-        if not self._ensure_model_exists():
+        if not ensure_gguf_exists(self.model_path, self.model_url, "SLM"):
             self.enabled = False
             return
 
@@ -182,6 +199,7 @@ class ReplySLMEngine:
         self.enabled = reply_cfg.get("enabled", True) and LLAMA_AVAILABLE
         model_rel_path = reply_cfg.get("model_path", "models/SmolLM2-360M-Instruct.Q8_0.gguf")
         self.model_path = os.path.abspath(os.path.join(self.base_dir, "..", "..", model_rel_path))
+        self.model_url = reply_cfg.get("model_url", "")
 
         self.n_threads = int(reply_cfg.get("threads", 2))
         self.n_ctx = int(reply_cfg.get("context_size", 256))
@@ -196,10 +214,7 @@ class ReplySLMEngine:
             self._load_engine()
 
     def _load_engine(self) -> None:
-        # This model is a project-specific fine-tune, not a stock download --
-        # unlike SLMInferenceEngine, there's no autonomous-fetch fallback.
-        if not os.path.exists(self.model_path):
-            logging.warning(f"[REPLY-SLM] Model not found at {self.model_path}. Reply generation disabled.")
+        if not ensure_gguf_exists(self.model_path, self.model_url, "REPLY-SLM"):
             self.enabled = False
             return
 
@@ -223,11 +238,14 @@ class ReplySLMEngine:
             logging.error(f"[REPLY-SLM] Failed to initialize llama_cpp engine: {e}")
             self.enabled = False
 
-    def _format_prompt(self, action_id: str, args: Dict[str, Any], user_text: str, should_followup: bool) -> str:
+    def _format_prompt(self, action_id: str, args: Dict[str, Any], user_text: str) -> str:
         # Mirrors tools/gen_reply_dataset.py's render_action_summary/system_line
         # format exactly, so the runtime prompt matches training distribution.
+        # Whether to follow up is decided entirely by CentralDaemon._roll_followup
+        # and appended after the fact -- this model only ever phrases the bare
+        # confirmation for one action.
         summary = " ".join([action_id] + [f"{k}={v}" for k, v in args.items()])
-        system_line = f"[ACTION] {summary} | followup: {'yes' if should_followup else 'no'}"
+        system_line = f"[ACTION] {summary}"
         return (
             f"<|im_start|>system\n{system_line}<|im_end|>\n"
             f"<|im_start|>user\n{user_text}<|im_end|>\n"
@@ -251,10 +269,10 @@ class ReplySLMEngine:
             return None
 
     async def generate_reply_async(
-        self, action_id: str, args: Dict[str, Any], user_text: str, should_followup: bool
+        self, action_id: str, args: Dict[str, Any], user_text: str
     ) -> Optional[str]:
         if not self.enabled:
             return None
-        prompt = self._format_prompt(action_id, args, user_text, should_followup)
+        prompt = self._format_prompt(action_id, args, user_text)
         async with self._lock:
             return await asyncio.to_thread(self._infer_sync, prompt)

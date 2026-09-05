@@ -107,6 +107,17 @@ class TestDaemonCoreLogic:
         noise_intents, _ = await daemon.route_voice_command("nothing things")
         assert noise_intents == []
 
+    @pytest.mark.asyncio
+    async def test_smart_path_timeout_falls_back_instead_of_hanging(self, daemon, mocker):
+        """An unbounded await on the Smart-Path call would strand the whole
+        voice command with no response at all (e.g. if a model is still
+        loading/downloading) -- it must time out and fall back instead."""
+        mocker.patch.object(daemon.slm, "parse_intent_async", new=AsyncMock(side_effect=asyncio.TimeoutError()))
+
+        intents, _ = await daemon.route_voice_command("turn on the kitchen light and play some jazz")
+
+        assert isinstance(intents, list)
+
 class TestDaemonStateTraps:
     """Tests context-aware locks that override standard NLP routing using the new Unified State Machine."""
 
@@ -163,6 +174,24 @@ class TestDaemonMQTTIntegration:
         assert sent_payload["action"] == "on"
         assert sent_payload["lum"] == 50
         assert sent_payload["color"] == "red"
+
+    @pytest.mark.asyncio
+    async def test_reminder_creation_does_not_trigger_optimistic_reply(self, daemon, mock_mqtt, message_stream, mocker):
+        """clUtilities.py speaks its own 'Scheduling...' + final result for
+        alarm/reminder/calendar creation asynchronously (real time parsing
+        happens in a background thread) -- the daemon's optimistic reply-SLM
+        path must not also fire and talk over it."""
+        mock_speak = mocker.patch.object(daemon, "_speak_natural_reply", new=AsyncMock())
+        mock_mqtt.messages = message_stream([
+            ("jarvis/sensor/voice", "remind me to call mom in 30 minutes")
+        ])
+
+        await daemon.run()
+
+        publish_calls = mock_mqtt.publish.call_args_list
+        reminder_calls = [c for c in publish_calls if c[0][0] == "jarvis/sys/reminder/create"]
+        assert len(reminder_calls) == 1
+        mock_speak.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_network_drop_recovery(self, daemon, mock_mqtt, mocker):
@@ -230,6 +259,126 @@ class TestDaemonMQTTIntegration:
         # When silent mode is enabled, no TTS speech or followup request should be published
         assert len(tts_req_calls) == 0
         assert len(speak_calls) == 0
+
+class TestDynamicFollowups:
+    """_roll_followup replaces the old always-on 'anything else' with a
+    weighted-candidate pool (generic + state-driven suggestions), a
+    fire-probability roll, and per-candidate cooldowns."""
+
+    @staticmethod
+    def _capture_choices_pool(mocker):
+        """Wraps random.choices to record the candidate pool it's called
+        with, while still behaving like the real thing."""
+        import random as random_module
+        real_choices = random_module.choices
+        captured = {}
+
+        def wrapper(population, weights=None, k=1):
+            captured["population"] = list(population)
+            return real_choices(population, weights=weights, k=k)
+
+        mocker.patch("random.choices", side_effect=wrapper)
+        return captured
+
+    def test_master_switch_off_disables_everything(self, daemon):
+        daemon.followups_enabled = False
+        should, text = daemon._roll_followup("light.set", "off")
+        assert (should, text) == (False, None)
+
+    def test_discovery_action_suppresses_the_whole_mechanism(self, daemon):
+        should, text = daemon._roll_followup("system.discovery", "discover")
+        assert (should, text) == (False, None)
+
+    def test_generic_fires_when_rolls_succeed(self, daemon, mocker):
+        mocker.patch("random.choices", return_value=["generic"])
+        mocker.patch("random.random", return_value=0.0)
+        should, text = daemon._roll_followup("light.set", "off")
+        assert should is True
+        assert text in daemon.responses_data["followup_suggestions"]["generic"]
+
+    def test_fire_roll_failure_yields_no_followup(self, daemon, mocker):
+        mocker.patch("random.choices", return_value=["generic"])
+        mocker.patch("random.random", return_value=0.99)  # above every configured fire_probability
+        should, text = daemon._roll_followup("light.set", "off")
+        assert (should, text) == (False, None)
+
+    def test_missing_phrase_pool_fails_gracefully_without_crashing(self, daemon, mocker):
+        """Phrase text lives in responses.json now (not hardcoded) -- a
+        misconfigured/missing pool must not crash the roll, just skip it."""
+        daemon.responses_data["followup_suggestions"] = {}
+        mocker.patch("random.choices", return_value=["generic"])
+        mocker.patch("random.random", return_value=0.0)
+        should, text = daemon._roll_followup("light.set", "off")
+        assert (should, text) == (False, None)
+
+    def test_lights_off_evening_ineligible_during_the_day(self, daemon, mocker):
+        daemon.any_light_on = False
+        daemon.followup_evening_start_hour = 19
+        daemon.followup_evening_end_hour = 7
+        mocker.patch("clDaemon.datetime.datetime").now.return_value.hour = 12  # midday
+        captured = self._capture_choices_pool(mocker)
+
+        daemon._roll_followup("light.set", "off")
+
+        assert "lights_off_evening" not in captured["population"]
+
+    def test_lights_off_evening_ineligible_right_after_turning_a_light_on(self, daemon, mocker):
+        """Guards against the jarvis/sys/light_status confirmation lagging the
+        dispatch -- any_light_on might still read False from before this
+        exact command turned a light on."""
+        daemon.any_light_on = False
+        daemon.followup_evening_start_hour = 0
+        daemon.followup_evening_end_hour = 24  # always "evening" for this test
+        captured = self._capture_choices_pool(mocker)
+
+        daemon._roll_followup("light.set", "on")
+
+        assert "lights_off_evening" not in captured["population"]
+
+    def test_lights_off_evening_ineligible_right_after_turning_a_light_off(self, daemon, mocker):
+        """Turning a light off was the user's explicit choice -- immediately
+        asking 'want it back on?' contradicts what they just asked for, so
+        this candidate must not fire for the action that just did that."""
+        daemon.any_light_on = False
+        daemon.followup_evening_start_hour = 0
+        daemon.followup_evening_end_hour = 24  # always "evening" for this test
+        captured = self._capture_choices_pool(mocker)
+
+        daemon._roll_followup("light.set", "off")
+
+        assert "lights_off_evening" not in captured["population"]
+
+    def test_music_paused_ineligible_right_after_starting_playback(self, daemon, mocker):
+        daemon.is_spotify_playing = False
+        captured = self._capture_choices_pool(mocker)
+
+        daemon._roll_followup("spotify.control", "play")
+
+        assert "music_paused" not in captured["population"]
+
+    def test_asked_candidate_is_ineligible_again_until_short_cooldown_elapses(self, daemon, mocker):
+        daemon.is_spotify_playing = True  # excludes music_paused so the pool is just ["generic"]
+        mocker.patch("random.choices", return_value=["generic"])
+        mocker.patch("random.random", return_value=0.0)
+        should, _ = daemon._roll_followup("light.set", "off")
+        assert should is True
+
+        # Immediately after: with generic in cooldown and nothing else eligible
+        # (any_light_on defaults True, spotify is playing), the pool is empty.
+        should_again, text_again = daemon._roll_followup("light.set", "off")
+        assert (should_again, text_again) == (False, None)
+
+    @pytest.mark.asyncio
+    async def test_explicit_decline_escalates_to_the_longer_cooldown(self, daemon):
+        daemon.pending_suggestion = "generic"
+        daemon.suggestion_cooldowns["generic"] = time.time() + 10  # short cooldown already set
+
+        await daemon.route_voice_command("no thanks")
+
+        assert daemon.pending_suggestion is None
+        remaining = daemon.suggestion_cooldowns["generic"] - time.time()
+        # Declined cooldown (60 min default) should now dominate the short one.
+        assert remaining > 55 * 60
 
 class TestDaemonEdgeCases:
     @pytest.mark.asyncio
