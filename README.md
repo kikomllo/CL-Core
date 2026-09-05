@@ -127,6 +127,22 @@ REDIS_DB="0"
 
 You only need to hand-edit this file once, to bootstrap it. After that, every credential above except the Redis connection settings — `LIGHT_TYPE`/`LIGHT_IP`/`LIGHT_MAC`, `TAPO_EMAIL`/`TAPO_PASSWORD`, and the `SPOTIPY_*` keys — can be viewed and updated from the **Settings** tab in the UI's **Fullscreen Mode** (`SettingsWidget`, only available while fullscreen). Changes there write straight back to `.env` via `clEnvLoader`, so there's no need to edit the file by hand again — though since each microservice only reads `.env` once at its own startup, a changed credential still needs an ecosystem restart (or a targeted module restart) to take effect for the actuator that uses it.
 
+### 4. SLM Models (GGUF)
+
+`models/` is gitignored — it holds two fine-tuned GGUF files the hybrid cognitive router needs (see `nlp/clSLM.py`):
+
+| File | Role | Config key |
+|---|---|---|
+| `jarvis-brain-v2-q4_k_m.gguf` | Action-classification model (Smart-Path) | `settings.slm_settings` in `config/core.json` |
+| `SmolLM2-360M-Instruct.Q8_0.gguf` | Reply/personality model | `settings.reply_slm_settings` in `config/core.json` |
+
+Neither is a stock download — both are fine-tuned specifically for this project (see `tools/gen_dataset.py` / `tools/kaggle_train.py` and `tools/gen_reply_dataset.py` / `tools/kaggle_reply_train.py`), so there's no fixed upstream URL to fetch them from automatically. Get a copy one of two ways:
+
+- **Auto-download**: set `model_url` under `slm_settings` / `reply_slm_settings` in `config/core.json` to a direct link to the `.gguf` file (e.g. a Hugging Face `resolve/main/...` URL). On boot, if the file named in `model_path` isn't already present under `models/`, it's downloaded from `model_url` automatically.
+- **Train your own**: run `python tools/gen_dataset.py` (and `tools/gen_reply_dataset.py` for the reply model) to build the training data from `config/intents.json`, then copy `tools/kaggle_train.py` (and/or `tools/kaggle_reply_train.py`, or `tools/kaggle_train_all.py` to do both in one notebook) into a Kaggle notebook to fine-tune and export the GGUF.
+
+If neither `model_path` nor a working `model_url` is available, the daemon logs a clear error and disables that engine rather than crashing — Fast-Path fuzzy matching (`nlp/clIntentEngine.py`) still handles most commands with zero models loaded at all.
+
 ## Service Deployment
 
 The architecture supports automated, supervised deployment, as well as granular debugging.
