@@ -194,6 +194,53 @@ class TestDaemonMQTTIntegration:
         mock_speak.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_spotify_play_by_track_never_gets_a_followup(self, daemon, mock_mqtt, message_stream, mocker):
+        """A search-driven Spotify play (track/artist/search_query given) can
+        turn into a CONFIDENCE_LOW 'please choose one of these' prompt once
+        the actuator's real search result comes back, which isn't known yet
+        at dispatch time. The optimistic reply-SLM confirmation still fires
+        (so a clean match isn't left silent), but it must never carry a
+        follow-up question that could talk over that prompt -- so
+        _roll_followup itself is skipped for this action, not just ignored."""
+        mock_speak = mocker.patch.object(daemon, "_speak_natural_reply", new=AsyncMock())
+        mock_roll = mocker.patch.object(daemon, "_roll_followup")
+        mock_mqtt.messages = message_stream([
+            ("jarvis/sensor/voice", "play shape of you by ed sheeran")
+        ])
+
+        await daemon.run()
+
+        publish_calls = mock_mqtt.publish.call_args_list
+        spotify_calls = [c for c in publish_calls if c[0][0] == "pc/spotify/control"]
+        assert len(spotify_calls) == 1
+        mock_roll.assert_not_called()
+        mock_speak.assert_called_once()
+        should_followup_arg = mock_speak.call_args[0][4]
+        suggestion_text_arg = mock_speak.call_args[0][5]
+        assert should_followup_arg is False
+        assert suggestion_text_arg is None
+
+    @pytest.mark.asyncio
+    async def test_spotify_confidence_low_feedback_surfaces_options_to_ui(self, daemon, mock_mqtt, message_stream):
+        """The candidate list Spotify embeds in its CONFIDENCE_LOW feedback
+        message must reach the UI via jarvis/sys/ui_options -- previously it
+        was discarded and the user was told to check 'the terminal', so the
+        fullscreen dashboard never showed anything to choose from."""
+        feedback_msg = "CONFIDENCE_LOW|\n[1] Shape of You by Ed Sheeran\n[2] Shivers by Ed Sheeran"
+        mock_mqtt.messages = message_stream([
+            ("jarvis/feedback", json.dumps({"device": "spotify", "message": feedback_msg}))
+        ])
+
+        await daemon.run()
+
+        assert daemon.active_context["type"] == "spotify_choice"
+        publish_calls = mock_mqtt.publish.call_args_list
+        options_calls = [c for c in publish_calls if c[0][0] == "jarvis/sys/ui_options"]
+        assert len(options_calls) == 1
+        options_payload = json.loads(options_calls[0][0][1])
+        assert options_payload["options"] == ["[1] Shape of You by Ed Sheeran", "[2] Shivers by Ed Sheeran"]
+
+    @pytest.mark.asyncio
     async def test_network_drop_recovery(self, daemon, mock_mqtt, mocker):
         """Tests that an aiomqtt.MqttError triggers a 5-second sleep and keeps the service alive."""
         import aiomqtt

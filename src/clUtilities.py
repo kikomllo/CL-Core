@@ -3,9 +3,11 @@ import logging
 import asyncio
 import os
 import shutil
+import tempfile
 import time
 import subprocess
 from datetime import datetime, timedelta
+from xml.sax.saxutils import escape as xml_escape
 import aiomqtt
 import dateparser.search
 import re
@@ -36,20 +38,9 @@ class JarvisUtilities:
     def schedule_systemd_timer(self, unit_prefix: str, script_name: str, item_id: str, scheduled_time: datetime):
         time_str = scheduled_time.strftime('%Y-%m-%d %H:%M:%S')
         trigger_script = os.path.abspath(os.path.join(BASE_DIR, "utils", script_name))
-        
+
         if sys.platform == 'win32':
-            sleep_sec = max(0.0, (scheduled_time - datetime.now()).total_seconds())
-            cmd = [
-                sys.executable, "-c",
-                f"import time, subprocess, sys; time.sleep({sleep_sec}); subprocess.run([sys.executable, {repr(trigger_script)}, {repr(item_id)}])"
-            ]
-            try:
-                subprocess.Popen(cmd, creationflags=subprocess.CREATE_NO_WINDOW)
-                logging.info(f"Windows background timer scheduled for {time_str} (ID: {item_id})")
-                return True
-            except Exception as e:
-                logging.error(f"Failed to schedule Windows timer: {e}")
-                return False
+            return self._schedule_windows_task(unit_prefix, item_id, trigger_script, scheduled_time)
 
         cmd = [
             "systemd-run", 
@@ -65,6 +56,90 @@ class JarvisUtilities:
         except subprocess.CalledProcessError as e:
             logging.error(f"Failed to schedule systemd timer: {e.stderr}")
             return False
+
+    def _schedule_windows_task(self, unit_prefix: str, item_id: str, trigger_script: str, scheduled_time: datetime) -> bool:
+        """Windows equivalent of systemd-run --on-calendar=, via a Task Scheduler XML task."""
+        task_name = self._windows_task_name(unit_prefix, item_id)
+        start_boundary = scheduled_time.strftime('%Y-%m-%dT%H:%M:%S')
+        # EndBoundary is just an orphan-cleanup safety net for DeleteExpiredTaskAfter.
+        end_boundary = (scheduled_time + timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%S')
+        command = xml_escape(sys.executable)
+        arguments = xml_escape(f'"{trigger_script}" {item_id}')
+
+        xml = f'''<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <TimeTrigger>
+      <StartBoundary>{start_boundary}</StartBoundary>
+      <EndBoundary>{end_boundary}</EndBoundary>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <WakeToRun>true</WakeToRun>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <DeleteExpiredTaskAfter>PT0S</DeleteExpiredTaskAfter>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{command}</Command>
+      <Arguments>{arguments}</Arguments>
+    </Exec>
+  </Actions>
+</Task>'''
+
+        fd, xml_path = tempfile.mkstemp(suffix=".xml")
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-16') as f:
+                f.write(xml)
+            subprocess.run(
+                ["schtasks", "/Create", "/TN", task_name, "/XML", xml_path, "/F"],
+                check=True, capture_output=True, text=True
+            )
+            logging.info(f"Windows scheduled task '{task_name}' created for {start_boundary} (ID: {item_id})")
+            return True
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Failed to schedule Windows task: {e.stderr}")
+            return False
+        finally:
+            try:
+                os.remove(xml_path)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _windows_task_name(unit_prefix: str, item_id: str) -> str:
+        return f"{unit_prefix}-{item_id}"
+
+    @staticmethod
+    def cancel_windows_task(unit_prefix: str, item_id: str) -> None:
+        """Windows equivalent of `systemctl --user stop`/`reset-failed`."""
+        task_name = JarvisUtilities._windows_task_name(unit_prefix, item_id)
+        subprocess.run(["schtasks", "/Delete", "/TN", task_name, "/F"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    @staticmethod
+    def cancel_scheduled_timer(unit_prefix: str, item_id: str) -> None:
+        """Cancels a pending trigger from schedule_systemd_timer, on whichever OS scheduled it."""
+        try:
+            if sys.platform == 'win32':
+                JarvisUtilities.cancel_windows_task(unit_prefix, item_id)
+            else:
+                subprocess.run(["systemctl", "--user", "stop", f"{unit_prefix}-{item_id}.timer"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(["systemctl", "--user", "stop", f"{unit_prefix}-{item_id}.service"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(["systemctl", "--user", "reset-failed", f"{unit_prefix}-{item_id}.*"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
 
     async def run(self):
         logging.info("Utilities Module Online. Listening for alarms, reminders, and todos...")
@@ -188,21 +263,13 @@ class JarvisUtilities:
             for file in os.listdir(ALARMS_DIR):
                 if file.endswith('.json'):
                     aid = file.replace('.json', '')
-                    try:
-                        subprocess.run(["systemctl", "--user", "stop", f"jarvis-alarm-{aid}.timer"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        subprocess.run(["systemctl", "--user", "stop", f"jarvis-alarm-{aid}.service"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        subprocess.run(["systemctl", "--user", "reset-failed", f"jarvis-alarm-{aid}.*"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    except Exception: pass
+                    self.cancel_scheduled_timer("jarvis-alarm", aid)
                     os.remove(os.path.join(ALARMS_DIR, file))
             await self.mqtt_client.publish("jarvis/sys/speak", json.dumps({"text": "All alarms cancelled.", "skip_ducking": True}))
             return
 
-        try:
-            subprocess.run(["systemctl", "--user", "stop", f"jarvis-alarm-{alarm_id}.timer"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run(["systemctl", "--user", "stop", f"jarvis-alarm-{alarm_id}.service"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run(["systemctl", "--user", "reset-failed", f"jarvis-alarm-{alarm_id}.*"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception: pass
-            
+        self.cancel_scheduled_timer("jarvis-alarm", alarm_id)
+
         file_path = os.path.join(ALARMS_DIR, f"{alarm_id}.json")
         if os.path.exists(file_path): os.remove(file_path)
         await self.mqtt_client.publish("jarvis/sys/speak", json.dumps({"text": "Alarm cancelled.", "skip_ducking": True}))
@@ -210,9 +277,7 @@ class JarvisUtilities:
     async def handle_alarm_create(self, payload):
         raw_input = payload.get("time_str") or payload.get("time") or payload.get("raw_text") or ""
         time_input = self.normalize_time_string(raw_input)
-        
-        await self.mqtt_client.publish("jarvis/sys/speak", json.dumps({"text": "Setting alarm...", "skip_ducking": True}))
-        
+
         def parse_date():
             now = datetime.now()
             dt = dateparser.parse(time_input, languages=['en'], settings={'PREFER_DATES_FROM': 'future', 'RELATIVE_BASE': now})
@@ -285,12 +350,8 @@ class JarvisUtilities:
 
     async def handle_reminder_delete(self, reminder_id):
         if not reminder_id: return
-        try:
-            subprocess.run(["systemctl", "--user", "stop", f"jarvis-reminder-{reminder_id}.timer"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run(["systemctl", "--user", "stop", f"jarvis-reminder-{reminder_id}.service"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run(["systemctl", "--user", "reset-failed", f"jarvis-reminder-{reminder_id}.*"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception: pass
-            
+        self.cancel_scheduled_timer("jarvis-reminder", reminder_id)
+
         file_path = os.path.join(REMINDERS_DIR, f"{reminder_id}.json")
         audio_path = os.path.join(REMINDERS_DIR, f"{reminder_id}.mp3")
         if os.path.exists(file_path): os.remove(file_path)
@@ -303,9 +364,7 @@ class JarvisUtilities:
         time_input = self.normalize_time_string(raw_time)
         reminder_text = payload.get("task") or payload.get("raw_text") or payload.get("time") or "Reminder"
         tmp_audio_path = payload.get("audio_path", "")
-        
-        await self.mqtt_client.publish("jarvis/sys/speak", json.dumps({"text": "Scheduling...", "skip_ducking": True}))
-        
+
         def parse_date():
             now = datetime.now()
             dt = dateparser.parse(time_input, languages=['en'], settings={'PREFER_DATES_FROM': 'future', 'RELATIVE_BASE': now})

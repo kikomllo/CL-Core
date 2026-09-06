@@ -98,10 +98,16 @@ class InferenceEngine:
                 "condition_on_previous_text": False, # Hallucination prevention parameter
                 "initial_prompt": "",
                 "vad_parameters": dict(min_silence_duration_ms=500),
-                "language": lang
+                "language": lang,
+                # Always "transcribe" (the faster-whisper default), never
+                # "translate" -- translate asks Whisper to render the
+                # utterance's *meaning* in English, which mangles proper
+                # nouns (song/artist names) that have no English equivalent.
+                # A non-English pass here exists specifically to capture
+                # foreign track/artist names accurately, so it must preserve
+                # the original-language text, not attempt to translate it.
+                "task": "transcribe"
             }
-            if lang != "en":
-                args["task"] = "translate"
                 
             try:
                 segments, info = self.model.transcribe(**args)
@@ -146,8 +152,11 @@ class InferenceEngine:
             return ""
             
         # Pick the result with the highest confidence
+        if len(results) > 1:
+            summary = " | ".join(f"{r['lang']}: '{r['text']}' ({r['confidence']:.2f})" for r in results)
+            logging.info(f"Multi-language candidates: {summary}")
         best_result = max(results, key=lambda x: x["confidence"])
-        
+
         # Run abort check on the best segments
         for s in best_result["segments"]:
             segment_lower = s.text.lower()

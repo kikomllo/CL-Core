@@ -142,11 +142,14 @@ def main():
         if os.path.exists(meta_path):
             os.remove(meta_path)
             
-        # Cleanup systemd unit
+        # Cleanup the scheduled trigger (systemd unit on Linux, Task Scheduler entry on Windows)
         try:
-            subprocess.run(["systemctl", "--user", "stop", f"jarvis-alarm-{alarm_id}.timer"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run(["systemctl", "--user", "stop", f"jarvis-alarm-{alarm_id}.service"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run(["systemctl", "--user", "reset-failed", f"jarvis-alarm-{alarm_id}.*"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if sys.platform == 'win32':
+                subprocess.run(["schtasks", "/Delete", "/TN", f"jarvis-alarm-{alarm_id}", "/F"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                subprocess.run(["systemctl", "--user", "stop", f"jarvis-alarm-{alarm_id}.timer"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(["systemctl", "--user", "stop", f"jarvis-alarm-{alarm_id}.service"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(["systemctl", "--user", "reset-failed", f"jarvis-alarm-{alarm_id}.*"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:
             pass
             

@@ -294,9 +294,11 @@ if not gguf_found:
     print("WARNING: save_pretrained_gguf did not produce a .gguf file.")
     print("Attempting manual conversion with llama.cpp...")
 
-    llama_cpp_dir = "/kaggle/working/llama.cpp"
+    working_dir = "/kaggle/working" if IS_KAGGLE else "." if IS_COLAB else "training"
+    llama_cpp_dir = os.path.join(working_dir, "llama.cpp")
     convert_script = os.path.join(llama_cpp_dir, "convert_hf_to_gguf.py")
-    quantize_bin = os.path.join(llama_cpp_dir, "build", "bin", "llama-quantize")
+    quantize_bin_name = "llama-quantize.exe" if os.name == "nt" else "llama-quantize"
+    quantize_bin = os.path.join(llama_cpp_dir, "build", "bin", quantize_bin_name)
 
     fp16_gguf = os.path.join(GGUF_OUTPUT_DIR, "model-fp16.gguf")
     q4km_gguf = os.path.join(GGUF_OUTPUT_DIR, "jarvis-brain-v2-q4_k_m.gguf")

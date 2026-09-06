@@ -150,7 +150,8 @@ def export_to_gguf(model, tokenizer, output_dir: str, final_gguf_name: str, quan
 
     print("WARNING: save_pretrained_gguf did not produce a .gguf file. Attempting manual conversion...")
     convert_script = os.path.join(LLAMA_CPP_DIR, "convert_hf_to_gguf.py")
-    quantize_bin = os.path.join(LLAMA_CPP_DIR, "build", "bin", "llama-quantize")
+    quantize_bin_name = "llama-quantize.exe" if os.name == "nt" else "llama-quantize"
+    quantize_bin = os.path.join(LLAMA_CPP_DIR, "build", "bin", quantize_bin_name)
     fp16_gguf = os.path.join(output_dir, "model-fp16.gguf")
     final_gguf = os.path.join(output_dir, final_gguf_name)
 

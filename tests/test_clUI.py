@@ -1,8 +1,139 @@
 import pytest
 import sys
 import os
+import json
 import subprocess
 import re
+from unittest.mock import patch, MagicMock
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
+
+
+@pytest.fixture
+def qapp():
+    from PyQt6.QtWidgets import QApplication
+    return QApplication.instance() or QApplication(sys.argv)
+
+
+@pytest.fixture
+def fake_state_file(tmp_path):
+    return str(tmp_path / "ui_state.json")
+
+
+class TestUiStateRestoreOnStartup:
+    """A full ecosystem reboot tears down and respawns clUI.py entirely
+    (clJarvis.py's stop_native explicitly saves state via jarvis/sys/ui_control
+    before killing it). Without restoring is_fullscreen at startup, every
+    reboot silently dropped the dashboard back to the small overlay widget
+    regardless of what the user had open before. But a genuine cold ecosystem
+    start must always open in overlay regardless of what was saved from the
+    previous session -- clJarvis.py's start_native() sets JARVIS_REBOOT=1 to
+    distinguish a respawn-within-an-active-session (reboot, crash recovery,
+    single-module restart) from a true cold start.
+
+    MqttThread.start is mocked in every test here -- JarvisUI() otherwise
+    spins up a real QThread that opens a real MQTT connection, which must
+    never happen from an automated test (a real ecosystem, this machine's
+    own, may already be running and using that same broker)."""
+
+    @pytest.fixture(autouse=True)
+    def no_real_mqtt_thread(self, mocker):
+        import clUI
+        mocker.patch.object(clUI.MqttThread, "start")
+
+    def test_restores_fullscreen_on_reboot_when_that_was_the_saved_mode(self, qapp, fake_state_file, mocker):
+        import clUI
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "1"})
+        with open(fake_state_file, "w") as f:
+            json.dump({"is_fullscreen": True, "current_monitor_idx": 0, "active_widgets": {}}, f)
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file), \
+             patch.object(clUI.JarvisUI, "set_ui_mode") as mock_set_mode:
+            clUI.JarvisUI()
+
+        mock_set_mode.assert_called_once_with("set_fullscreen")
+
+    def test_stays_in_overlay_on_reboot_when_that_was_the_saved_mode(self, qapp, fake_state_file, mocker):
+        import clUI
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "1"})
+        with open(fake_state_file, "w") as f:
+            json.dump({"is_fullscreen": False, "current_monitor_idx": 0, "active_widgets": {}}, f)
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file), \
+             patch.object(clUI.JarvisUI, "set_ui_mode") as mock_set_mode:
+            clUI.JarvisUI()
+
+        mock_set_mode.assert_not_called()
+
+    def test_cold_start_always_opens_in_overlay_even_if_fullscreen_was_saved(self, qapp, fake_state_file, mocker):
+        """The actual feature requested: a genuine cold ecosystem start
+        (JARVIS_REBOOT absent/"0") must never restore fullscreen, even if
+        the previous session ended in fullscreen mode."""
+        import clUI
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "0"})
+        with open(fake_state_file, "w") as f:
+            json.dump({"is_fullscreen": True, "current_monitor_idx": 0, "active_widgets": {}}, f)
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file), \
+             patch.object(clUI.JarvisUI, "set_ui_mode") as mock_set_mode:
+            clUI.JarvisUI()
+
+        mock_set_mode.assert_not_called()
+
+    def test_cold_start_with_no_reboot_env_var_at_all_also_stays_in_overlay(self, qapp, fake_state_file, mocker):
+        """Running clUI.py standalone (e.g. for debugging) never sets
+        JARVIS_REBOOT at all -- must behave like a cold start, not a reboot."""
+        import clUI
+        mocker.patch.dict(os.environ, {}, clear=False)
+        os.environ.pop("JARVIS_REBOOT", None)
+        with open(fake_state_file, "w") as f:
+            json.dump({"is_fullscreen": True, "current_monitor_idx": 0, "active_widgets": {}}, f)
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file), \
+             patch.object(clUI.JarvisUI, "set_ui_mode") as mock_set_mode:
+            clUI.JarvisUI()
+
+        mock_set_mode.assert_not_called()
+
+    def test_no_saved_state_file_does_not_crash_or_enter_fullscreen(self, qapp, tmp_path, mocker):
+        import clUI
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "1"})
+        missing_path = str(tmp_path / "does_not_exist.json")
+
+        with patch.object(clUI, "STATE_FILE", missing_path), \
+             patch.object(clUI.JarvisUI, "set_ui_mode") as mock_set_mode:
+            clUI.JarvisUI()
+
+        mock_set_mode.assert_not_called()
+
+
+class TestOverlayIdleWidgetCleanup:
+    """set_state('IDLE') closes floating widgets while in overlay mode --
+    fires naturally any time nothing is actively speaking/listening/
+    processing, which happens briefly on almost every turn. An options
+    prompt (list_-prefixed) must survive that, or it gets closed moments
+    after appearing, before the user can act on it."""
+
+    @pytest.fixture(autouse=True)
+    def no_real_mqtt_thread(self, mocker):
+        import clUI
+        mocker.patch.object(clUI.MqttThread, "start")
+
+    def test_options_widget_survives_idle_state_in_overlay_mode(self, qapp, mocker):
+        import clUI
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "0"})
+        ui = clUI.JarvisUI()
+        mocker.patch.object(ui, "save_ui_state")
+
+        options_widget = MagicMock()
+        other_widget = MagicMock()
+        ui.active_widgets = {"list_choose_a_track": options_widget, "widget_media_controls": other_widget}
+
+        ui.set_state("IDLE")
+
+        options_widget.hide.assert_not_called()
+        other_widget.hide.assert_called_once()
+
 
 @pytest.mark.skip(reason="Interactive GUI test")
 def test_expose():

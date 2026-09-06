@@ -58,12 +58,7 @@ class TrayApp:
         
         shutdown_action = self.menu.addAction("Shutdown Ecosystem")
         shutdown_action.triggered.connect(self.on_shutdown_ecosystem)
-        
-        self.menu.addSeparator()
-        
-        exit_action = self.menu.addAction("Exit Tray")
-        exit_action.triggered.connect(self.on_exit)
-        
+
         self.tray.setContextMenu(self.menu)
 
     def on_connect(self, client, userdata, flags, reason_code, properties):
@@ -102,11 +97,6 @@ class TrayApp:
             self.mqtt_client.publish("jarvis/sys/manager", json.dumps({"action": "shutdown"}))
         except Exception as e:
             logging.error(f"Failed to publish shutdown command: {e}")
-
-    def on_exit(self):
-        logging.info("Exiting tray application.")
-        self.tray.hide()
-        self.app.quit()
 
     def run(self):
         try:

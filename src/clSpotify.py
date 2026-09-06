@@ -58,7 +58,8 @@ class SpotifyManager:
         self.cache_lock = threading.Lock()
         self.pre_duck_volume: Optional[int] = None
         self.ducked_device_id: Optional[str] = None
-        self.last_known_normal_volume: int = 80
+        self.last_known_normal_volume: Optional[int] = None
+        self._last_duck_cycle_time: float = 0.0
         
         self.confidence_threshold: float = 0.60
         self.perfect_match_threshold: float = 0.85
@@ -125,26 +126,142 @@ class SpotifyManager:
 
     # --- DEVICE WAKEUP ENGINE ---
     def _wake_up_spotify(self) -> None:
-        """Simulate a media 'play' command on the host computer to wake up Spotify."""
+        """Wakes up Spotify, launching it first via _launch_spotify_app if it isn't running."""
         logging.info("No active device found. Attempting to wake up local client...")
         try:
             if sys.platform.startswith('linux'):
-                # Native Linux headless D-Bus command for Spotify (MPRIS)
+                # Targets Spotify's D-Bus name directly (MPRIS).
                 import subprocess
-                subprocess.run([
-                    "dbus-send", "--print-reply", "--dest=org.mpris.MediaPlayer2.spotify", 
+                result = subprocess.run([
+                    "dbus-send", "--print-reply", "--dest=org.mpris.MediaPlayer2.spotify",
                     "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player.PlayPause"
-                ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                ], check=False, capture_output=True, text=True)
+                if result.returncode != 0:
+                    # Spotify isn't running -- launch it and retry.
+                    if self._launch_spotify_app():
+                        time.sleep(4)
+                        subprocess.run([
+                            "dbus-send", "--print-reply", "--dest=org.mpris.MediaPlayer2.spotify",
+                            "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player.PlayPause"
+                        ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            elif sys.platform == 'win32':
+                if not self._wake_up_spotify_windows():
+                    # No SMTC session -- Spotify likely isn't running at all.
+                    if self._launch_spotify_app():
+                        time.sleep(4)
+                        self._wake_up_spotify_windows()
+                    else:
+                        import pyautogui
+                        pyautogui.press('playpause')
             else:
-                # Windows / Mac fallback
+                # Mac fallback
                 import pyautogui
                 pyautogui.press('playpause')
-                
+
             time.sleep(2)  # Wait for the OS and Spotify app to connect to the Spotify network
         except ImportError:
-            logging.error("Failed to wake up Spotify: pyautogui is not installed on Windows/Mac.")
+            logging.error("Failed to wake up Spotify: pyautogui is not installed.")
         except Exception as e:
             logging.error(f"Failed to wake up Spotify: {e}")
+
+    def _launch_spotify_app(self) -> bool:
+        """Locates and launches the Spotify desktop client. Returns True if a launch was attempted."""
+        import subprocess
+        import shutil
+
+        if sys.platform == 'win32':
+            candidates = []
+            appdata = os.environ.get('APPDATA', '')
+            if appdata:
+                candidates.append(os.path.join(appdata, "Spotify", "Spotify.exe"))
+
+            # Non-default installs record their location in the uninstall registry.
+            try:
+                import winreg
+                for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                    try:
+                        with winreg.OpenKey(hive, r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Spotify") as key:
+                            install_location = winreg.QueryValueEx(key, "InstallLocation")[0]
+                            if install_location:
+                                candidates.append(os.path.join(install_location, "Spotify.exe"))
+                    except FileNotFoundError:
+                        pass
+            except Exception:
+                pass
+
+            which_path = shutil.which("spotify") or shutil.which("Spotify.exe")
+            if which_path:
+                candidates.append(which_path)
+
+            for path in candidates:
+                if path and os.path.exists(path):
+                    logging.info(f"Launching Spotify from detected install path: {path}")
+                    subprocess.Popen([path])
+                    return True
+
+            # Microsoft Store package -- no .exe on disk, only an AppX package.
+            try:
+                pkg_result = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command",
+                     "(Get-AppxPackage -Name SpotifyAB.SpotifyMusic).PackageFamilyName"],
+                    capture_output=True, text=True, check=False
+                )
+                family_name = pkg_result.stdout.strip()
+                if family_name:
+                    aumid = f"{family_name}!Spotify"
+                    logging.info(f"Launching Spotify Store app via AUMID: {aumid}")
+                    subprocess.Popen(["explorer.exe", f"shell:AppsFolder\\{aumid}"])
+                    return True
+            except Exception:
+                pass
+
+            logging.warning("Could not locate a Spotify installation to launch.")
+            return False
+
+        # Linux
+        which_path = shutil.which("spotify")
+        if which_path:
+            logging.info(f"Launching Spotify from PATH: {which_path}")
+            subprocess.Popen([which_path])
+            return True
+
+        if shutil.which("flatpak"):
+            try:
+                installed = subprocess.run(
+                    ["flatpak", "list", "--app", "--columns=application"],
+                    capture_output=True, text=True, check=False
+                ).stdout
+                if "com.spotify.Client" in installed:
+                    logging.info("Launching Spotify via Flatpak.")
+                    subprocess.Popen(["flatpak", "run", "com.spotify.Client"])
+                    return True
+            except Exception:
+                pass
+
+        logging.warning("Could not locate a Spotify installation to launch.")
+        return False
+
+    def _wake_up_spotify_windows(self) -> bool:
+        """Sends Play directly to Spotify's SMTC session via winsdk. Returns True if found and commanded."""
+        try:
+            from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager as SMTC
+        except ImportError:
+            logging.warning("winsdk is not installed; cannot target Spotify directly on Windows. Run: pip install winsdk")
+            return False
+
+        async def _play_spotify_session() -> bool:
+            manager = await SMTC.request_async()
+            for session in manager.get_sessions():
+                if "spotify" in session.source_app_user_model_id.lower():
+                    await session.try_play_async()
+                    return True
+            return False
+
+        try:
+            return asyncio.run(_play_spotify_session())
+        except Exception as e:
+            logging.error(f"Failed to target Spotify session via SMTC: {e}")
+            return False
 
     def _get_active_device(self) -> Optional[str]:
         """Retrieve the active device ID."""
@@ -418,14 +535,20 @@ class SpotifyManager:
 
         logging.info(f"Fuzzy searching Spotify for artist: '{artist_name}'")
         results = self.sp.search(q=artist_name, type='artist', limit=1)
-        
+
         if results['artists']['items']:
             item = results['artists']['items'][0]
+            text_sim = jellyfish.jaro_winkler_similarity(artist_name.lower(), item['name'].lower())
+            phonetic_sim = jellyfish.jaro_winkler_similarity(jellyfish.metaphone(artist_name), jellyfish.metaphone(item['name']))
+            if max(text_sim, phonetic_sim) < 0.75:
+                logging.warning(f"Rejecting weak artist match: '{artist_name}' -> '{item['name']}' ({max(text_sim, phonetic_sim):.2f})")
+                return False, f"Artist '{artist_name}' not found."
+
             self.sp.start_playback(device_id=device, context_uri=item['uri'])
             self._local_playing_state = True
             self._last_state_change_time = time.time()
             return True, f"Playing artist radio: {item['name']}"
-            
+
         return False, f"Artist '{artist_name}' not found."
 
     def _handle_ducking(self, action: str) -> Tuple[bool, str]:
@@ -441,27 +564,33 @@ class SpotifyManager:
                 return False, "No active device"
 
             try:
-                current_playback = self._get_current_playback()
+                # Fresh read: Spotify Connect's own volume state can lag behind
+                # a PUT we just issued (e.g. the previous unduck).
+                current_playback = self._get_current_playback(force_refresh=True)
                 if not current_playback or not current_playback.get('is_playing'):
                     logging.info("[DUCK] Spotify is not currently playing. Skipping ducking.")
                     return False, "Not currently playing"
-                
-                raw_vol = current_playback.get('device', {}).get('volume_percent')
-                current_vol = raw_vol if raw_vol is not None else 50
-                
-                # If current volume is normal (>50%), record it as the true un-ducked volume.
-                # If current volume is <=50% (already ducked or mid-restore), preserve last_known_normal_volume.
-                if current_vol > 50:
-                    self.last_known_normal_volume = current_vol
-                    self.pre_duck_volume = current_vol
+
+                # Trust our own recent baseline over a possibly-stale API read.
+                recently_self_initiated = (time.time() - self._last_duck_cycle_time) < 30.0
+                if recently_self_initiated and self.last_known_normal_volume is not None:
+                    self.pre_duck_volume = self.last_known_normal_volume
                 else:
-                    self.pre_duck_volume = getattr(self, 'last_known_normal_volume', 80)
-                    
+                    raw_vol = current_playback.get('device', {}).get('volume_percent')
+                    current_vol = raw_vol if raw_vol is not None else 50
+
+                    if current_vol > 50:
+                        self.last_known_normal_volume = current_vol
+                        self.pre_duck_volume = current_vol
+                    else:
+                        self.pre_duck_volume = self.last_known_normal_volume or 80
+
                 self.ducked_device_id = device
                 new_vol = max(0, int(self.pre_duck_volume * 0.8))
-                
+
                 logging.info(f"[DUCK] Ducking volume from {self.pre_duck_volume}% to {new_vol}% on device '{device}'")
                 self.sp.volume(new_vol, device_id=device)
+                self._last_duck_cycle_time = time.time()
                 return True, f"Ducked to {new_vol}%"
             except Exception as e:
                 logging.error(f"[DUCK] Failed to duck Spotify volume: {e}")
@@ -479,6 +608,7 @@ class SpotifyManager:
 
             self.pre_duck_volume = None
             self.ducked_device_id = None
+            self._last_duck_cycle_time = time.time()
 
             try:
                 logging.info(f"[UNDUCK] Restoring volume to {target_vol}% on device '{target_device or 'default'}'")
@@ -613,10 +743,7 @@ class SpotifyManager:
         except spotipy.exceptions.SpotifyException as e:
             if e.http_status == 403:
                 if action == "play" and not any([track_name, artist_name, playlist_name, search_query, choice_index]):
-                    # A bare "play" 403 here isn't necessarily "already playing" --
-                    # a freshly woken device with no prior queue/context also gets
-                    # refused with the same restriction, so verify against the
-                    # actual playback state instead of assuming.
+                    # Verify actual state -- a bare 403 doesn't always mean "already playing".
                     try:
                         playback = self._get_current_playback(force_refresh=True)
                     except Exception:

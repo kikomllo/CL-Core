@@ -122,7 +122,8 @@
         "artist_name": {"type": "string"},
         "playlist_name": {"type": "string"},
         "search_query": {"type": "string"},
-        "volume": {"type": "integer"}
+        "volume": {"type": "integer"},
+        "choice_index": {"type": "integer"}
       }
     }
   },

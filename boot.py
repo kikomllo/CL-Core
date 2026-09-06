@@ -4,6 +4,7 @@ import subprocess
 import platform
 import json
 import re
+import shutil
 
 
 def _detect_cuda_tag():
@@ -279,7 +280,16 @@ def main():
     ]
     for script in ecosystem_scripts:
         if is_windows:
-            subprocess.run(f'wmic process where "name=\'python.exe\' and commandline like \'%{script}%\'" call terminate', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if shutil.which("wmic"):
+                subprocess.run(f'wmic process where "name=\'python.exe\' and commandline like \'%{script}%\'" call terminate', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                # wmic is deprecated -- Get-CimInstance is its replacement.
+                ps_cmd = (
+                    f"Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" "
+                    f"| Where-Object {{ $_.CommandLine -like '*{script}*' }} "
+                    f"| ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}"
+                )
+                subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             subprocess.run(['pkill', '-f', f'python.*{script}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             

@@ -21,14 +21,16 @@ def get_current_wifi_ssid(default_fallback: str = "Home Network") -> str:
         pass
 
     try:
-        # Windows fallback using PowerShell
-        import platform, re
+        import platform
         if platform.system() == "Windows":
-            res = subprocess.check_output(["powershell", "-Command", "(Get-NetConnectionProfile -InterfaceAlias Wi-Fi*).Name"], text=True, stderr=subprocess.DEVNULL).strip()
-            if res:
-                # Windows sometimes appends ' 2', ' 3' to the profile name. Strip it to match the actual SSID.
-                res = re.sub(r'\s\d+$', '', res)
-                return res
+            # Literal broadcast SSID, unlike Get-NetConnectionProfile's renamable profile name.
+            res = subprocess.check_output(["netsh", "wlan", "show", "interfaces"], text=True, stderr=subprocess.DEVNULL)
+            for line in res.splitlines():
+                line = line.strip()
+                if line.startswith("SSID") and ":" in line:
+                    ssid = line.split(":", 1)[1].strip()
+                    if ssid:
+                        return ssid
     except Exception:
         pass
 

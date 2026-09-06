@@ -737,8 +737,16 @@ class CentralDaemon:
                                         if action_id != "system.speak":
                                             # 1. Roll whether -- and what -- to proactively ask as a
                                             # follow-up (see _roll_followup: two independent rolls,
-                                            # replacing the old always-on "anything else").
-                                            should_followup, suggestion_text = self._roll_followup(action_id, action)
+                                            # replacing the old always-on "anything else"). Skipped for
+                                            # an ambiguous Spotify play, which may need its own CONFIDENCE_LOW prompt.
+                                            is_ambiguous_spotify_play = (
+                                                action_id == "spotify.control" and action == "play" and
+                                                any(payload_out.get(k) for k in ("track_name", "artist_name", "search_query"))
+                                            )
+                                            if is_ambiguous_spotify_play:
+                                                should_followup, suggestion_text = False, None
+                                            else:
+                                                should_followup, suggestion_text = self._roll_followup(action_id, action)
 
                                             # These actions can report their real outcome only
                                             # asynchronously (system.discovery's light rename/remove/
@@ -836,7 +844,13 @@ class CentralDaemon:
                                 
                                 elif isinstance(msg, str) and "CONFIDENCE_LOW|" in msg:
                                     self.active_context = {"type": "spotify_choice", "expires_at": time.time() + 20.0}
-                                    await client.publish("jarvis/sys/speak", json.dumps({"text": "Please select an option from the terminal.", "request_reply": True}))
+                                    _, _, options_block = msg.partition("CONFIDENCE_LOW|")
+                                    options = [line.strip() for line in options_block.splitlines() if line.strip()]
+                                    await client.publish("jarvis/sys/ui_options", json.dumps({
+                                        "title": "Choose a Track",
+                                        "options": options if options else ["No matches found"]
+                                    }))
+                                    await client.publish("jarvis/sys/speak", json.dumps({"text": "I found a few matches, please choose one from the list.", "request_reply": True}))
 
                                 elif device == 'smart_lights' and fb.get('action') == 'awaiting_selection':
                                     self.active_context = {"type": "discovery_choice", "expires_at": time.time() + 30.0}

@@ -52,6 +52,32 @@ MODIFIER_MAP = {
     "<super>": ["KEY_LEFTMETA", "KEY_RIGHTMETA"],
 }
 
+# Maps evdev-style key names (config/keybinds.json's push_to_talk.key) to
+# pynput Key members -- pynput has no generic "resolve any key name" API.
+PTT_KEY_MAP = {
+    "KEY_RIGHTALT": (keyboard.Key.alt_r, keyboard.Key.alt_gr),
+    "KEY_LEFTALT": (keyboard.Key.alt_l, keyboard.Key.alt),
+    "KEY_RIGHTCTRL": (keyboard.Key.ctrl_r,),
+    "KEY_LEFTCTRL": (keyboard.Key.ctrl_l, keyboard.Key.ctrl),
+    "KEY_RIGHTSHIFT": (keyboard.Key.shift_r,),
+    "KEY_LEFTSHIFT": (keyboard.Key.shift,),
+    "KEY_CAPSLOCK": (keyboard.Key.caps_lock,),
+    "KEY_SPACE": (keyboard.Key.space,),
+    **{f"KEY_F{i}": (getattr(keyboard.Key, f"f{i}"),) for i in range(13, 25)},
+}
+
+def is_ptt_key(key, ptt_key_str: str) -> bool:
+    """Whether a pynput key event matches the configured push_to_talk.key."""
+    targets = PTT_KEY_MAP.get(ptt_key_str)
+    if targets is None:
+        return False
+    if key in targets:
+        return True
+    # Some drivers report right-alt as AltGr's raw vk code instead.
+    if ptt_key_str == "KEY_RIGHTALT" and hasattr(key, 'vk') and key.vk == 65027:
+        return True
+    return False
+
 def parse_evdev_hotkey(hotkey_str):
     parts = hotkey_str.lower().split("+")
     modifiers = []
@@ -209,14 +235,6 @@ def main():
     ptt_active = False
     ptt_key_str = keybinds.get("push_to_talk", {}).get("key", "KEY_RIGHTALT")
 
-    def _is_ptt_key(key):
-        if "RIGHTALT" in ptt_key_str:
-            if key == keyboard.Key.alt_r or key == keyboard.Key.alt_gr: return True
-            if hasattr(key, 'vk') and key.vk == 65027: return True
-        elif "LEFTALT" in ptt_key_str:
-            if key == keyboard.Key.alt_l or key == keyboard.Key.alt: return True
-        return False
-
     LEGACY_MAP = {
         "abort": "system.abort",
         "ui_fullscreen": "ui.fullscreen",
@@ -226,7 +244,6 @@ def main():
     # Custom HotKey tracking
     hotkeys = []
     active_actions = set()
-    last_triggered = {}
 
     for action_key, bind_info in keybinds.items():
         hotkey_str = bind_info.get("key", "")
@@ -255,7 +272,7 @@ def main():
         canonical_key = l.canonical(key)
         
         # PTT Logic
-        if not EVDEV_PTT_READY and _is_ptt_key(key) and not ptt_active:
+        if not EVDEV_PTT_READY and is_ptt_key(key, ptt_key_str) and not ptt_active:
             ptt_active = True
             logging.info("Push-to-Talk (Mic Opened via pynput)")
             router.dispatch("mic.ptt_start")
@@ -270,12 +287,10 @@ def main():
                 hk.press(canonical_key)
                 if hk._state == hk._keys: # This indicates the hotkey combination is fully met
                     if mode == "single":
+                        # State-based dedup only, matching evdev on Linux.
                         if action not in active_actions:
-                            now = time.time()
-                            if now - last_triggered.get(action, 0) > 0.2:
-                                active_actions.add(action)
-                                router.dispatch(action)
-                                last_triggered[action] = now
+                            active_actions.add(action)
+                            router.dispatch(action)
                     else:
                         # continuous mode triggers every OS key-repeat
                         router.dispatch(action)
@@ -285,7 +300,7 @@ def main():
         canonical_key = l.canonical(key)
         
         # PTT Logic
-        if not EVDEV_PTT_READY and _is_ptt_key(key) and ptt_active:
+        if not EVDEV_PTT_READY and is_ptt_key(key, ptt_key_str) and ptt_active:
             ptt_active = False
             logging.info("Push-to-Talk (Mic Closed via pynput)")
             router.dispatch("mic.ptt_stop")

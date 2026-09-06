@@ -157,44 +157,57 @@ def _wait_for_module_ready(target_mod: str, timeout_s: float = 30.0) -> None:
     else:
         print(f"[SUPERVISOR] Timed out waiting for {target_mod} to initialize.")
 
+_reboot_lock = threading.Lock()
+
 def _perform_full_reboot() -> None:
     """The actual restart_all_modules sequence, run on its own thread (never
-    from on_message directly -- see _wait_for_module_ready)."""
+    from on_message directly -- see _wait_for_module_ready). Guarded by
+    _reboot_lock so a duplicate/concurrent reboot is a no-op instead of a race."""
     global MODULES_CONFIG, SYSTEM_HAS_ANNOUNCED
 
-    print("\n" + "="*60)
-    print("[SUPERVISOR] INITIATING FULL ECOSYSTEM REBOOT")
-    print("="*60)
-    for desc, filename in NATIVE_SERVICES:
-        stop_native(filename)
-    time.sleep(1.0)
+    if not _reboot_lock.acquire(blocking=False):
+        print("[SUPERVISOR] Reboot already in progress -- ignoring duplicate request.")
+        return
 
-    MODULES_CONFIG = load_modules_config()
-    SYSTEM_HAS_ANNOUNCED = False
+    try:
+        print("\n" + "="*60)
+        print("[SUPERVISOR] INITIATING FULL ECOSYSTEM REBOOT")
+        print("="*60)
+        for desc, filename in NATIVE_SERVICES:
+            stop_native(filename)
+        time.sleep(1.0)
 
-    print("[SUPERVISOR] Starting native host services...")
-    update_expected_modules()
-    native_cfg = MODULES_CONFIG.get("native", {})
-    for desc, filename in NATIVE_SERVICES:
-        if native_cfg.get(desc, True):
-            start_native(desc, filename)
+        MODULES_CONFIG = load_modules_config()
+        SYSTEM_HAS_ANNOUNCED = False
 
-            target_mod = None
-            if "clWhisper" in filename:
-                target_mod = "whisper"
-            elif "clTTS" in filename:
-                target_mod = "tts"
+        print("[SUPERVISOR] Starting native host services...")
+        update_expected_modules()
+        native_cfg = MODULES_CONFIG.get("native", {})
+        for desc, filename in NATIVE_SERVICES:
+            if native_cfg.get(desc, True):
+                start_native(desc, filename, is_reboot=True)
 
-            if target_mod:
-                _wait_for_module_ready(target_mod)
+                target_mod = None
+                if "clWhisper" in filename:
+                    target_mod = "whisper"
+                elif "clTTS" in filename:
+                    target_mod = "tts"
 
-    print("[SUPERVISOR] ECOSYSTEM REBOOT COMPLETE\n" + "="*60)
+                if target_mod:
+                    _wait_for_module_ready(target_mod)
 
-def start_native(desc, filename):
+        print("[SUPERVISOR] ECOSYSTEM REBOOT COMPLETE\n" + "="*60)
+    finally:
+        _reboot_lock.release()
+
+def start_native(desc, filename, is_reboot=False):
     print(f"[SUPERVISOR] Launching {filename}...")
     env = os.environ.copy()
     env["JARVIS_ECOSYSTEM"] = "1"
-    
+    # Tells clUI.py whether to restore last-saved mode (reboot/crash-recovery/
+    # restart) or always open in overlay (a genuine cold start).
+    env["JARVIS_REBOOT"] = "1" if is_reboot else "0"
+
     proc = subprocess.Popen(
         [sys.executable, filename],
         stdout=subprocess.PIPE,
@@ -218,6 +231,14 @@ def stop_native(filename):
                     time.sleep(1.0)
                 except Exception as e:
                     print(f"[SUPERVISOR] Failed to send save_state to UI: {e}")
+            elif "clSpotify.py" in filename:
+                # Restore volume before killing the process, in case ducking is active.
+                try:
+                    if client is not None:
+                        client.publish("pc/spotify/control", json.dumps({"action": "unduck", "silent": True}))
+                    time.sleep(1.5)
+                except Exception as e:
+                    print(f"[SUPERVISOR] Failed to send unduck to Spotify: {e}")
             proc.terminate()
             try:
                 proc.wait(timeout=5)
@@ -262,6 +283,13 @@ def on_message(client, userdata, msg):
                 ECOSYSTEM_MODE = new_mode
                 DEBUG_MQTT = (ECOSYSTEM_MODE == "DEBUG")
                 if DEBUG_MQTT:
+                    # Drop specific subscriptions first -- "#" already covers them,
+                    # and leaving both active double-delivers every message.
+                    client.unsubscribe("jarvis/sys/manager")
+                    client.unsubscribe("jarvis/sys/ui_control")
+                    client.unsubscribe("jarvis/sys/volume")
+                    client.unsubscribe("jarvis/sys/module_ready")
+                    client.unsubscribe("jarvis/sys/state_change")
                     client.subscribe("#")
                     print("\n\033[36m[SUPERVISOR] Ecosystem shifted to DEBUG mode. Global MQTT Packet Sniffer ACTIVE.\033[0m")
                 else:
@@ -269,7 +297,7 @@ def on_message(client, userdata, msg):
                     client.subscribe("jarvis/sys/manager")
                     client.subscribe("jarvis/sys/ui_control")
                     client.subscribe("jarvis/sys/volume")
-                    client.subscribe("jarvis/sys/whisper_state")
+                    client.subscribe("jarvis/sys/module_ready")
                     client.subscribe("jarvis/sys/state_change")
                     print(f"\n\033[32m[SUPERVISOR] Ecosystem shifted to {ECOSYSTEM_MODE} mode.\033[0m")
         except Exception:
@@ -325,7 +353,7 @@ def on_message(client, userdata, msg):
                         print(f"[SUPERVISOR] Restarting native host service: {desc} ({filename})...")
                         stop_native(filename)
                         time.sleep(0.5)
-                        start_native(desc, filename)
+                        start_native(desc, filename, is_reboot=True)
                         restarted = True
                         break
                 
@@ -397,14 +425,17 @@ def main():
     client.on_message = on_message
     try:
         client.connect("localhost", 1883, 60)
-        client.subscribe("jarvis/sys/manager")
-        client.subscribe("jarvis/sys/ui_control")
-        client.subscribe("jarvis/sys/volume")
-        client.subscribe("jarvis/sys/module_ready")
-        client.subscribe("jarvis/sys/state_change")
         if DEBUG_MQTT:
+            # "#" already covers the topics below -- subscribing to both
+            # double-delivers every message (was silently double-firing reboots).
             client.subscribe("#")
             print("\033[36m[SUPERVISOR] Global MQTT Packet Sniffer is ONLINE.\033[0m")
+        else:
+            client.subscribe("jarvis/sys/manager")
+            client.subscribe("jarvis/sys/ui_control")
+            client.subscribe("jarvis/sys/volume")
+            client.subscribe("jarvis/sys/module_ready")
+            client.subscribe("jarvis/sys/state_change")
         client.loop_start()
     except Exception as e:
         print(f"[SUPERVISOR] FATAL: Could not connect to MQTT Broker. Is Mosquitto running? {e}")
@@ -449,7 +480,7 @@ def main():
                 proc = PROCESSES.get(filename)
                 if proc and proc.poll() is not None:
                     print(f"[SUPERVISOR] FATAL: {filename} died unexpectedly! Resurrecting...")
-                    start_native(desc, filename)
+                    start_native(desc, filename, is_reboot=True)
     except KeyboardInterrupt:
         print("\n[SUPERVISOR] Manual shutdown triggered (Ctrl+C).")
 

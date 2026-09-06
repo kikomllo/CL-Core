@@ -693,7 +693,11 @@ class JarvisUI(QWidget):
         if sys.platform != "win32":
             self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        
+        if sys.platform == "win32":
+            # Make the overlay click-through from frame one (see _set_win32_click_through).
+            self.winId()  # force native window handle creation
+            self._set_win32_click_through(True)
+
         screens = UIScaler.get().get_stable_screens()
         idx = getattr(self, 'current_monitor_idx', 0)
         # Use UIScaler's active monitor if current_monitor_idx hasn't been set
@@ -726,12 +730,7 @@ class JarvisUI(QWidget):
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_animation)
         self.timer.start(1000 // 15)
-        
-        self.occlusion_timer = QTimer(self)
-        self.occlusion_timer.timeout.connect(self._check_occlusion)
-        self.occlusion_timer.start(250)
-        self._last_fg_hwnd = 0
-        
+
         self.pending_options = None
         self.options_debounce_timer = QTimer(self)
         self.options_debounce_timer.setSingleShot(True)
@@ -823,6 +822,15 @@ class JarvisUI(QWidget):
         self.mqtt_thread.calendar_status_signal.connect(self._handle_calendar_data)
         self.mqtt_thread.start()
 
+        # Restore saved layout (widget positions, drawer/carousel, monitor).
+        saved_state = self.load_ui_state()
+
+        # Only restore fullscreen mode on a reboot/crash-recovery/restart
+        # (JARVIS_REBOOT=1, set by clJarvis.py) -- a cold start always opens in overlay.
+        is_reboot = os.environ.get("JARVIS_REBOOT") == "1"
+        if is_reboot and saved_state and saved_state.get("is_fullscreen", False):
+            self.set_ui_mode("set_fullscreen")
+
     def refresh_layout(self, force_monitor_idx=None):
         screens = UIScaler.get().get_stable_screens()
         
@@ -903,48 +911,6 @@ class JarvisUI(QWidget):
         box_x = win_w // 2 - (box_width // 2)
         box_y = win_h - s(80)
         self.text_input.setGeometry(box_x, box_y, box_width, s(40))
-
-    def _check_occlusion(self):
-        if not getattr(self, 'is_fullscreen', False):
-            return
-            
-        import time
-        if time.time() < getattr(self, '_occlusion_disabled_until', 0):
-            return
-            
-        if sys.platform == "win32":
-            import ctypes
-            user32 = ctypes.windll.user32
-            
-            hwnd = user32.GetForegroundWindow()
-            if hwnd == 0:
-                return
-                
-            if hwnd == int(self.winId()):
-                self._last_fg_hwnd = hwnd
-                return
-                
-            if hwnd == getattr(self, '_last_fg_hwnd', 0):
-                return
-                
-            from ctypes.wintypes import RECT
-            rect = RECT()
-            if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-                from PyQt6.QtCore import QRect
-                fg_rect = QRect(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
-                # Windows 10/11 maximized windows bleed ~8 pixels into adjacent monitors to hide borders.
-                # We shrink the foreground rect by 15 pixels to prevent cross-monitor false positives.
-                shrunk_rect = fg_rect.adjusted(15, 15, -15, -15)
-                if self.geometry().intersects(shrunk_rect):
-                    self._last_fg_hwnd = hwnd
-                    self.set_ui_mode("set_overlay")
-                else:
-                    self._last_fg_hwnd = hwnd
-        else:
-            # On Linux/Wayland, activeWindow() can be None just because the compositor denied 
-            # initial focus. We rely on the user explicitly closing the dashboard via keybinds 
-            # (abort or ui_overlay) rather than auto-collapsing.
-            pass
 
     def _handle_feedback(self, data):
         device = data.get("device")
@@ -1160,23 +1126,8 @@ class JarvisUI(QWidget):
         if state != Qt.ApplicationState.ApplicationActive:
             # On Wayland, the app may frequently be marked as Inactive due to focus stealing prevention.
             # We must NOT hide the text inputs here, otherwise the user can't use the dashboard if Wayland denies focus.
+            # No auto-collapse on focus loss -- closed explicitly via keybinds instead.
             pass
-                    
-            if sys.platform == "win32":
-                import ctypes
-                from PyQt6.QtCore import QRect
-                user32 = ctypes.windll.user32
-                hwnd = user32.GetForegroundWindow()
-                if hwnd != 0 and hwnd != int(self.winId()):
-                    class RECT(ctypes.Structure):
-                        _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
-                    rect = RECT()
-                    if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-                        fg_rect = QRect(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
-                        shrunk_rect = fg_rect.adjusted(15, 15, -15, -15)
-                        if self.geometry().intersects(shrunk_rect):
-                            self._last_fg_hwnd = hwnd
-                            self.set_ui_mode("set_overlay")
         else:
             self.text_input.show()
             self.text_input.activateWindow()
@@ -1216,6 +1167,8 @@ class JarvisUI(QWidget):
         if state == "IDLE":
             if not self.is_fullscreen:
                 for w_id in list(self.active_widgets.keys()):
+                    if w_id.startswith("list_"):
+                        continue  # keep options prompts open until answered
                     self.close_draggable_widget(w_id)
             else:
                 pass # Keep logic consistent
@@ -1274,10 +1227,15 @@ class JarvisUI(QWidget):
             w.layout.addWidget(w.content_widget)
             w.content_widget.show()
             w.adjustSize()
+            # Ensure it's visible even if it was previously hidden.
+            w.show()
+            w.raise_()
+            if self.is_fullscreen:
+                self._enforce_z_order()
         else:
             self.spawn_widget(widget_id, title, content)
             w = self.active_widgets[widget_id]
-            
+
             if self.is_fullscreen:
                 if hasattr(w, "title_bar"):
                     w.title_bar.show()
@@ -1292,6 +1250,12 @@ class JarvisUI(QWidget):
                 cx = (self.width() - w.width()) // 2
                 cy = (self.height() // 2) - w.height() - 120
                 w.move(cx, cy)
+
+        # Grab focus so a time-limited options prompt is actually seen.
+        if self.is_fullscreen:
+            self.raise_()
+            self.activateWindow()
+            w.raise_()
 
     def spawn_widget(self, widget_id, title, content_widget, closable=True):
         """API to spawn or bring-to-front a dashboard widget"""
@@ -1377,6 +1341,31 @@ class JarvisUI(QWidget):
             self.text_input.clear()
             self.text_input.setFocus()
 
+    def _set_win32_click_through(self, transparent: bool) -> None:
+        """Toggles WS_EX_TRANSPARENT -- the Win32 equivalent of Qt's WA_TransparentForMouseEvents."""
+        import ctypes
+        hwnd = int(self.winId())
+        user32 = ctypes.windll.user32
+        if sys.maxsize > 2**32:
+            GetWindowLong = user32.GetWindowLongPtrW
+            GetWindowLong.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            GetWindowLong.restype = ctypes.c_void_p
+            SetWindowLong = user32.SetWindowLongPtrW
+            SetWindowLong.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+            SetWindowLong.restype = ctypes.c_void_p
+        else:
+            GetWindowLong = user32.GetWindowLongW
+            SetWindowLong = user32.SetWindowLongW
+
+        GWL_EXSTYLE = -20
+        WS_EX_TRANSPARENT = 0x00000020
+        style = GetWindowLong(hwnd, GWL_EXSTYLE)
+        if style is None:
+            return
+        new_style = (style | WS_EX_TRANSPARENT) if transparent else (style & ~WS_EX_TRANSPARENT)
+        SetWindowLong(hwnd, GWL_EXSTYLE, new_style)
+        user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0023)  # SWP_NOMOVE|SWP_NOSIZE|SWP_FRAMECHANGED
+
     def set_ui_mode(self, mode):
         if mode == "save_state":
             self.save_ui_state()
@@ -1440,16 +1429,12 @@ class JarvisUI(QWidget):
             self.clearMask()
             self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
 
+            # No WindowStaysOnTopHint: the dashboard no longer auto-collapses when occluded.
             flags = Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
-            if sys.platform == "win32":
-                flags |= Qt.WindowType.WindowStaysOnTopHint
             self.setWindowFlags(flags)
             logging.info("[DEBUG UI] Window flags set.")
             
             self.is_fullscreen = True
-
-            import time
-            self._occlusion_disabled_until = time.time() + 1.5
 
             # Force native window creation so windowHandle() becomes available without mapping the window yet
             self.winId()
@@ -1545,29 +1530,8 @@ class JarvisUI(QWidget):
             QTimer.singleShot(150, force_focus)
             
             if sys.platform == "win32":
-                import ctypes
-                hwnd = int(self.winId())
-                user32 = ctypes.windll.user32
-                if sys.maxsize > 2**32:
-                    GetWindowLong = user32.GetWindowLongPtrW
-                    GetWindowLong.argtypes = [ctypes.c_void_p, ctypes.c_int]
-                    GetWindowLong.restype = ctypes.c_void_p
-                    SetWindowLong = user32.SetWindowLongPtrW
-                    SetWindowLong.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
-                    SetWindowLong.restype = ctypes.c_void_p
-                else:
-                    GetWindowLong = user32.GetWindowLongW
-                    SetWindowLong = user32.SetWindowLongW
-                
-                style = GetWindowLong(hwnd, -20)
-                if style is not None:
-                    logging.info(f"[DEBUG UI] Before ctypes: GWL_EXSTYLE = {hex(style)}")
-                    new_style = style & ~0x00000020
-                    SetWindowLong(hwnd, -20, new_style)
-                    user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0023) # SWP_NOMOVE|SWP_NOSIZE|SWP_FRAMECHANGED
-                    final_style = GetWindowLong(hwnd, -20)
-                    logging.info(f"[DEBUG UI] After ctypes: GWL_EXSTYLE = {hex(final_style)}")
-                
+                self._set_win32_click_through(False)
+
             self.raise_()
             self.activateWindow() 
             self.setFocus()
@@ -1576,7 +1540,10 @@ class JarvisUI(QWidget):
             
             if QApplication.applicationState() == Qt.ApplicationState.ApplicationActive:
                 self._on_app_state_changed(Qt.ApplicationState.ApplicationActive)
-            
+
+            # Persist is_fullscreen immediately rather than relying on the pre-kill save signal.
+            self.save_ui_state()
+
         elif mode == "set_overlay":
             self.is_fullscreen = False
             
@@ -1608,9 +1575,9 @@ class JarvisUI(QWidget):
             
             self.reminder_widget.hide()
                 
-            # Hide all dashboard widgets except options_list
+            # Hide all dashboard widgets except options prompts
             for wid, w in self.active_widgets.items():
-                if wid != "options_list":
+                if not wid.startswith("list_"):
                     w.hide()
                 else:
                     if hasattr(w, "title_bar"):
@@ -1650,24 +1617,10 @@ class JarvisUI(QWidget):
             self.setGeometry(x_pos, y_pos, width, height)
             
             if sys.platform == "win32":
-                import ctypes
-                hwnd = int(self.winId())
-                user32 = ctypes.windll.user32
-                if sys.maxsize > 2**32:
-                    GetWindowLong = user32.GetWindowLongPtrW
-                    GetWindowLong.argtypes = [ctypes.c_void_p, ctypes.c_int]
-                    GetWindowLong.restype = ctypes.c_void_p
-                    SetWindowLong = user32.SetWindowLongPtrW
-                    SetWindowLong.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
-                    SetWindowLong.restype = ctypes.c_void_p
-                else:
-                    GetWindowLong = user32.GetWindowLongW
-                    SetWindowLong = user32.SetWindowLongW
-                
-                style = GetWindowLong(hwnd, -20)
-                if style is not None:
-                    SetWindowLong(hwnd, -20, style | 0x00000020)
-                    user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0023)
+                self._set_win32_click_through(True)
+
+            # Persist is_fullscreen=False immediately (see set_fullscreen branch above).
+            self.save_ui_state()
 
     def _generate_honeycomb(self, w, h):
         from PyQt6.QtGui import QPixmap, QPolygonF
@@ -1768,8 +1721,8 @@ class JarvisUI(QWidget):
 
     def load_ui_state(self):
         if not os.path.exists(STATE_FILE):
-            return
-            
+            return None
+
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
                 state = json.load(f)
@@ -1860,8 +1813,11 @@ class JarvisUI(QWidget):
                         w.raise_(); self._enforce_z_order()
                     else:
                         w.hide()
+
+            return state
         except Exception as e:
             logging.error(f"Failed to load UI state: {e}")
+            return None
 
 
 if __name__ == "__main__":

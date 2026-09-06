@@ -11,6 +11,17 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "..", "..", "data", "reminders")
 
 def get_volume():
+    if sys.platform == 'win32':
+        try:
+            from pycaw.pycaw import AudioUtilities
+            endpoint_volume = AudioUtilities.GetSpeakers().EndpointVolume
+            if endpoint_volume.GetMute():
+                return 0
+            return round(endpoint_volume.GetMasterVolumeLevelScalar() * 100)
+        except Exception as e:
+            logging.error(f"Failed to check volume: {e}")
+        return 100
+
     try:
         out = subprocess.check_output(["amixer", "get", "Master"]).decode()
         if "[off]" in out:
@@ -21,7 +32,7 @@ def get_volume():
             return int(match.group(1))
     except Exception as e:
         logging.error(f"Failed to check volume: {e}")
-        
+
     return 100
 
 def boot_ecosystem_if_offline() -> bool:
@@ -102,7 +113,30 @@ def main():
     logging.info(f"Triggering reminder {reminder_id}. System volume is {vol}%.")
     
     # 1. Unconditionally send desktop notification
-    if sys.platform != 'win32':
+    if sys.platform == 'win32':
+        try:
+            def _ps_escape(s: str) -> str:
+                return s.replace('`', '``').replace('$', '`$').replace('"', '`"')
+
+            ps_script = (
+                "Add-Type -AssemblyName System.Windows.Forms;"
+                "Add-Type -AssemblyName System.Drawing;"
+                "$notify = New-Object System.Windows.Forms.NotifyIcon;"
+                "$notify.Icon = [System.Drawing.SystemIcons]::Information;"
+                "$notify.Visible = $true;"
+                f'$notify.BalloonTipTitle = "Jarvis Reminder";'
+                f'$notify.BalloonTipText = "{_ps_escape(text)}";'
+                "$notify.ShowBalloonTip(8000);"
+                "Start-Sleep -Seconds 8;"
+                "$notify.Dispose()"
+            )
+            subprocess.Popen(
+                ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_script],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+        except Exception as e:
+            logging.error(f"Failed to send notification: {e}")
+    else:
         env = os.environ.copy()
         env.setdefault("DISPLAY", ":0")
         if hasattr(os, "getuid"):

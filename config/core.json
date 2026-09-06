@@ -4,6 +4,11 @@
         "enable_followup": true,
         "silent_mode": false,
         "debug_mqtt": false,
+        "languages": [
+            "en",
+            "pt"
+        ],
+        "stt_processing_mode": "parallel",
         "slm_settings": {
             "enabled": true,
             "model_path": "models/jarvis-brain-v2-q4_k_m.gguf",

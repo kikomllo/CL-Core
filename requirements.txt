@@ -95,3 +95,6 @@ nvidia-cudnn-cu12
 nvidia-cuda-runtime-cu12
 pystray
 Pillow
+pycaw==20251023 ; sys_platform == 'win32'
+comtypes ; sys_platform == 'win32'
+winsdk==1.0.0b10 ; sys_platform == 'win32'
