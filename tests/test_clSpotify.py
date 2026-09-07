@@ -162,6 +162,32 @@ class TestSpotify:
         assert spotify_manager.pre_duck_volume == 70
         mock_vol.assert_called_with(56, device_id="device")  # 70 * 0.8
 
+    def test_explicit_volume_change_survives_the_next_duck_cycle(self, spotify_manager, mocker):
+        """Reproduces a live failure: user says 'set volume to 100%' right
+        after a duck/unduck cycle. The 'volume' action never updated
+        last_known_normal_volume, so the next duck (still inside the 30s
+        self-trust window) used the stale pre-change baseline and the
+        following unduck silently reverted the user's explicit change."""
+        mocker.patch.object(spotify_manager, '_ensure_active_device', return_value="device")
+        mocker.patch.object(spotify_manager, '_get_active_device', return_value="device")
+        mock_vol = mocker.patch.object(spotify_manager.sp, 'volume')
+
+        mocker.patch.object(spotify_manager.sp, 'current_playback', return_value={"device": {"volume_percent": 87}, "is_playing": True})
+        spotify_manager.execute_command("duck")
+        spotify_manager.execute_command("unduck")
+
+        spotify_manager.execute_command("volume", volume=100)
+        assert spotify_manager.last_known_normal_volume == 100
+
+        # API still reports the stale 87% immediately after our own PUT.
+        mocker.patch.object(spotify_manager.sp, 'current_playback', return_value={"device": {"volume_percent": 87}, "is_playing": True})
+        spotify_manager.execute_command("duck")
+        assert spotify_manager.pre_duck_volume == 100
+        mock_vol.assert_called_with(80, device_id="device")  # 100 * 0.8
+
+        spotify_manager.execute_command("unduck")
+        mock_vol.assert_called_with(100, device_id="device")
+
 class TestSpotifyEdgeCases:
     def test_search_zero_results(self, spotify_manager, mocker):
         mock_search = mocker.patch.object(spotify_manager.sp, 'search')

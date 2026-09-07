@@ -61,3 +61,33 @@ class TestGenerateAndPlayNetworkFailure:
             await manager.generate_and_play(client, "unique retry success test phrase", abort_count=0)
 
         assert calls["count"] == 2, "a transient failure must be retried, not just once, before giving up"
+
+
+class TestSetOutputDevice:
+    """A device change picked in Settings must swap the mixer's active
+    device live without restarting clTTS.py, and must never leave the
+    mixer uninitialized if the requested device fails to open."""
+
+    @pytest.mark.asyncio
+    async def test_switches_to_named_device(self, manager):
+        with patch('clTTS.mixer') as mock_mixer:
+            await manager.set_output_device("Speakers (Realtek Audio)")
+
+        mock_mixer.quit.assert_called_once()
+        mock_mixer.init.assert_called_once_with(devicename="Speakers (Realtek Audio)")
+
+    @pytest.mark.asyncio
+    async def test_system_default_reinitializes_with_no_devicename(self, manager):
+        with patch('clTTS.mixer') as mock_mixer:
+            await manager.set_output_device("System Default")
+
+        mock_mixer.init.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_default_when_device_open_fails(self, manager):
+        with patch('clTTS.mixer') as mock_mixer:
+            mock_mixer.init.side_effect = [Exception("device not found"), None]
+            await manager.set_output_device("Unplugged Speakers")
+
+        assert mock_mixer.init.call_count == 2
+        mock_mixer.init.assert_called_with()

@@ -256,6 +256,9 @@ SLOTTED_PHRASES: Dict[str, List[str]] = {
     "system_restart_module": [
         "Restarting {target} now.",
     ],
+    "spotify_volume": [
+        "Volume set to {volume} percent.", "Volume at {volume} percent now.",
+    ],
 }
 
 NOISE_PHRASES = [

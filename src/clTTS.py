@@ -38,8 +38,16 @@ class TTSManager:
         
         core_data = ConfigLoader().load_json("core.json")
         self.silent_mode = core_data.get("settings", {}).get("silent_mode", False)
-        
-        mixer.init()
+        output_device = core_data.get("settings", {}).get("audio_settings", {}).get("output_device")
+
+        if output_device and output_device != "System Default":
+            try:
+                mixer.init(devicename=output_device)
+            except Exception as e:
+                logging.error(f"Failed to init mixer on '{output_device}', using system default: {e}")
+                mixer.init()
+        else:
+            mixer.init()
         logging.info("Audio mixer initialized.")
         self.clean_old_cache(max_files=200)
 
@@ -203,6 +211,19 @@ class TTSManager:
                     await client.publish("jarvis/sys/tts_state", json.dumps({"state": "idle"}))
                     await asyncio.sleep(0.05)
 
+    async def set_output_device(self, device_name: str) -> None:
+        async with self.semaphore:
+            mixer.quit()
+            try:
+                if device_name and device_name != "System Default":
+                    mixer.init(devicename=device_name)
+                else:
+                    mixer.init()
+                logging.info(f"[TTS] Output device switched to: {device_name or 'System Default'}")
+            except Exception as e:
+                logging.error(f"[TTS] Failed to switch to output device '{device_name}': {e}")
+                mixer.init()
+
     async def play_audio_file(self, client, file_path: str, abort_count=0) -> None:
         """Plays an existing audio file safely through the TTS queue to avoid ALSA locks."""
         if not os.path.exists(file_path):
@@ -320,6 +341,7 @@ async def run_tts_service():
                 await client.subscribe("jarvis/sys/tts_request")
                 await client.subscribe("jarvis/sys/silent_mode")
                 await client.subscribe("jarvis/sys/play_audio")
+                await client.subscribe("jarvis/sys/tts_control")
                 logging.info("TTS Microservice initialized. Listening on MQTT topics...")
                 await client.publish("jarvis/sys/module_ready", json.dumps({"module": "tts"}))
                 
@@ -363,6 +385,14 @@ async def run_tts_service():
                         except json.JSONDecodeError:
                             logging.error("Malformed TTS request JSON.")
                             
+                    elif topic == "jarvis/sys/tts_control":
+                        try:
+                            payload = json.loads(message.payload.decode('utf-8'))
+                            if payload.get("action") == "set_output_device":
+                                asyncio.create_task(manager.set_output_device(payload.get("device_name")))
+                        except json.JSONDecodeError:
+                            logging.error("Malformed tts_control JSON.")
+
                     elif topic == "jarvis/sys/play_audio":
                         try:
                             payload = json.loads(message.payload.decode('utf-8'))

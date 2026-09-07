@@ -736,6 +736,8 @@ class SpotifyManager:
                 if not device: return False, "Spotify is not active."
                 clean_vol = max(0, min(100, volume))
                 self.sp.volume(clean_vol, device_id=device)
+                self.last_known_normal_volume = clean_vol
+                self._last_duck_cycle_time = time.time()
                 return True, f"Volume changed to {clean_vol}%."
             
             return False, f"Action '{action}' is not recognized."

@@ -5,11 +5,11 @@ import math
 import random
 import paho.mqtt.client as mqtt
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPointF, QPoint, QFileSystemWatcher, QPropertyAnimation, QEasingCurve, QRect
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPointF, QPoint, QSize, QFileSystemWatcher, QPropertyAnimation, QEasingCurve, QRect, pyqtProperty
 from datetime import datetime
 import paho.mqtt.publish as publish
 from PyQt6.QtGui import QPainter, QColor, QPen, QPainterPath, QRadialGradient, QBrush, QLinearGradient
-from PyQt6.QtGui import QPainter, QColor, QPen, QPainterPath, QRadialGradient, QBrush, QLinearGradient
+from PyQt6.QtGui import QPainter, QColor, QPen, QPainterPath, QRadialGradient, QBrush, QLinearGradient, QFontMetrics
 from utils.clActionRouter import ActionRouter
 
 from ui.clMediaWidget import MediaWidget
@@ -20,6 +20,7 @@ from ui.clDashboardDrawer import DashboardDrawer
 from ui.clSettingsWidget import SettingsWidget
 from ui.clUpdateWidget import UpdateWidget
 from ui.clLogWidget import LogWidget
+from ui.clMarqueeLabel import MarqueeLabel
 
 from clUIScalerInjector import inject_scaler
 from clUIScaler import UIScaler
@@ -346,8 +347,11 @@ class DraggableWidget(QWidget):
         
         if self.is_unpinned:
             global_pos = self.mapToGlobal(QPoint(0, 0))
-            self.setParent(None)
-            self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool)
+            # setParent(parent, flags) changes both atomically in one native-window
+            # recreation -- doing it as two separate calls (setParent then
+            # setWindowFlags) is what left Windows' native title bar/min/max/close
+            # chrome in place instead of honoring the frameless Tool flags.
+            self.setParent(None, Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool)
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
             if hasattr(self, 'pin_btn'):
                 self.pin_btn.setText("↧")
@@ -355,17 +359,18 @@ class DraggableWidget(QWidget):
         else:
             global_pos = self.pos()
             if self.main_window:
-                self.setParent(self.main_window)
+                self.setParent(self.main_window, Qt.WindowType.Widget)
                 local_pos = self.main_window.mapFromGlobal(global_pos)
-                
+
                 # Clamp to main window bounds so it pops into screen if pinned on another monitor
                 max_x = max(0, self.main_window.width() - current_size.width())
                 max_y = max(0, self.main_window.height() - current_size.height())
                 clamped_x = max(0, min(local_pos.x(), max_x))
                 clamped_y = max(0, min(local_pos.y(), max_y))
-                
+
                 self.move(clamped_x, clamped_y)
-            self.setWindowFlags(Qt.WindowType.Widget)
+            else:
+                self.setParent(None, Qt.WindowType.Widget)
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
             if hasattr(self, 'pin_btn'):
                 self.pin_btn.setText("↥")
@@ -376,8 +381,12 @@ class DraggableWidget(QWidget):
             self.resize(current_size)
             
         self.show()
-        
-        if hasattr(self.main_window, 'save_ui_state'):
+
+        # Skip saving mid-restore: load_ui_state() calls toggle_pin() to sync
+        # pin state before it has applied this widget's saved visibility, so
+        # saving here would persist that incomplete snapshot and clobber the
+        # real saved state before load_ui_state() itself gets to read it.
+        if hasattr(self.main_window, 'save_ui_state') and not getattr(self.main_window, '_restoring_ui_state', False):
             self.main_window.save_ui_state()
 
     def showEvent(self, event):
@@ -675,6 +684,296 @@ class JarvisVisualizer(QWidget):
             painter.drawText(10, 20, f"State: {self.state}")
             painter.restore()
 
+def load_recolored_svg_icon(path: str, color_hex: str, size: int):
+    """Loads an SVG, swaps every fill="#hex" for color_hex, and renders it
+    to a QIcon at size x size. Vector-based and rendered by Qt itself (not
+    a font), so it looks identical on both machines regardless of what
+    fonts/emoji sets are installed -- and unlike a font glyph, the color is
+    just a string swap away, no font metrics/fallback involved. Icon files
+    should use a single flat fill color (any hex works, it gets replaced)
+    and a square viewBox; Illustrator's SVG export needs "Styling:
+    Presentation Attributes" so fill="..." appears as a plain XML attribute
+    rather than buried in an inline <style> block this substitution won't see."""
+    import re
+    from PyQt6.QtCore import QByteArray
+    from PyQt6.QtGui import QIcon, QPainter, QPixmap
+    from PyQt6.QtSvg import QSvgRenderer
+
+    with open(path, "r", encoding="utf-8") as f:
+        svg_text = f.read()
+    svg_text = re.sub(r'fill="#[0-9a-fA-F]{3,8}"', f'fill="{color_hex}"', svg_text)
+
+    renderer = QSvgRenderer(QByteArray(svg_text.encode("utf-8")))
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    renderer.render(painter)
+    painter.end()
+    return QIcon(pixmap)
+
+
+class IconPill(QWidget):
+    """A small circular icon by default; hovering expands it into a pill
+    that reveals a label via a MarqueeLabel (scrolling/carousel on hover if
+    it overflows -- the same idiom the media widget uses for song titles).
+    Clicking (icon or expanded area) calls _activate(). Subclasses supply
+    the icon path and override _activate()/_label_text()."""
+
+    # SVG, not emoji/font glyph: color emoji is bitmap/COLR-table based and
+    # ignores the theme's text color entirely (always renders in its own
+    # fixed native colors), and even a plain text glyph depends on OS font
+    # fallback for any character our bundled font doesn't cover. A vector
+    # file we render ourselves is identical on both machines regardless of
+    # installed fonts, and trivially recolored (see load_recolored_svg_icon).
+
+    def __init__(self, icon_path: str, grow_direction: str = "right", parent=None, icon_padding: int = 14):
+        super().__init__(parent)
+        self.grow_direction = grow_direction  # "left" or "right" -- which way it expands
+        self._icon_path = icon_path
+        self._icon_padding = icon_padding  # gap subtracted from diameter to get the icon's own size
+        self.diameter = 35
+        self.expanded_width = 140
+        self._anchor_x = 0  # the edge that stays fixed on screen while (de)expanding
+
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)  # plain QWidget needs this to paint QSS background/border at all
+
+        # Only present while expanded (see enterEvent/_on_animation_finished)
+        # -- a permanent margin here would eat into the collapsed circle's
+        # exact fixed diameter. Applied on whichever side actually touches
+        # the pill's outer rounded border: MarqueeLabel draws its scrolling/
+        # elided text manually in paintEvent and ignores stylesheet padding,
+        # so the inset has to come from real layout margin, not CSS.
+        self._edge_gap = 10
+        self._layout_spacing = 6
+        self._collapsed_margins = (0, 0, 0, 0)
+        self._expanded_margins = (self._edge_gap, 0, 0, 0) if grow_direction == "left" else (0, 0, self._edge_gap, 0)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(*self._collapsed_margins)
+        layout.setSpacing(self._layout_spacing)
+
+        self.icon_btn = QPushButton(self)
+        self.icon_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.icon_btn.clicked.connect(self._activate)
+
+        self.label = MarqueeLabel("", force_single_line=True)
+        self.label.setStyleSheet(f"color: {Theme.C_PRIMARY}; font-weight: bold; background: transparent; border: none;")
+        self.label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.label.hide()
+
+        if grow_direction == "left":
+            layout.addWidget(self.label, 1)
+            layout.addWidget(self.icon_btn)
+        else:
+            layout.addWidget(self.icon_btn)
+            layout.addWidget(self.label, 1)
+
+        self._anim = QPropertyAnimation(self, b"pillWidth")
+        self._anim.setDuration(150)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.finished.connect(self._on_animation_finished)
+
+        self.setStyleSheet("background: transparent; border: none;")
+        self.set_sizes(self.diameter, self.expanded_width)
+
+    def set_sizes(self, diameter: int, expanded_width: int):
+        self.diameter = diameter
+        self.expanded_width = self._resolve_expanded_width(expanded_width)
+        self.icon_btn.setFixedSize(diameter, diameter)
+        self.icon_btn.setStyleSheet(Theme.get_style("IconPillCircle", radius=diameter // 2))
+
+        icon_size = max(10, diameter - self._icon_padding)
+        try:
+            self.icon_btn.setIcon(load_recolored_svg_icon(self._icon_path, Theme.C_PRIMARY, icon_size))
+            self.icon_btn.setIconSize(QSize(icon_size, icon_size))
+        except Exception as e:
+            logging.warning(f"Failed to load pill icon '{self._icon_path}': {e}")
+
+        self.setFixedHeight(diameter)
+        self.setFixedWidth(diameter)
+
+    def set_anchor(self, anchor_x: int, y: int):
+        """anchor_x is the edge that must stay put on screen as the pill
+        expands/collapses -- the right edge if it grows left, else the left."""
+        self._anchor_x = anchor_x
+        self._apply_position(self.width())
+        self.move(self.x(), y)
+
+    def _apply_position(self, width: int):
+        if self.grow_direction == "left":
+            self.move(self._anchor_x - width, self.y())
+        else:
+            self.move(self._anchor_x, self.y())
+
+    def getPillWidth(self) -> int:
+        return self.width()
+
+    def setPillWidth(self, w: int):
+        self.setFixedWidth(w)
+        self._apply_position(w)
+
+    pillWidth = pyqtProperty(int, getPillWidth, setPillWidth)
+
+    def enterEvent(self, event):
+        self.setStyleSheet(Theme.get_style("IconPill", radius=self.diameter // 2))
+        self.layout().setContentsMargins(*self._expanded_margins)
+        self.label.setText(self._label_text())
+        self.label.show()
+        self._anim.stop()
+        self._anim.setStartValue(self.width())
+        self._anim.setEndValue(self.expanded_width)
+        self._anim.start()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.label.stop_scrolling()
+        self._anim.stop()
+        self._anim.setStartValue(self.width())
+        self._anim.setEndValue(self.diameter)
+        self._anim.start()
+        super().leaveEvent(event)
+
+    def _on_animation_finished(self):
+        if self.width() <= self.diameter:
+            self.label.hide()
+            self.label.stop_scrolling()
+            self.layout().setContentsMargins(*self._collapsed_margins)
+            self.setStyleSheet("background: transparent; border: none;")
+        else:
+            # The label's real (post-layout) width is only final once the
+            # expand animation settles, since MarqueeLabel decides whether
+            # to scroll by comparing text width to its own current width.
+            self.label.start_scrolling()
+
+    def mousePressEvent(self, event):
+        # The label is mouse-transparent, so a click anywhere in the
+        # expanded area that isn't the icon button itself lands here.
+        self._activate()
+        super().mousePressEvent(event)
+
+    def _activate(self):
+        raise NotImplementedError
+
+    def _label_text(self) -> str:
+        raise NotImplementedError
+
+    def _resolve_expanded_width(self, expanded_width: int) -> int:
+        return expanded_width
+
+
+class AudioQuickSwitchPill(IconPill):
+    """Clicking (icon or expanded area) opens a menu of every available
+    device -- the full-fidelity dashboard equivalent of Settings' Audio tab,
+    for switching without leaving the fullscreen view."""
+
+    ICON_FILE = {"input": "mic.svg", "output": "speaker.svg"}
+
+    def __init__(self, kind: str, grow_direction: str = "right", parent=None):
+        self.kind = kind  # "input" or "output"
+        self.router = ActionRouter()
+        self.loader = ConfigLoader()
+        icon_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "icons")
+        icon_path = os.path.join(icon_dir, self.ICON_FILE[kind])
+        super().__init__(icon_path, grow_direction, parent)
+        self.refresh_label()
+
+    def _activate(self):
+        self._open_picker()
+
+    def _label_text(self) -> str:
+        return getattr(self, "_cached_display_name", None) or self._current_device()
+
+    def _current_device(self) -> str:
+        try:
+            settings = self.loader.load_json("core.json").get("settings", {}).get("audio_settings", {})
+        except Exception:
+            settings = {}
+        return settings.get(f"{self.kind}_device", "System Default")
+
+    def _enumerate_options(self):
+        from utils.clAudioDevices import list_input_device_names, list_output_device_names, SYSTEM_DEFAULT
+        try:
+            return [SYSTEM_DEFAULT] + (list_input_device_names() if self.kind == "input" else list_output_device_names())
+        except Exception:
+            return [SYSTEM_DEFAULT]
+
+    def refresh_label(self):
+        from utils.clAudioDevices import get_clean_display_names
+        name = self._current_device()
+        try:
+            display = get_clean_display_names(self._enumerate_options(), self.kind).get(name, name)
+        except Exception:
+            display = name
+        self._cached_display_name = display
+        self.icon_btn.setToolTip(f"{'Microphone' if self.kind == 'input' else 'Speaker'}: {display}")
+        if self.label.isVisible():
+            self.label.setText(display)
+
+    def _open_picker(self):
+        from PyQt6.QtWidgets import QMenu
+        from PyQt6.QtGui import QAction
+        from utils.clAudioDevices import get_clean_display_names
+
+        options = self._enumerate_options()
+        try:
+            display_map = get_clean_display_names(options, self.kind)
+        except Exception:
+            display_map = {}
+
+        current = self._current_device()
+        menu = QMenu(self)
+        menu.setStyleSheet(Theme.get_style("SettingsMenu"))
+        for name in options:
+            action = QAction(display_map.get(name, name), menu)
+            action.setCheckable(True)
+            action.setChecked(name == current)
+            action.triggered.connect(lambda checked, n=name: self._select(n))
+            menu.addAction(action)
+        menu.exec(self.mapToGlobal(QPoint(0, self.height())))
+
+    def _select(self, device_name: str):
+        def update_cb(core):
+            core.setdefault("settings", {}).setdefault("audio_settings", {})[f"{self.kind}_device"] = device_name
+        self.loader.update_json_atomic("core.json", update_cb)
+
+        if self.kind == "input":
+            self.router.dispatch("mic.state", action="set_input_device", device_name=device_name)
+        else:
+            self.router.dispatch("tts.control", action="set_output_device", device_name=device_name)
+
+        self.refresh_label()
+
+
+class WidgetTogglePill(IconPill):
+    """A dashboard shortcut restyled to match the audio quick-switch pills:
+    collapsed to an icon, expanding on hover to show the widget's name.
+    Clicking toggles that widget open/closed via the given callback."""
+
+    def __init__(self, icon_file: str, label_text: str, callback, grow_direction: str = "right", parent=None):
+        self._widget_label = label_text
+        self._callback = callback
+        icon_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "icons")
+        icon_path = os.path.join(icon_dir, icon_file)
+        super().__init__(icon_path, grow_direction, parent, icon_padding=20)
+        self.icon_btn.setToolTip(label_text)
+
+    def _activate(self):
+        self._callback()
+
+    def _label_text(self) -> str:
+        return self._widget_label
+
+    def _resolve_expanded_width(self, expanded_width: int) -> int:
+        # The widget name is fixed (unlike the audio pills' device name),
+        # so the expanded pill can be sized to fit it exactly instead of
+        # taking a generic width with dead space past the text.
+        fm = QFontMetrics(self.label.font())
+        text_width = fm.horizontalAdvance(self._widget_label)
+        return self.diameter + self._layout_spacing + text_width + self._edge_gap
+
+
 class JarvisUI(QWidget):
     def __init__(self):
         super().__init__()
@@ -762,34 +1061,43 @@ class JarvisUI(QWidget):
         self.text_input.returnPressed.connect(self.submit_text_command)
         self.text_input.hide()
         
-        self.btn_media = QPushButton("MUSIC", self)
-        self.btn_media.clicked.connect(self._toggle_media)
+        # Dashboard shortcuts, stacked as a column of icon pills along the
+        # far left edge (see refresh_layout) -- each grows rightward on
+        # hover to reveal its name, matching the audio quick-switch pills.
+        self.btn_media = WidgetTogglePill("music.svg", "Music", self._toggle_media, grow_direction="right", parent=self)
         self.btn_media.hide()
-        
-        self.btn_lights = QPushButton("LIGHTS", self)
-        self.btn_lights.clicked.connect(self._toggle_lights)
+
+        self.btn_lights = WidgetTogglePill("lights.svg", "Lights", self._toggle_lights, grow_direction="right", parent=self)
         self.btn_lights.hide()
-        
-        self.btn_reminders = QPushButton("REMINDERS", self)
-        self.btn_reminders.clicked.connect(self._toggle_reminders)
+
+        self.btn_reminders = WidgetTogglePill("reminders.svg", "Reminders", self._toggle_reminders, grow_direction="right", parent=self)
         self.btn_reminders.hide()
-        
-        self.btn_todos = QPushButton("TODOS", self)
-        self.btn_todos.clicked.connect(self._toggle_todos)
+
+        self.btn_todos = WidgetTogglePill("todos.svg", "To-Do List", self._toggle_todos, grow_direction="right", parent=self)
         self.btn_todos.hide()
-        
-        self.btn_settings = QPushButton("SETTINGS", self)
-        self.btn_settings.clicked.connect(self._toggle_settings)
+
+        self.btn_settings = WidgetTogglePill("settings.svg", "Settings", self._toggle_settings, grow_direction="right", parent=self)
         self.btn_settings.hide()
-        
-        self.btn_updates = QPushButton("UPDATES", self)
-        self.btn_updates.clicked.connect(self._toggle_updates)
+
+        self.btn_updates = WidgetTogglePill("updates.svg", "Updates", self._toggle_updates, grow_direction="right", parent=self)
         self.btn_updates.hide()
-        
-        self.btn_debug = QPushButton("DEBUG", self)
-        self.btn_debug.clicked.connect(self._toggle_debug)
+
+        self.btn_debug = WidgetTogglePill("debug.svg", "Debug Logs", self._toggle_debug, grow_direction="right", parent=self)
         self.btn_debug.hide()
-        
+
+        self.widget_toggle_pills = [
+            self.btn_media, self.btn_lights, self.btn_reminders,
+            self.btn_todos, self.btn_settings, self.btn_updates, self.btn_debug,
+        ]
+
+        # Mic (left) expands leftward, speaker (right) expands rightward --
+        # each grows away from the other so they never collide mid-hover.
+        self.pill_mic = AudioQuickSwitchPill("input", grow_direction="left", parent=self)
+        self.pill_mic.hide()
+
+        self.pill_speaker = AudioQuickSwitchPill("output", grow_direction="right", parent=self)
+        self.pill_speaker.hide()
+
         self.btn_calendar = QPushButton("❮", self)
         self.btn_calendar.setStyleSheet(Theme.get_style("CalendarButton"))
         self.btn_calendar.clicked.connect(self._toggle_calendar)
@@ -822,12 +1130,16 @@ class JarvisUI(QWidget):
         self.mqtt_thread.calendar_status_signal.connect(self._handle_calendar_data)
         self.mqtt_thread.start()
 
-        # Restore saved layout (widget positions, drawer/carousel, monitor).
-        saved_state = self.load_ui_state()
-
-        # Only restore fullscreen mode on a reboot/crash-recovery/restart
-        # (JARVIS_REBOOT=1, set by clJarvis.py) -- a cold start always opens in overlay.
+        # Only restore fullscreen mode -- and any dashboard widgets that were
+        # open in it -- on a reboot/crash-recovery/restart (JARVIS_REBOOT=1,
+        # set by clJarvis.py). A cold start always opens clean in overlay:
+        # restoring widgets here too would pop a saved-visible widget like
+        # Settings straight onto the overlay, and since is_fullscreen is
+        # still False at this point, spawn_widget's overlay path would force
+        # it unpinned regardless of what was actually saved.
         is_reboot = os.environ.get("JARVIS_REBOOT") == "1"
+        saved_state = self.load_ui_state(restore_widgets=is_reboot)
+
         if is_reboot and saved_state and saved_state.get("is_fullscreen", False):
             self.set_ui_mode("set_fullscreen")
 
@@ -864,16 +1176,49 @@ class JarvisUI(QWidget):
         self.setStyleSheet(Theme.get_global_stylesheet())
         self.btn_calendar.setStyleSheet(Theme.get_style("CalendarButton"))
 
-        # Row 1
-        self.btn_media.setGeometry(s(30), win_h - s(65), s(120), s(35))
-        self.btn_lights.setGeometry(s(160), win_h - s(65), s(120), s(35))
-        self.btn_reminders.setGeometry(s(290), win_h - s(65), s(120), s(35))
-        self.btn_todos.setGeometry(s(420), win_h - s(65), s(120), s(35))
+        # Dashboard shortcut pills -- collapsed circles stacked in a column
+        # along the far-left edge, matching the audio quick-switch pills'
+        # style; each expands rightward on hover to reveal the widget's name.
+        widget_pill_diameter = s(48)
+        widget_pill_expanded_width = s(170)
+        widget_pill_gap = s(12)
+        widget_pill_x = s(20)
+        widget_pill_bottom_margin = s(20)
+        stack_height = (len(self.widget_toggle_pills) * widget_pill_diameter
+                        + (len(self.widget_toggle_pills) - 1) * widget_pill_gap)
+        stack_top_y = win_h - widget_pill_bottom_margin - stack_height
+        for i, pill in enumerate(self.widget_toggle_pills):
+            pill.set_sizes(widget_pill_diameter, widget_pill_expanded_width)
+            pill_y = stack_top_y + i * (widget_pill_diameter + widget_pill_gap)
+            pill.set_anchor(widget_pill_x, pill_y)
 
-        # Row 2
-        self.btn_settings.setGeometry(s(30), win_h - s(110), s(120), s(35))
-        self.btn_updates.setGeometry(s(160), win_h - s(110), s(120), s(35))
-        self.btn_debug.setGeometry(s(290), win_h - s(110), s(120), s(35))
+        # Text Input (positioned here, ahead of its old spot below, so the
+        # audio pills can be laid out relative to it)
+        box_width = s(600)
+        box_x = win_w // 2 - (box_width // 2)
+        box_y = win_h - s(80)
+        self.text_input.setGeometry(box_x, box_y, box_width, s(40))
+
+        # Audio quick-switch pills -- collapsed to small circles, centered as
+        # a pair directly above the text bar; each expands outward on hover
+        # (mic left, speaker right) so they never grow into each other's
+        # space, and stay clear of the reminder widget's bottom-right corner.
+        pill_diameter = s(35)
+        pill_expanded_width = s(140)
+        pill_circle_gap = s(10)
+        pair_collapsed_width = pill_diameter * 2 + pill_circle_gap
+        pair_left_x = win_w // 2 - pair_collapsed_width // 2
+        pill_y = box_y - pill_diameter - s(10)
+
+        self.pill_mic.set_sizes(pill_diameter, pill_expanded_width)
+        self.pill_speaker.set_sizes(pill_diameter, pill_expanded_width)
+
+        mic_right_edge = pair_left_x + pill_diameter
+        speaker_left_edge = pair_left_x + pill_diameter + pill_circle_gap
+        self.pill_mic.set_anchor(mic_right_edge, pill_y)
+        self.pill_speaker.set_anchor(speaker_left_edge, pill_y)
+        self.pill_mic.refresh_label()
+        self.pill_speaker.refresh_label()
 
         # Calendar button
         self.btn_calendar.setGeometry(win_w - s(30), int(win_h / 2) - s(40), s(30), s(80))
@@ -905,12 +1250,6 @@ class JarvisUI(QWidget):
         rw_h = s(150)
         if hasattr(self, 'reminder_widget'):
             self.reminder_widget.setGeometry(win_w - rw_w - 20, win_h - rw_h - 20, rw_w, rw_h)
-
-        # Text Input
-        box_width = s(600)
-        box_x = win_w // 2 - (box_width // 2)
-        box_y = win_h - s(80)
-        self.text_input.setGeometry(box_x, box_y, box_width, s(40))
 
     def _handle_feedback(self, data):
         device = data.get("device")
@@ -1267,12 +1606,30 @@ class JarvisUI(QWidget):
                 w.raise_(); self._enforce_z_order()
             return
         is_standalone = not self.is_fullscreen
-        parent = None if is_standalone else self
-        wrapper = DraggableWidget(widget_id, title, content_widget, closable=closable, parent=parent)
-        
+        # Always construct with main_window=self, even when spawning standalone --
+        # DraggableWidget.main_window is captured once at construction and never
+        # updated again, so a widget built with parent=None here would have no
+        # main_window to reparent into later. Without it, toggle_pin()'s re-pin
+        # branch (e.g. after switching overlay -> fullscreen) falls through to
+        # setParent(None, Widget), which leaves the widget both parentless AND
+        # frameless-hint-free -- Windows then draws its full default decorated
+        # chrome back onto it, exactly the "title bar came back" bug.
+        wrapper = DraggableWidget(widget_id, title, content_widget, closable=closable, parent=self)
+
         # Position in center of screen by default
         if is_standalone:
-            wrapper.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+            # This widget has no Qt parent, same as a toggle_pin()-unpinned
+            # widget -- is_unpinned must say so too, or the pin button/label
+            # lies about its state and mouseMoveEvent's off-screen drag clamp
+            # (which only applies "if self.parent() and not self.is_unpinned")
+            # never engages, letting a widget that looks pinned drag anywhere.
+            wrapper.is_unpinned = True
+            if hasattr(wrapper, "pin_btn"):
+                wrapper.pin_btn.setText("↧")
+            # Atomic setParent(None, flags), matching toggle_pin()'s unpin branch --
+            # detaches to a real top-level frameless window while main_window
+            # (a plain Python attribute, untouched by setParent) still points at self.
+            wrapper.setParent(None, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
             wrapper.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
             
             screen_geom = self.screen().geometry()
@@ -1285,7 +1642,14 @@ class JarvisUI(QWidget):
             wrapper.move(cx, cy)
         
         self.active_widgets[widget_id] = wrapper
-        self.save_ui_state()
+        if not getattr(self, '_restoring_ui_state', False):
+            # Skip persisting mid-restore: load_ui_state() can call spawn_widget()
+            # before a widget's saved visibility/pin state has been fully applied
+            # (e.g. it's first spawned while still in overlay, pre-fullscreen), and
+            # saving here would overwrite the on-disk state with that incomplete
+            # snapshot before a later load_ui_state() pass ever reads the real one --
+            # a widget saved visible would come back permanently hidden.
+            self.save_ui_state()
         if self.is_fullscreen:
             if hasattr(wrapper, "title_bar"):
                 wrapper.title_bar.show()
@@ -1470,7 +1834,9 @@ class JarvisUI(QWidget):
             self.btn_settings.show()
             self.btn_updates.show()
             self.btn_calendar.show()
-            
+            self.pill_mic.show()
+            self.pill_speaker.show()
+
             if ECOSYSTEM_STATE == "debug":
                 self.btn_debug.show()
             else:
@@ -1564,6 +1930,8 @@ class JarvisUI(QWidget):
             self.btn_settings.hide()
             self.btn_updates.hide()
             self.btn_calendar.hide()
+            self.pill_mic.hide()
+            self.pill_speaker.hide()
             self.calendar_drawer.hide()
             
             if getattr(self, 'calendar_is_open', False):
@@ -1719,7 +2087,7 @@ class JarvisUI(QWidget):
         except Exception as e:
             logging.error(f"Failed to save UI state: {e}")
 
-    def load_ui_state(self):
+    def load_ui_state(self, restore_widgets=True):
         if not os.path.exists(STATE_FILE):
             return None
 
@@ -1750,78 +2118,129 @@ class JarvisUI(QWidget):
                 else:
                     self.reminder_widget.hide()
 
-                    
+
             # 4. Draggable Floating Widgets (Media, Lights, To-Do)
-            active_state = state.get("active_widgets", {})
-            for widget_id, info in active_state.items():
-                is_visible = info.get("visible", False)
-                pos = info.get("pos")
-                size = info.get("size")
-                
-                if widget_id == "widget_media_controls":
-                    if widget_id not in self.active_widgets:
-                        media_widget = MediaWidget()
-                        self.spawn_widget(widget_id, "Media Controls", media_widget)
-                elif widget_id == "widget_light_controls":
-                    if widget_id not in self.active_widgets:
-                        light_widget = LightControlWidget()
-                        self.spawn_widget(widget_id, "Smart Lights", light_widget)
-                elif widget_id == "widget_todo_list":
-                    if widget_id not in self.active_widgets:
-                        todo_widget = TodoWidget()
-                        self.spawn_widget(widget_id, "To-Do List", todo_widget)
-                elif widget_id == "widget_settings":
-                    if widget_id not in self.active_widgets:
-                        settings_widget = SettingsWidget()
-                        self.spawn_widget(widget_id, "System Settings", settings_widget)
-                elif widget_id == "widget_updates":
-                    if widget_id not in self.active_widgets:
-                        update_widget = UpdateWidget()
-                        self.spawn_widget(widget_id, "System Updates", update_widget)
-                        
-                if widget_id in self.active_widgets:
-                    w = self.active_widgets[widget_id]
-                    
-                    if pos and len(pos) == 2:
-                        prev_screen = state.get("screen_size", [1920, 1080]) # Fallback for old states
-                        scale_x = self.width() / max(1, prev_screen[0])
-                        scale_y = self.height() / max(1, prev_screen[1])
-                        
-                        p_x = int(pos[0] * scale_x)
-                        p_y = int(pos[1] * scale_y)
-                        
-                        # Clamp to current screen bounds
-                        p_x = max(0, min(p_x, self.width() - 50))
-                        p_y = max(0, min(p_y, self.height() - 50))
-                        
-                        w.move(p_x, p_y)
-                        
-                    if size and len(size) == 2:
-                        # Scale the saved size to match the current monitor proportions just like we do for position
-                        prev_screen = state.get("screen_size", [1920, 1080])
-                        scale_x = self.width() / max(1, prev_screen[0])
-                        scale_y = self.height() / max(1, prev_screen[1])
-                        s_w = int(size[0] * scale_x)
-                        s_h = int(size[1] * scale_y)
-                        w.resize(s_w, s_h)
-                        
-                    if info.get("is_unpinned", False) and hasattr(w, "toggle_pin"):
-                        w.toggle_pin(force_unpin=True)
-                        
-                    if is_visible:
-                        w.show()
-                        w.raise_(); self._enforce_z_order()
-                    else:
-                        w.hide()
+            if restore_widgets:
+                self._restoring_ui_state = True
+                active_state = state.get("active_widgets", {})
+                for widget_id, info in active_state.items():
+                    is_visible = info.get("visible", False)
+                    pos = info.get("pos")
+                    size = info.get("size")
+                    # set_ui_mode('set_fullscreen') calls load_ui_state() on every
+                    # manual overlay -> fullscreen switch, not just at boot -- a
+                    # widget that's already alive in memory (e.g. hidden by
+                    # set_overlay a moment ago) must keep its live show/hide
+                    # state rather than being reconfigured from a stale
+                    # on-disk snapshot (typically 'everything hidden', saved
+                    # during that same overlay transition). This only guards
+                    # visibility below, NOT pos/size/pin: a genuine reboot
+                    # restore spawns a widget in an earlier pass while still
+                    # in overlay (is_fullscreen False, tiny window), and a
+                    # later pass -- once real fullscreen dimensions are known
+                    # -- must still be able to reposition/re-clamp it even
+                    # though it "already exists" from that earlier pass.
+                    already_existed = widget_id in self.active_widgets
+
+                    if widget_id == "widget_media_controls":
+                        if widget_id not in self.active_widgets:
+                            media_widget = MediaWidget()
+                            self.spawn_widget(widget_id, "Media Controls", media_widget)
+                    elif widget_id == "widget_light_controls":
+                        if widget_id not in self.active_widgets:
+                            light_widget = LightControlWidget()
+                            self.spawn_widget(widget_id, "Smart Lights", light_widget)
+                    elif widget_id == "widget_todo_list":
+                        if widget_id not in self.active_widgets:
+                            todo_widget = TodoWidget()
+                            self.spawn_widget(widget_id, "To-Do List", todo_widget)
+                    elif widget_id == "widget_settings":
+                        if widget_id not in self.active_widgets:
+                            settings_widget = SettingsWidget()
+                            self.spawn_widget(widget_id, "System Settings", settings_widget)
+                    elif widget_id == "widget_updates":
+                        if widget_id not in self.active_widgets:
+                            update_widget = UpdateWidget()
+                            self.spawn_widget(widget_id, "System Updates", update_widget)
+
+                    if widget_id in self.active_widgets:
+                        w = self.active_widgets[widget_id]
+
+                        if pos and len(pos) == 2:
+                            prev_screen = state.get("screen_size", [1920, 1080]) # Fallback for old states
+                            scale_x = self.width() / max(1, prev_screen[0])
+                            scale_y = self.height() / max(1, prev_screen[1])
+
+                            p_x = int(pos[0] * scale_x)
+                            p_y = int(pos[1] * scale_y)
+
+                            # Clamp to current screen bounds
+                            p_x = max(0, min(p_x, self.width() - 50))
+                            p_y = max(0, min(p_y, self.height() - 50))
+
+                            w.move(p_x, p_y)
+
+                        if size and len(size) == 2:
+                            # Scale the saved size to match the current monitor proportions just like we do for position
+                            prev_screen = state.get("screen_size", [1920, 1080])
+                            scale_x = self.width() / max(1, prev_screen[0])
+                            scale_y = self.height() / max(1, prev_screen[1])
+                            s_w = int(size[0] * scale_x)
+                            s_h = int(size[1] * scale_y)
+                            w.resize(s_w, s_h)
+
+                        # Bidirectional: also re-pin a widget saved as pinned but
+                        # currently unpinned (e.g. forced so by an overlay-mode spawn).
+                        saved_unpinned = info.get("is_unpinned", False)
+                        if hasattr(w, "toggle_pin") and w.is_unpinned != saved_unpinned:
+                            w.toggle_pin(force_unpin=saved_unpinned)
+
+                        if w.is_unpinned:
+                            # toggle_pin()'s unpin branch turns the already-clamped
+                            # local position above into a global one via
+                            # mapToGlobal() -- if that position was saved while on
+                            # a different monitor arrangement, it can land outside
+                            # any real screen. Clamp it back onto the current one.
+                            screen_geom = self.screen().geometry()
+                            clamped_x = max(screen_geom.x(), min(w.x(), screen_geom.x() + screen_geom.width() - 50))
+                            clamped_y = max(screen_geom.y(), min(w.y(), screen_geom.y() + screen_geom.height() - 50))
+                            if (clamped_x, clamped_y) != (w.x(), w.y()):
+                                w.move(clamped_x, clamped_y)
+
+                        if not already_existed:
+                            if is_visible:
+                                w.show()
+                                w.raise_(); self._enforce_z_order()
+                            else:
+                                w.hide()
+                self._restoring_ui_state = False
 
             return state
         except Exception as e:
             logging.error(f"Failed to load UI state: {e}")
             return None
+        finally:
+            self._restoring_ui_state = False
+
+
+def _load_bundled_fonts():
+    """DejaVu Sans Mono isn't preinstalled on Windows, so it's bundled here
+    (assets/fonts/) and registered via Qt's font database -- guarantees the
+    same font renders identically on both machines regardless of what's
+    already installed on either."""
+    from PyQt6.QtGui import QFontDatabase
+    fonts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "fonts")
+    for filename in ["DejaVuSansMono.ttf", "DejaVuSansMono-Bold.ttf", "DejaVuSansMono-Oblique.ttf", "DejaVuSansMono-BoldOblique.ttf"]:
+        path = os.path.join(fonts_dir, filename)
+        if os.path.exists(path):
+            QFontDatabase.addApplicationFont(path)
+        else:
+            logging.warning(f"Bundled font not found: {path}")
 
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    _load_bundled_fonts()
     window = JarvisUI()
     window.show()
     sys.exit(app.exec())

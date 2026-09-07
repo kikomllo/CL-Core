@@ -19,7 +19,7 @@ class Theme:
     C_SUCCESS_BORDER = "rgba(50, 150, 50, 100)"
     
     # Fonts
-    FONT_FAMILY = "'Courier New'"
+    FONT_FAMILY = "'DejaVu Sans Mono', 'Courier New', monospace"
     F_TINY = "11px"
     F_SMALL = "12px"
     F_NORMAL = "14px"
@@ -87,7 +87,7 @@ class Theme:
         """
         
     @classmethod
-    def get_style(cls, component):
+    def get_style(cls, component, **kwargs):
         if component == "TitleLabel":
             return f"color: {cls.C_PRIMARY}; font-weight: 800; font-size: {cls.F_TITLE}; border: none; background: transparent;"
         elif component == "SubtitleLabel":
@@ -113,6 +113,24 @@ class Theme:
             return f"""
                 QPushButton {{ background: transparent; color: {cls.C_PRIMARY}; font-weight: bold; border: none; font-size: {cls.F_TITLE}; }}
                 QPushButton:hover {{ color: {cls.C_PRIMARY_HOVER}; }}
+            """
+        elif component == "IconPill":
+            # A true capsule/stadium needs border-radius == exactly half the
+            # widget's real height -- Qt's QSS engine does NOT clamp an
+            # oversized radius down to that gracefully (it renders as sharp
+            # corners instead), so the caller must pass the actual half-height.
+            # Applied to the container QWidget (needs WA_StyledBackground set
+            # for a plain QWidget to paint background/border from QSS at all).
+            radius = kwargs.get("radius", 15)
+            return f"background-color: {cls.C_BG_PANEL}; border: 1px solid {cls.C_PRIMARY}; border-radius: {radius}px;"
+        elif component == "IconPillCircle":
+            # Same half-height-radius rule as above, for the always-visible
+            # icon button (a perfect circle at rest). The icon itself is a
+            # recolored SVG (see load_recolored_svg_icon), not button text.
+            radius = kwargs.get("radius", 15)
+            return f"""
+                QPushButton {{ background-color: {cls.C_BG_PANEL}; border: 1px solid {cls.C_BORDER}; border-radius: {radius}px; padding: 0px; }}
+                QPushButton:hover {{ background-color: rgba(255, 150, 0, 60); border: 1px solid {cls.C_PRIMARY}; }}
             """
         elif component == "CalendarButton":
             return f"""
@@ -179,6 +197,16 @@ class Theme:
                 QComboBox {{ background-color: rgba(25, 12, 3, 240); color: #ffe6cc; border: 1px solid rgba(255, 180, 0, 100); border-radius: 4px; padding: 3px 6px; font-size: {cls.F_NORMAL}; }}
                 QComboBox::drop-down {{ border: none; }}
                 QComboBox QAbstractItemView {{ background-color: rgba(20, 10, 0, 240); color: #ffe6cc; selection-background-color: rgba(255, 150, 0, 100); }}
+            """
+        elif component == "SettingsMenu":
+            # QComboBox's popup is a QAbstractItemView (styled by
+            # "SettingsDropdown" above); a QMenu needs its own QMenu/
+            # QMenu::item selectors -- same palette, kept in sync by hand.
+            return f"""
+                QMenu {{ background-color: rgba(20, 10, 0, 240); color: #ffe6cc; border: 1px solid rgba(255, 180, 0, 100); border-radius: 4px; padding: 4px; font-size: {cls.F_NORMAL}; }}
+                QMenu::item {{ padding: 5px 20px 5px 10px; border-radius: 3px; }}
+                QMenu::item:selected {{ background-color: rgba(255, 150, 0, 100); color: #ffffff; }}
+                QMenu::separator {{ height: 1px; background: rgba(255, 180, 0, 60); margin: 4px 6px; }}
             """
         elif component == "SettingsLineEdit":
             return f"""

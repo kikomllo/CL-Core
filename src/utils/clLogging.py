@@ -34,6 +34,7 @@ def setup_logging(module_name: str) -> None:
     # Silence noisy third-party debug logs
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("comtypes").setLevel(logging.WARNING)  # logs "Release <POINTER(...)>" per COM object on __del__
 
 def update_log_level(mode_str: str) -> None:
     level = get_log_level_for_mode(mode_str)

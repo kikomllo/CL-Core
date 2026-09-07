@@ -1,9 +1,11 @@
 import json
 import os
+import sys
 from clTheme import Theme
 from utils.clActionRouter import ActionRouter
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QFrame, QCheckBox, QComboBox, QPushButton, QTabWidget, QLineEdit, QInputDialog, QSizePolicy
-from PyQt6.QtCore import Qt, QTimer, QSize
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QFrame, QCheckBox, QComboBox, QPushButton, QTabWidget, QLineEdit, QInputDialog, QSizePolicy, QStylePainter, QStyleOptionComboBox, QStyle
+from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal
+from PyQt6.QtGui import QFontMetrics
 from utils.clConfigLoader import ConfigLoader
 from utils.clEnvLoader import EnvLoader
 from clUIScaler import UIScaler
@@ -11,6 +13,147 @@ from ui.clMarqueeLabel import MarqueeLabel
 
 def s(val):
     return UIScaler.get().scale(val)
+
+
+# Windows VK codes -> clKeybinds.py's PTT_KEY_MAP names (left/right distinguished).
+_PTT_KEYS_WIN = {
+    0xA0: "KEY_LEFTSHIFT", 0xA1: "KEY_RIGHTSHIFT",
+    0xA2: "KEY_LEFTCTRL", 0xA3: "KEY_RIGHTCTRL",
+    0xA4: "KEY_LEFTALT", 0xA5: "KEY_RIGHTALT",
+    0x14: "KEY_CAPSLOCK", 0x20: "KEY_SPACE",
+    **{0x7C + i: f"KEY_F{i + 13}" for i in range(12)},  # VK_F13..VK_F24
+}
+
+# Linux evdev keycodes (X11 native scan code - 8) -> the same PTT_KEY_MAP names.
+_PTT_KEYS_LINUX = {
+    42: "KEY_LEFTSHIFT", 54: "KEY_RIGHTSHIFT",
+    29: "KEY_LEFTCTRL", 97: "KEY_RIGHTCTRL",
+    56: "KEY_LEFTALT", 100: "KEY_RIGHTALT",
+    58: "KEY_CAPSLOCK", 57: "KEY_SPACE",
+    **{183 + i: f"KEY_F{i + 13}" for i in range(12)},  # KEY_F13..KEY_F24
+}
+
+
+class ElidedComboBox(QComboBox):
+    """Elides the closed box's displayed text with '...' when it doesn't
+    fit, instead of letting Qt clip it mid-character -- needed for audio
+    device names, which are often too long to show in full but must keep
+    their exact currentText() (that's what gets matched against the real
+    device list), so the text can't just be shortened at the data level."""
+
+    def paintEvent(self, event):
+        painter = QStylePainter(self)
+        painter.setPen(self.palette().color(self.foregroundRole()))
+        opt = QStyleOptionComboBox()
+        self.initStyleOption(opt)
+
+        field_rect = self.style().subControlRect(
+            QStyle.ComplexControl.CC_ComboBox, opt, QStyle.SubControl.SC_ComboBoxEditField, self
+        )
+        opt.currentText = QFontMetrics(self.font()).elidedText(
+            opt.currentText, Qt.TextElideMode.ElideRight, field_rect.width() - 4
+        )
+        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, opt)
+        painter.drawControl(QStyle.ControlElement.CE_ComboBoxLabel, opt)
+
+
+class KeybindCaptureEdit(QLineEdit):
+    """Click (focus) the box, then press the desired key(s) -- Esc clears the
+    keybind. Combo mode (everything except push_to_talk) restricts the
+    trigger key to A-Z/0-9 only: both clKeybinds.py's pynput HotKey.parse()
+    (Windows) and parse_evdev_hotkey() (Linux) accept these identically, so a
+    keybind set on one machine is guaranteed to still parse on the other --
+    named special keys need different spellings per backend and would risk a
+    keybind that silently fails to parse on whichever OS didn't set it.
+    push_to_talk instead captures one raw, left/right-aware key restricted to
+    PTT_KEY_MAP's supported set, matching clKeybinds.py's own restriction."""
+
+    committed = pyqtSignal(str)
+
+    def __init__(self, current_key: str, is_ptt: bool, parent=None):
+        super().__init__(self._to_display(current_key))
+        self.is_ptt = is_ptt
+        self.recording = False
+        self._last_committed = current_key
+        self.setReadOnly(True)
+        self.setStyleSheet(Theme.get_style("SettingsLineEdit"))
+
+    @staticmethod
+    def _to_display(internal: str) -> str:
+        """<ctrl>+<alt>+<shift>+a -> Ctrl+Alt+Shift+A for readability -- the
+        bracketed lowercase form is what's actually saved and parsed, since
+        clKeybinds.py's MODIFIER_MAP/pynput bracket convention require it."""
+        if not internal or internal.startswith("KEY_"):
+            return internal
+        parts = internal.split("+")
+        pretty = [
+            p[1:-1].capitalize() if p.startswith("<") and p.endswith(">") else p.upper()
+            for p in parts
+        ]
+        return "+".join(pretty)
+
+    def focusInEvent(self, event):
+        self.recording = True
+        self.setText("Press a key..." if self.is_ptt else "Press keys...")
+        super().focusInEvent(event)
+
+    def focusOutEvent(self, event):
+        self.recording = False
+        self.setText(self._to_display(self._last_committed))
+        super().focusOutEvent(event)
+
+    def keyPressEvent(self, event):
+        if not self.recording or event.isAutoRepeat():
+            return
+
+        if event.key() == Qt.Key.Key_Escape:
+            self._commit("")
+            return
+
+        if self.is_ptt:
+            name = self._resolve_ptt_key(event)
+            if name is None:
+                self.setText("Unsupported -- Ctrl/Alt/Shift/CapsLock/Space/F13-F24 only")
+                return
+            self._commit(name)
+            return
+
+        if event.key() in (Qt.Key.Key_Control, Qt.Key.Key_Alt, Qt.Key.Key_Shift, Qt.Key.Key_Meta, Qt.Key.Key_AltGr):
+            return  # bare modifier -- keep waiting for the trigger key
+
+        main = self._combo_key_name(event.key())
+        if main is None:
+            self.setText("Unsupported -- letters/numbers only")
+            return
+
+        mods = event.modifiers()
+        parts = []
+        if mods & Qt.KeyboardModifier.ControlModifier: parts.append("<ctrl>")
+        if mods & Qt.KeyboardModifier.AltModifier: parts.append("<alt>")
+        if mods & Qt.KeyboardModifier.ShiftModifier: parts.append("<shift>")
+        if mods & Qt.KeyboardModifier.MetaModifier: parts.append("<super>")
+        parts.append(main)
+        self._commit("+".join(parts))
+
+    @staticmethod
+    def _combo_key_name(key):
+        if Qt.Key.Key_A <= key <= Qt.Key.Key_Z:
+            return chr(key).lower()
+        if Qt.Key.Key_0 <= key <= Qt.Key.Key_9:
+            return chr(key)
+        return None
+
+    def _resolve_ptt_key(self, event):
+        if sys.platform == "win32":
+            return _PTT_KEYS_WIN.get(event.nativeVirtualKey())
+        return _PTT_KEYS_LINUX.get(event.nativeScanCode() - 8)
+
+    def _commit(self, value: str):
+        self.recording = False
+        self._last_committed = value
+        self.setText(self._to_display(value))
+        self.clearFocus()
+        self.committed.emit(value)
 
 
 class CollapsibleBlock(QWidget):
@@ -155,25 +298,45 @@ class SettingsWidget(QWidget):
         widget.mouseReleaseEvent = lambda e, c=chk: c.setChecked(not c.isChecked()) if e.button() == Qt.MouseButton.LeftButton else None
         return widget
 
-    def _create_dropdown(self, key, label_text, options, current_val, callback):
+    def _create_dropdown(self, key, label_text, options, current_val, callback, elide=False, display_map=None):
+        """display_map (optional) lets the box SHOW a friendlier label per
+        option (e.g. a cleaned-up audio device name) while the actual value
+        passed to callback/stored underneath stays the real one -- needed
+        since the cleaned name isn't necessarily something the underlying
+        API (matching a device to open, etc.) can resolve back to a device."""
         widget = QWidget()
         lay = QHBoxLayout(widget)
         lay.setContentsMargins(0, 0, 0, 0)
-        
+
         lbl = MarqueeLabel(label_text, force_single_line=True)
         lbl.setStyleSheet("color: #ffe6cc; font-size: 9.5pt;")
-        
-        combo = QComboBox()
+
+        combo = ElidedComboBox() if elide else QComboBox()
         combo.setMinimumWidth(0)
         combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        combo.addItems(options)
-        if current_val in options:
-            combo.setCurrentText(current_val)
         combo.setStyleSheet(Theme.get_style("SettingsDropdown"))
-        combo.currentTextChanged.connect(callback)
-        
+
+        if display_map is not None:
+            for opt in options:
+                combo.addItem(display_map.get(opt, opt), opt)
+            idx = combo.findData(current_val)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+            if elide:
+                combo.setToolTip(current_val)
+                combo.currentIndexChanged.connect(lambda i: combo.setToolTip(combo.itemData(i)))
+            combo.currentIndexChanged.connect(lambda i: callback(combo.itemData(i)))
+        else:
+            combo.addItems(options)
+            if current_val in options:
+                combo.setCurrentText(current_val)
+            if elide:
+                combo.setToolTip(current_val)
+                combo.currentTextChanged.connect(combo.setToolTip)
+            combo.currentTextChanged.connect(callback)
+
         self.ui_elements[key] = combo
-        
+
         lay.addWidget(lbl, 1)
         lay.addWidget(combo, 1)
         return widget
@@ -304,11 +467,10 @@ class SettingsWidget(QWidget):
                 lbl = QLabel(action_key)
                 lbl.setStyleSheet("color: #ffe6cc; font-size: 9.5pt;")
                 
-                # Line Edit for key string
-                key_edit = QLineEdit(current_key)
+                # Click, then press the desired key(s) -- Esc clears it.
+                key_edit = KeybindCaptureEdit(current_key, is_ptt=(action_key == "push_to_talk"))
                 key_edit.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-                key_edit.setStyleSheet(Theme.get_style("SettingsLineEdit"))
-                key_edit.editingFinished.connect(lambda ak=action_key, le=key_edit: self._update_keybind(ak, "key", le.text()))
+                key_edit.committed.connect(lambda value, ak=action_key: self._update_keybind(ak, "key", value))
                 
                 # Dropdown for mode
                 mode_combo = QComboBox()
@@ -339,6 +501,53 @@ class SettingsWidget(QWidget):
             keybinds_layout.addWidget(err_lbl)
             
         keybinds_layout.addSpacing(20)
+
+        # --- TAB 6: AUDIO ---
+        audio_scroll, audio_layout = self._create_scroll_tab()
+        self.tabs.addTab(audio_scroll, "Audio")
+
+        try:
+            from utils.clAudioDevices import list_input_device_names, list_output_device_names, get_clean_display_names, SYSTEM_DEFAULT
+            input_options = [SYSTEM_DEFAULT] + list_input_device_names()
+            output_options = [SYSTEM_DEFAULT] + list_output_device_names()
+            input_display_map = get_clean_display_names(input_options, "input")
+            output_display_map = get_clean_display_names(output_options, "output")
+        except Exception:
+            input_options = ["System Default"]
+            output_options = ["System Default"]
+            input_display_map = output_display_map = None
+
+        audio_settings = {}
+        try:
+            audio_settings = self.loader.load_json("core.json").get("settings", {}).get("audio_settings", {})
+        except Exception:
+            pass
+
+        audio_layout.addWidget(self._create_section_label("Devices (applies live, no reboot needed)"))
+        audio_layout.addWidget(self._create_dropdown(
+            "input_device", "Microphone", input_options,
+            audio_settings.get("input_device", "System Default"), self._change_input_device,
+            elide=True, display_map=input_display_map
+        ))
+        audio_layout.addWidget(self._create_dropdown(
+            "output_device", "Speaker", output_options,
+            audio_settings.get("output_device", "System Default"), self._change_output_device,
+            elide=True, display_map=output_display_map
+        ))
+        audio_layout.addSpacing(20)
+
+    def _update_audio_setting(self, key, value):
+        def update_cb(core):
+            core.setdefault("settings", {}).setdefault("audio_settings", {})[key] = value
+        self.loader.update_json_atomic("core.json", update_cb)
+
+    def _change_input_device(self, value):
+        self._update_audio_setting("input_device", value)
+        self.router.dispatch("mic.state", action="set_input_device", device_name=value)
+
+    def _change_output_device(self, value):
+        self._update_audio_setting("output_device", value)
+        self.router.dispatch("tts.control", action="set_output_device", device_name=value)
 
     def _update_keybind(self, action_key, field, new_value):
         def _mutator(data):

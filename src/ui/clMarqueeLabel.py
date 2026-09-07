@@ -11,6 +11,12 @@ class MarqueeLabel(QLabel):
         self._offset = 0
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._scroll_text)
+        # Holds the text still (shown elided, same as the non-hover state)
+        # for a beat after hover starts, so the reader gets a moment with
+        # the full start of the text before it begins moving.
+        self._start_delay_timer = QTimer(self)
+        self._start_delay_timer.setSingleShot(True)
+        self._start_delay_timer.timeout.connect(lambda: self._timer.start(40))
         self.setMouseTracking(True)
         
     def setText(self, text):
@@ -51,20 +57,30 @@ class MarqueeLabel(QLabel):
             self._offset = 0
             
     def enterEvent(self, event):
-        if self._marquee_active:
-            self._timer.start(30)
+        self.start_scrolling()
         super().enterEvent(event)
-        
+
     def leaveEvent(self, event):
+        self.stop_scrolling()
+        super().leaveEvent(event)
+
+    def start_scrolling(self):
+        # Callable directly by a parent that hosts this label behind a
+        # mouse-transparent overlay, since a transparent label never gets
+        # its own enterEvent -- the parent's hover has to trigger this.
+        if self._marquee_active:
+            self._start_delay_timer.start(800)
+
+    def stop_scrolling(self):
+        self._start_delay_timer.stop()
         self._timer.stop()
         self._offset = 0
         self.update()
-        super().leaveEvent(event)
-        
+
     def _scroll_text(self):
         fm = QFontMetrics(self.font())
         text_width = fm.horizontalAdvance(self._full_text)
-        self._offset -= 2
+        self._offset -= 1
         if self._offset < -text_width:
             self._offset = self.width()
         self.update()

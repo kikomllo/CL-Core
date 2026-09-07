@@ -47,3 +47,23 @@ class TestActionRouterTypeValidation:
         )
         assert topic == "pc/spotify/control"
         assert payload["choice_index"] == 1
+
+    def test_mic_device_name_survives_prepare(self):
+        router = ActionRouter()
+        topic, payload = router.prepare(
+            "mic.state",
+            action="set_input_device",
+            device_name="Microphone (Realtek Audio)",
+        )
+        assert topic == "jarvis/sys/mic_control"
+        assert payload["device_name"] == "Microphone (Realtek Audio)"
+
+    def test_tts_control_device_name_survives_prepare(self):
+        router = ActionRouter()
+        topic, payload = router.prepare(
+            "tts.control",
+            action="set_output_device",
+            device_name="Speakers (Realtek Audio)",
+        )
+        assert topic == "jarvis/sys/tts_control"
+        assert payload["device_name"] == "Speakers (Realtek Audio)"

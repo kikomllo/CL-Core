@@ -27,6 +27,7 @@ logs/
 # Caches
 .cache
 assets/tts_*.mp3
+assets/voice_tuning/
 
 # IDE / OS
 .vscode/
@@ -65,4 +66,5 @@ training/jarvis-reply-v1/
 training/jarvis-brain-v2_gguf/
 training/jarvis-reply-v1_gguf/
 training/train_all_log.txt
+training/reply_train_log.txt
 unsloth_compiled_cache/

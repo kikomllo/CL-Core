@@ -68,7 +68,17 @@
     "state": {
       "topic": "jarvis/sys/mic_control",
       "schema": {
-        "action": {"type": "string", "required": true}
+        "action": {"type": "string", "required": true},
+        "device_name": {"type": "string"}
+      }
+    }
+  },
+  "tts": {
+    "control": {
+      "topic": "jarvis/sys/tts_control",
+      "schema": {
+        "action": {"type": "string", "required": true},
+        "device_name": {"type": "string"}
       }
     }
   },

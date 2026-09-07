@@ -90,18 +90,25 @@ class VoiceSensor:
         
         self.system_ready: bool = False
         self.ptt_active: bool = False
+        self.pending_input_device_change: bool = False
+        self.target_input_device: Optional[str] = None  # set below from core.json
         
         self.vad_hangtime: int = 0
         self.pre_speech_buffer: Deque[np.ndarray] = collections.deque(maxlen=15)
         self.ring_buffer: Deque[np.ndarray] = collections.deque(maxlen=30) # <--- ADD THIS HERE
         self.last_vol_publish: float = 0.0
+        self._wakeword_debug_frames: list = []  # temporary: see _save_wakeword_debug_clip
         
         self.attention_multiplier = self._load_attention_multiplier()
-        
+        self.target_input_device = self._load_initial_input_device()
+
         with silence_c_errors():
             self.audio: pyaudio.PyAudio = pyaudio.PyAudio()
             
         self.mic_stream: Optional[pyaudio.Stream] = None
+        self.native_rate: int = self.RATE  # overwritten by _open_stream if the device needs resampling
+        self.native_chunk: int = self.CHUNK
+        self._resample_tail: Optional[np.ndarray] = None  # trailing raw samples carried into the next _read_chunk resample call
         self.oww_model = self._init_wakeword()
         self.mqtt: mqtt_client.Client = self._init_mqtt()
 
@@ -112,6 +119,14 @@ class VoiceSensor:
                 return float(json.load(f).get("vad_settings", {}).get("attention_mode_multiplier", 1.50))
         except Exception:
             return 1.50
+
+    def _load_initial_input_device(self) -> Optional[str]:
+        config_path = os.path.abspath(os.path.join(self.base_dir, "..", "config", "core.json"))
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                return json.load(f).get("settings", {}).get("audio_settings", {}).get("input_device")
+        except Exception:
+            return None
 
     def _init_wakeword(self) -> Any:
         logging.info("Booting Wake Word Engine...")
@@ -234,6 +249,11 @@ class VoiceSensor:
             self.attention_mode = False
             logging.info("Attention Mode DEACTIVATED.")
 
+        elif action == "set_input_device":
+            self.target_input_device = payload.get("device_name")
+            self.pending_input_device_change = True
+            logging.info(f"Input device change requested: {self.target_input_device or 'System Default'}")
+
     def _publish(self, topic: str, payload: Any) -> None:
         try:
             data = json.dumps(payload) if isinstance(payload, dict) else payload
@@ -324,9 +344,9 @@ class VoiceSensor:
                 if not self.attention_mode: self._publish("jarvis/sys/mic_state", {"state": "idle"})
                 return ""
 
-            data = self.mic_stream.read(self.CHUNK, exception_on_overflow=False)
+            data = self._read_chunk()
             audio_chunk = np.frombuffer(data, dtype=np.int16)
-            frames.append(audio_chunk) 
+            frames.append(audio_chunk)
             
             audio_float = audio_chunk.astype(np.float32)
             vad_audio = np.append(audio_float[0], audio_float[1:] - 0.95 * audio_float[:-1])
@@ -413,13 +433,111 @@ class VoiceSensor:
         except Exception:
             pass
 
+    def _save_wakeword_debug_clip(self) -> None:
+        """Temporary diagnostic: dumps every chunk fed to the wake word model
+        during one activation attempt to a WAV, so it can be inspected or
+        replayed offline -- wake word audio otherwise never touches disk,
+        unlike PTT/dispatched commands. Remove once resolved."""
+        try:
+            scratch_dir = os.path.abspath(os.path.join(self.base_dir, "..", "data", "scratch"))
+            os.makedirs(scratch_dir, exist_ok=True)
+            path = os.path.join(scratch_dir, f"wakeword_debug_{int(time.time()*1000)}.wav")
+            audio = np.concatenate(self._wakeword_debug_frames)
+            with wave.open(path, 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(self.RATE)
+                wf.writeframes(audio.astype(np.int16).tobytes())
+            logging.debug(f"[WAKEWORD] Saved debug clip: {path}")
+        except Exception as e:
+            logging.warning(f"[WAKEWORD] Failed to save debug clip: {e}")
+
+    def _open_stream(self, device_name: Optional[str]) -> None:
+        from utils.clAudioDevices import resolve_capture_device_index
+        idx = resolve_capture_device_index(self.audio, device_name)
+        open_kwargs = dict(format=self.FORMAT, channels=self.CHANNELS,
+                            input=True, input_device_index=idx) if idx is not None else \
+                      dict(format=self.FORMAT, channels=self.CHANNELS, input=True)
+
+        try:
+            # Most devices accept 16kHz directly -- try it first so the
+            # common case never pays for resampling.
+            with silence_c_errors():
+                self.mic_stream = self.audio.open(rate=self.RATE, frames_per_buffer=self.CHUNK, **open_kwargs)
+            self.native_rate = self.RATE
+            self.native_chunk = self.CHUNK
+        except OSError:
+            # WASAPI (and some other backends) reject 16kHz on devices whose
+            # mix format is 44100/48000Hz -- open at the device's own rate
+            # instead and resample each chunk back down to 16kHz/self.CHUNK
+            # in _read_chunk() so the rest of the pipeline is untouched.
+            native_rate = int(self.audio.get_device_info_by_index(idx)["defaultSampleRate"]) if idx is not None \
+                else int(self.audio.get_default_input_device_info()["defaultSampleRate"])
+            native_chunk = int(round(self.CHUNK * native_rate / self.RATE))
+            with silence_c_errors():
+                self.mic_stream = self.audio.open(rate=native_rate, frames_per_buffer=native_chunk, **open_kwargs)
+            self.native_rate = native_rate
+            self.native_chunk = native_chunk
+            logging.warning(f"Device does not support {self.RATE}Hz directly; capturing at {native_rate}Hz and resampling.")
+
+        self._resample_tail = None  # new stream -- no valid history to carry into the first resample call
+
+    def _read_chunk(self, exception_on_overflow: bool = False) -> bytes:
+        """Reads exactly self.CHUNK samples at self.RATE (16kHz), resampling
+        from the stream's actual native rate first if _open_stream had to
+        fall back to one (see above).
+
+        Resampling each chunk in isolation would restart resample_poly's
+        anti-aliasing filter cold at every ~80ms chunk boundary, stamping a
+        discontinuity into the output every single chunk -- invisible to a
+        coarse RMS/level meter (so the mic still looks fine), but severe
+        enough at the spectral level to make Whisper hallucinate on
+        otherwise-clean speech. Carrying a short tail of raw samples across
+        calls (classic overlap-discard) gives the filter real context at
+        each boundary instead."""
+        raw = self.mic_stream.read(self.native_chunk, exception_on_overflow=exception_on_overflow)
+        if self.native_rate == self.RATE:
+            return raw
+        import scipy.signal
+        audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+
+        overlap = max(1, self.native_rate // 50)  # ~20ms of prior context
+        tail = self._resample_tail if self._resample_tail is not None else np.zeros(overlap, dtype=np.float32)
+        overlap_out = int(round(len(tail) * self.RATE / self.native_rate))
+
+        resampled = scipy.signal.resample_poly(np.concatenate([tail, audio]), self.RATE, self.native_rate)
+        resampled = resampled[overlap_out:]
+        self._resample_tail = audio[-overlap:]
+
+        if len(resampled) < self.CHUNK:
+            resampled = np.pad(resampled, (0, self.CHUNK - len(resampled)))
+        elif len(resampled) > self.CHUNK:
+            resampled = resampled[:self.CHUNK]
+        return np.clip(resampled, -32768, 32767).astype(np.int16).tobytes()
+
+    def _switch_input_device(self, device_name: Optional[str]) -> None:
+        try:
+            if self.mic_stream is not None:
+                self.mic_stream.stop_stream()
+                self.mic_stream.close()
+            self._open_stream(device_name)
+            logging.info(f"Input device switched to: {device_name or 'System Default'}")
+        except Exception as e:
+            logging.error(f"Failed to switch input device to '{device_name}': {e}")
+            self._open_stream(None)
+
+        # Room acoustics changed with the new mic -- old thresholds/state no longer apply.
+        self.ambient_noise_buffer.clear()
+        self.fast_ema = None
+        self.slow_ema = None
+        self.oww_model.reset()
+        self.pre_speech_buffer.clear()
+        self.ring_buffer.clear()
+        self.vad_hangtime = 0
+
     def listen(self) -> None:
-        with silence_c_errors():
-            self.mic_stream = self.audio.open(
-                format=self.FORMAT, channels=self.CHANNELS, rate=self.RATE, 
-                input=True, frames_per_buffer=self.CHUNK
-            )
-            
+        self._open_stream(self.target_input_device)
+
         import time
         logging.info("Waiting for Ecosystem (Whisper) to come online...")
         
@@ -431,6 +549,11 @@ class VoiceSensor:
         self._publish("jarvis/sys/module_ready", {"module": "mic"})
 
         while True:
+            if self.pending_input_device_change:
+                self.pending_input_device_change = False
+                self._switch_input_device(self.target_input_device)
+                continue
+
             if self.tts_busy:
                 if hasattr(self, 'tts_lock_time') and (time.time() - self.tts_lock_time) > 15.0:
                     self.tts_busy = False
@@ -448,7 +571,7 @@ class VoiceSensor:
                 self.active_window_end = time.time() + 7.0
                 self.pending_active_window = False 
 
-            audio_data = np.frombuffer(self.mic_stream.read(self.CHUNK, exception_on_overflow=False), dtype=np.int16)
+            audio_data = np.frombuffer(self._read_chunk(), dtype=np.int16)
             self.ring_buffer.append(audio_data)
             
             audio_float = audio_data.astype(np.float32)
@@ -511,24 +634,46 @@ class VoiceSensor:
             if not bypass_wakeword:
                 model_ran = False
                 if current_rms > a_thresh:
+                    if self.vad_hangtime <= 0:
+                        # Temporary diagnostic: confirms the activation
+                        # threshold is actually being crossed (vs. the model
+                        # simply never running at all) -- remove once resolved.
+                        logging.debug(f"[WAKEWORD] Activation threshold crossed: rms={current_rms:.0f} > thresh={a_thresh:.0f}")
                     self.vad_hangtime = 15
                     while self.pre_speech_buffer:
-                        self.oww_model.predict(self.pre_speech_buffer.popleft())
+                        pre_chunk = self.pre_speech_buffer.popleft()
+                        self._wakeword_debug_frames.append(pre_chunk)
+                        self.oww_model.predict(pre_chunk)
+                    self._wakeword_debug_frames.append(audio_data)
                     self.oww_model.predict(audio_data)
                     model_ran = True
-                            
+
                 elif self.vad_hangtime > 0:
                     self.vad_hangtime -= 1
+                    self._wakeword_debug_frames.append(audio_data)
                     self.oww_model.predict(audio_data)
                     model_ran = True
-                    
+
                 else:
+                    # Temporary diagnostic: dump exactly what the model saw on
+                    # this attempt to a WAV so it can be inspected/replayed --
+                    # wake word audio otherwise never touches disk. Remove
+                    # once resolved.
+                    if self._wakeword_debug_frames:
+                        self._save_wakeword_debug_clip()
+                        self._wakeword_debug_frames = []
                     self.pre_speech_buffer.append(audio_data)
                     self.oww_model.reset()
                     
                 if model_ran:
                     for mdl in self.oww_model.prediction_buffer.keys():
-                        if list(self.oww_model.prediction_buffer[mdl])[-1] > 0.5:
+                        score = list(self.oww_model.prediction_buffer[mdl])[-1]
+                        # Temporary diagnostic, no floor this time -- the 0.05
+                        # floor never fired even on a loud, clean utterance, so
+                        # we need the actual raw value, not another gate that
+                        # might hide it again. Remove once resolved.
+                        logging.debug(f"[WAKEWORD] '{mdl}' raw score: {score:.5f}")
+                        if score > 0.5:
                             wakeword_triggered = True
                             break
             
@@ -547,7 +692,7 @@ class VoiceSensor:
                         available = self.mic_stream.get_read_available()
                         if available > 0: self.mic_stream.read(available, exception_on_overflow=False)
                         for _ in range(5):
-                            data = self.mic_stream.read(self.CHUNK, exception_on_overflow=False)
+                            data = self._read_chunk()
                             audio_float = np.frombuffer(data, dtype=np.int16).astype(np.float32)
                             vad_audio = np.append(audio_float[0], audio_float[1:] - 0.95 * audio_float[:-1])
                             raw_rms = np.sqrt(np.mean(np.square(vad_audio)))

@@ -106,6 +106,47 @@ class TestUiStateRestoreOnStartup:
 
         mock_set_mode.assert_not_called()
 
+    def test_cold_start_does_not_restore_dashboard_widgets_even_if_saved_visible_and_pinned(self, qapp, fake_state_file, mocker):
+        """A genuine cold start (JARVIS_REBOOT unset/'0') must stay clean --
+        restoring a saved-visible widget here would pop it onto the overlay,
+        and since is_fullscreen is still False at __init__ time, spawn_widget's
+        overlay path would force it unpinned regardless of what was saved
+        (the 'settings widget always opens unpinned on overlay' bug)."""
+        import clUI
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "0"})
+        with open(fake_state_file, "w") as f:
+            json.dump({
+                "is_fullscreen": True, "current_monitor_idx": 0, "screen_size": [1920, 1080],
+                "active_widgets": {
+                    "widget_settings": {"visible": True, "pos": [100, 100], "size": [364, 424], "is_unpinned": False}
+                }
+            }, f)
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            ui = clUI.JarvisUI()
+
+        assert "widget_settings" not in ui.active_widgets
+
+    def test_reboot_into_fullscreen_restores_a_saved_pinned_widget_as_pinned(self, qapp, fake_state_file, mocker):
+        """The restore loop's is_unpinned sync used to be one-directional
+        (only ever forcing unpinned), so a widget saved as pinned stayed
+        stuck unpinned forever once an overlay-mode spawn had forced it True."""
+        import clUI
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "1"})
+        with open(fake_state_file, "w") as f:
+            json.dump({
+                "is_fullscreen": True, "current_monitor_idx": 0, "screen_size": [1920, 1080],
+                "active_widgets": {
+                    "widget_settings": {"visible": True, "pos": [100, 100], "size": [364, 424], "is_unpinned": False}
+                }
+            }, f)
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            ui = clUI.JarvisUI()
+
+        assert "widget_settings" in ui.active_widgets
+        assert ui.active_widgets["widget_settings"].is_unpinned is False
+
 
 class TestOverlayIdleWidgetCleanup:
     """set_state('IDLE') closes floating widgets while in overlay mode --
@@ -133,6 +174,303 @@ class TestOverlayIdleWidgetCleanup:
 
         options_widget.hide.assert_not_called()
         other_widget.hide.assert_called_once()
+
+
+class TestLoadRecoloredSvgIcon:
+    """Audio pill icons are hand-authored SVGs (vector, rendered by Qt
+    itself) rather than emoji/font glyphs, specifically so they look
+    identical on both machines regardless of installed fonts/emoji sets,
+    and so the theme color can be applied directly instead of depending on
+    a font glyph respecting text color at all."""
+
+    def test_fill_color_is_replaced_with_the_requested_color(self, qapp, tmp_path):
+        import clUI
+        svg_path = tmp_path / "test_icon.svg"
+        svg_path.write_text('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+                             '<path fill="#000000" d="M0 0h24v24H0z"/></svg>')
+
+        icon = clUI.load_recolored_svg_icon(str(svg_path), "#ffaa00", 24)
+
+        assert not icon.isNull()
+
+    def test_multiple_fill_occurrences_all_get_replaced(self, qapp, tmp_path):
+        import clUI
+        svg_path = tmp_path / "test_icon.svg"
+        svg_path.write_text('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+                             '<path fill="#123456" d="M0 0h10v10H0z"/>'
+                             '<path fill="#abcdef" d="M10 10h10v10H10z"/></svg>')
+
+        # Doesn't raise, and both paths' fills were substitutable (same
+        # regex, applied to the whole file) -- rendering succeeding at all
+        # confirms the substitution didn't corrupt the SVG's XML structure.
+        icon = clUI.load_recolored_svg_icon(str(svg_path), "#ffaa00", 24)
+
+        assert not icon.isNull()
+
+
+class TestAudioQuickSwitchPill:
+    """The dashboard's mic/speaker quick-switch pills read the active
+    device from core.json. Collapsed, they show only the icon (a circle);
+    hovering expands them into a pill revealing the device name, and
+    clicking (icon or expanded area) persists+dispatches a selection the
+    same way Settings' Audio tab does."""
+
+    def _pill(self, qapp, kind, current_device, mocker, grow_direction="right"):
+        import clUI
+        mocker.patch.object(clUI.AudioQuickSwitchPill, "_current_device", return_value=current_device)
+        # Real hardware enumeration (pycaw/COM) isn't relevant to these tests
+        # and is slow -- stub both the raw listing and the display-name
+        # cleanup (an identity map: display == actual name is fine here).
+        mocker.patch.object(clUI.AudioQuickSwitchPill, "_enumerate_options", return_value=[current_device])
+        mocker.patch("utils.clAudioDevices.get_clean_display_names", return_value={current_device: current_device})
+        pill = clUI.AudioQuickSwitchPill(kind, grow_direction=grow_direction)
+        return pill
+
+    def test_collapsed_icon_shows_the_svg_icon_not_the_device_name(self, qapp, mocker):
+        pill = self._pill(qapp, "input", "USB Mic", mocker)
+        assert not pill.icon_btn.icon().isNull()
+        assert pill.icon_btn.text() == ""
+
+    def test_collapsed_label_is_hidden(self, qapp, mocker):
+        pill = self._pill(qapp, "input", "USB Mic", mocker)
+        assert pill.label.isHidden()
+        assert pill.width() == pill.diameter
+
+    def test_hover_reveals_device_name_in_label(self, qapp, mocker):
+        from PyQt6.QtGui import QEnterEvent
+        from PyQt6.QtCore import QPointF
+        pill = self._pill(qapp, "input", "USB Mic", mocker)
+
+        pill.enterEvent(QEnterEvent(QPointF(0, 0), QPointF(0, 0), QPointF(0, 0)))
+
+        assert not pill.label.isHidden()
+        assert pill.label.text() == "USB Mic"
+
+    def test_leaving_collapses_back_and_hides_label(self, qapp, mocker):
+        from PyQt6.QtGui import QEnterEvent
+        from PyQt6.QtCore import QEvent, QPointF
+        pill = self._pill(qapp, "input", "USB Mic", mocker)
+        pill.enterEvent(QEnterEvent(QPointF(0, 0), QPointF(0, 0), QPointF(0, 0)))
+
+        pill.leaveEvent(QEvent(QEvent.Type.Leave))
+        pill._anim.setCurrentTime(pill._anim.duration())  # fast-forward the collapse animation
+
+        assert pill.width() == pill.diameter
+        assert pill.label.isHidden()
+
+    def test_tooltip_on_icon_carries_full_device_name(self, qapp, mocker):
+        pill = self._pill(qapp, "output", "Speakers (Realtek Audio)", mocker)
+        assert pill.icon_btn.toolTip() == "Speaker: Speakers (Realtek Audio)"
+
+    def test_grow_left_keeps_right_edge_anchored_while_expanding(self, qapp, mocker):
+        pill = self._pill(qapp, "input", "USB Mic", mocker, grow_direction="left")
+        pill.set_sizes(35, 140)
+        pill.set_anchor(500, 100)
+        right_edge_before = pill.x() + pill.width()
+
+        pill.setPillWidth(pill.expanded_width)
+
+        assert pill.x() + pill.width() == right_edge_before
+
+    def test_grow_right_keeps_left_edge_anchored_while_expanding(self, qapp, mocker):
+        pill = self._pill(qapp, "output", "USB Mic", mocker, grow_direction="right")
+        pill.set_sizes(35, 140)
+        pill.set_anchor(500, 100)
+        left_edge_before = pill.x()
+
+        pill.setPillWidth(pill.expanded_width)
+
+        assert pill.x() == left_edge_before
+
+    def test_select_persists_and_dispatches_for_input(self, qapp, mocker):
+        import clUI
+        pill = self._pill(qapp, "input", "System Default", mocker)
+        mock_update = mocker.patch.object(pill.loader, "update_json_atomic")
+        mock_dispatch = mocker.patch.object(pill.router, "dispatch")
+
+        pill._select("USB Mic")
+
+        cb = mock_update.call_args.args[1]
+        core = {}
+        cb(core)
+        assert core["settings"]["audio_settings"]["input_device"] == "USB Mic"
+        mock_dispatch.assert_called_once_with("mic.state", action="set_input_device", device_name="USB Mic")
+
+    def test_select_persists_and_dispatches_for_output(self, qapp, mocker):
+        pill = self._pill(qapp, "output", "System Default", mocker)
+        mock_update = mocker.patch.object(pill.loader, "update_json_atomic")
+        mock_dispatch = mocker.patch.object(pill.router, "dispatch")
+
+        pill._select("Speakers (Realtek Audio)")
+
+        cb = mock_update.call_args.args[1]
+        core = {}
+        cb(core)
+        assert core["settings"]["audio_settings"]["output_device"] == "Speakers (Realtek Audio)"
+        mock_dispatch.assert_called_once_with("tts.control", action="set_output_device", device_name="Speakers (Realtek Audio)")
+
+
+class TestLoadUiStateClampsStaleUnpinnedPosition:
+    """A live machine's ui_state.json had every widget saved with an
+    identical pos ([3569, 1641], well outside its actual 1920x1080 monitor)
+    and is_unpinned: true, left over from testing on a different monitor
+    arrangement earlier. Restoring it spawned each widget correctly (visible,
+    updating on MQTT) but toggle_pin()'s unpin branch converts an
+    already-clamped local position into a global one via mapToGlobal(),
+    which reproduced the same off-screen position -- so the widget was
+    genuinely there, just rendered outside any real screen ("logs show
+    it updating, but not showing"). The restore loop must clamp the
+    post-unpin global position back onto the current screen too."""
+
+    @pytest.fixture(autouse=True)
+    def no_real_mqtt_thread(self, mocker):
+        import clUI
+        mocker.patch.object(clUI.MqttThread, "start")
+
+    def test_stale_offscreen_unpinned_widget_is_clamped_back_onto_screen(self, qapp, fake_state_file, mocker):
+        import clUI
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "1"})
+        with open(fake_state_file, "w") as f:
+            json.dump({
+                "is_fullscreen": True, "current_monitor_idx": 0, "screen_size": [1920, 1080],
+                "active_widgets": {
+                    "widget_todo_list": {"visible": True, "pos": [3569, 1641], "size": [230, 100], "is_unpinned": True}
+                }
+            }, f)
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            ui = clUI.JarvisUI()
+
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()
+
+        w = ui.active_widgets["widget_todo_list"]
+        screen_geom = ui.screen().geometry()
+
+        assert w.is_unpinned is True
+        assert not w.isHidden()
+        assert screen_geom.x() <= w.x() <= screen_geom.x() + screen_geom.width() - 50
+        assert screen_geom.y() <= w.y() <= screen_geom.y() + screen_geom.height() - 50
+
+
+class TestLoadUiStateDoesNotClobberVisibilityMidRestore:
+    """A reboot with saved is_fullscreen=True runs load_ui_state() twice:
+    once in __init__ (while is_fullscreen is still False, pre-transition)
+    and once more inside set_ui_mode('set_fullscreen'). The first pass's
+    spawn_widget() call used to immediately call save_ui_state(), persisting
+    an incomplete, still-in-overlay snapshot (widget just spawned, not yet
+    hidden/shown per its real saved state) to disk -- clobbering the
+    original 'visible: true' before the second pass ever got to read it, so
+    a widget saved visible came back permanently hidden after a reboot."""
+
+    @pytest.fixture(autouse=True)
+    def no_real_mqtt_thread(self, mocker):
+        import clUI
+        mocker.patch.object(clUI.MqttThread, "start")
+
+    def test_widget_saved_visible_stays_visible_after_reboot_into_fullscreen(self, qapp, fake_state_file, mocker):
+        import clUI
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "1"})
+        with open(fake_state_file, "w") as f:
+            json.dump({
+                "is_fullscreen": True, "current_monitor_idx": 0, "screen_size": [1920, 1080],
+                "active_widgets": {
+                    "widget_todo_list": {"visible": True, "pos": [500, 400], "size": [230, 100], "is_unpinned": False}
+                }
+            }, f)
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            ui = clUI.JarvisUI()
+
+        w = ui.active_widgets["widget_todo_list"]
+        assert not w.isHidden()
+
+    def test_restoring_flag_is_reset_after_a_successful_restore(self, qapp, fake_state_file, mocker):
+        import clUI
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "1"})
+        with open(fake_state_file, "w") as f:
+            json.dump({"is_fullscreen": False, "current_monitor_idx": 0, "active_widgets": {}}, f)
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            ui = clUI.JarvisUI()
+
+        assert getattr(ui, "_restoring_ui_state", False) is False
+
+
+class TestFullscreenSwitchPreservesLiveWidgetState:
+    """set_ui_mode('set_fullscreen') calls load_ui_state() on every manual
+    overlay -> fullscreen switch, not just at boot. A widget already alive
+    in memory (e.g. hidden a moment ago by set_overlay) must keep its live
+    show/hide state -- previously, load_ui_state() re-applied the stale
+    on-disk snapshot (typically 'everything hidden', saved during that same
+    overlay transition) onto it, so switching overlay -> fullscreen made
+    every previously-open widget disappear rather than reappear."""
+
+    @pytest.fixture(autouse=True)
+    def no_real_mqtt_thread(self, mocker):
+        import clUI
+        mocker.patch.object(clUI.MqttThread, "start")
+
+    def test_already_visible_widget_survives_a_second_load_ui_state_pass(self, qapp, fake_state_file, mocker):
+        import clUI
+        from PyQt6.QtWidgets import QLabel
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "0"})
+        with open(fake_state_file, "w") as f:
+            json.dump({"is_fullscreen": False, "current_monitor_idx": 0, "active_widgets": {}}, f)
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            ui = clUI.JarvisUI()
+            ui.is_fullscreen = True
+            ui.spawn_widget("widget_todo_list", "To-Do List", QLabel("content"))
+            w = ui.active_widgets["widget_todo_list"]
+            assert not w.isHidden()
+
+            # Simulate the on-disk snapshot set_overlay() would have just saved
+            # (everything hidden) landing in the SAME file this widget was
+            # never part of -- then re-enter fullscreen, which re-reads it.
+            with open(fake_state_file, "w") as f:
+                json.dump({
+                    "is_fullscreen": False, "current_monitor_idx": 0,
+                    "active_widgets": {"widget_todo_list": {"visible": False, "pos": [10, 10], "size": [50, 50], "is_unpinned": False}}
+                }, f)
+            ui.load_ui_state()
+
+        assert not w.isHidden(), "an already-live widget must not be re-hidden by a stale on-disk snapshot"
+
+
+class TestSpawnWidgetMainWindowReference:
+    """spawn_widget()'s overlay-mode ('standalone') branch used to construct
+    DraggableWidget with parent=None, which also left main_window (captured
+    once at construction and never updated again) permanently None. A later
+    re-pin -- e.g. after switching overlay -> fullscreen and clicking the pin
+    button -- relies on main_window to know where to reparent into; without
+    it, toggle_pin() left the widget parentless with Widget-only flags, and
+    Windows drew its full default decorated chrome back onto it (the
+    'title bar came back' bug)."""
+
+    @pytest.fixture(autouse=True)
+    def no_real_mqtt_thread(self, mocker):
+        import clUI
+        mocker.patch.object(clUI.MqttThread, "start")
+
+    def test_standalone_spawned_widget_keeps_a_real_main_window_reference(self, qapp, mocker):
+        import clUI
+        from PyQt6.QtWidgets import QLabel
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "0"})
+        ui = clUI.JarvisUI()
+        mocker.patch.object(ui, "save_ui_state")
+        ui.is_fullscreen = False
+
+        ui.spawn_widget("widget_test", "Test", QLabel("content"))
+        wrapper = ui.active_widgets["widget_test"]
+
+        assert wrapper.main_window is ui
+        assert wrapper.parent() is None  # correctly detached to top-level for overlay display
+
+        wrapper.toggle_pin(force_unpin=False)  # simulate switching to fullscreen + clicking pin
+
+        assert wrapper.parent() is ui
+        assert wrapper.isWindow() is False
 
 
 @pytest.mark.skip(reason="Interactive GUI test")
@@ -331,3 +669,48 @@ def test_early():
             name = subprocess.getoutput(f"xprop -id {wid} _NET_WM_NAME")
             if "clUI" in name:
                 print(f"Found clUI.py with id {wid}")
+
+
+class TestDraggableWidgetPinWindowChrome:
+    """toggle_pin() used to call setParent() and setWindowFlags() as two
+    separate calls. On Windows, Qt doesn't reliably drop the native title
+    bar/min/max/close chrome unless the parent and window flags change in
+    one atomic setParent(parent, flags) call, so an 'unpinned' widget could
+    render as a full OS window titled 'python3' instead of the intended
+    frameless floating panel."""
+
+    def test_unpin_reparents_and_reflags_atomically(self, qapp):
+        from clUI import DraggableWidget
+        from PyQt6.QtWidgets import QLabel
+        from PyQt6.QtCore import Qt
+
+        widget = DraggableWidget("test_widget", "Test", QLabel("content"))
+        calls = []
+        widget.setParent = lambda *a, **kw: calls.append(a)
+
+        widget.toggle_pin(force_unpin=True)
+
+        assert len(calls) == 1, "setParent must be called exactly once, not split into setParent()+setWindowFlags()"
+        parent_arg, flags_arg = calls[0]
+        assert parent_arg is None
+        assert flags_arg & Qt.WindowType.FramelessWindowHint
+        assert flags_arg & Qt.WindowType.Tool
+
+    def test_repin_reparents_and_reflags_atomically(self, qapp):
+        from clUI import DraggableWidget
+        from PyQt6.QtWidgets import QLabel, QWidget
+        from PyQt6.QtCore import Qt
+
+        main_window = QWidget()
+        widget = DraggableWidget("test_widget", "Test", QLabel("content"), parent=main_window)
+        widget.toggle_pin(force_unpin=True)  # start unpinned
+
+        calls = []
+        widget.setParent = lambda *a, **kw: calls.append(a)
+
+        widget.toggle_pin(force_unpin=False)
+
+        assert len(calls) == 1
+        parent_arg, flags_arg = calls[0]
+        assert parent_arg is main_window
+        assert flags_arg == Qt.WindowType.Widget
