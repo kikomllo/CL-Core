@@ -67,3 +67,14 @@ class TestActionRouterTypeValidation:
         )
         assert topic == "jarvis/sys/tts_control"
         assert payload["device_name"] == "Speakers (Realtek Audio)"
+
+    def test_debug_set_flag_survives_prepare(self):
+        router = ActionRouter()
+        topic, payload = router.prepare(
+            "debug.set_flag",
+            flag="wakeword_diagnostics",
+            enabled=True,
+        )
+        assert topic == "jarvis/sys/debug_control"
+        assert payload["flag"] == "wakeword_diagnostics"
+        assert payload["enabled"] is True

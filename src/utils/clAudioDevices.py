@@ -4,26 +4,11 @@ from typing import Dict, List, Optional
 
 SYSTEM_DEFAULT = "System Default"
 
-# Windows Core Audio exposes a device's raw, manufacturer-reported hardware
-# name as a property SEPARATE from the localized "Category (hardware name)"
-# string PortAudio/SDL2 report -- e.g. the same G435 headset is
-# "Microphone (G435 Wireless Gaming Headset)" in English or "Microfone
-# (G435 Wireless Gaming Headset)" in Portuguese, but PKEY_DeviceInterface_
-# FriendlyName is always just "G435 Wireless Gaming Headset" regardless of
-# Windows' display language -- no per-language word list needed.
+# PKEY_DeviceInterface_FriendlyName is locale-independent, unlike PortAudio/SDL2's name.
 _DEVPKEY_DEVICE_FRIENDLY_NAME = "{A45C254E-DF1C-4EFD-8020-67D146A850E0} 14"
 _DEVPKEY_INTERFACE_FRIENDLY_NAME = "{026E516E-B814-414B-83CD-856D6FEF4822} 2"
 
-# PortAudio on Windows enumerates the same physical microphone once per host
-# API (MME, DirectSound, WASAPI, WDM-KS) -- a raw listing shows every device
-# several times over (some truncated to ~31 chars by MME, some under a
-# WDM-KS kernel-streaming path that doesn't even match the name shown
-# elsewhere), plus WDM-KS-only entries (Stereo Mix, raw Bluetooth HFP
-# endpoints, etc.) that no consumer app surfaces as a "pick your microphone"
-# option. WASAPI is what Discord/browsers/Zoom actually enumerate against on
-# Windows, so restricting to it here matches that and needs no dedup at all.
-# Linux's PortAudio backend (ALSA) doesn't have this multi-host-API
-# duplication problem, so the filter is Windows-only.
+# WASAPI-only avoids Windows' per-host-API duplicate/truncated device listings (Linux has none).
 _REQUIRED_WINDOWS_HOST_API = "Windows WASAPI"
 
 

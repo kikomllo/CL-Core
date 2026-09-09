@@ -242,6 +242,7 @@ class TestAudioQuickSwitchPill:
         pill = self._pill(qapp, "input", "USB Mic", mocker)
 
         pill.enterEvent(QEnterEvent(QPointF(0, 0), QPointF(0, 0), QPointF(0, 0)))
+        pill._begin_expand()  # simulates the hover-intent delay elapsing
 
         assert not pill.label.isHidden()
         assert pill.label.text() == "USB Mic"
@@ -251,6 +252,7 @@ class TestAudioQuickSwitchPill:
         from PyQt6.QtCore import QEvent, QPointF
         pill = self._pill(qapp, "input", "USB Mic", mocker)
         pill.enterEvent(QEnterEvent(QPointF(0, 0), QPointF(0, 0), QPointF(0, 0)))
+        pill._begin_expand()  # simulates the hover-intent delay elapsing
 
         pill.leaveEvent(QEvent(QEvent.Type.Leave))
         pill._anim.setCurrentTime(pill._anim.duration())  # fast-forward the collapse animation
@@ -261,6 +263,111 @@ class TestAudioQuickSwitchPill:
     def test_tooltip_on_icon_carries_full_device_name(self, qapp, mocker):
         pill = self._pill(qapp, "output", "Speakers (Realtek Audio)", mocker)
         assert pill.icon_btn.toolTip() == "Speaker: Speakers (Realtek Audio)"
+
+    def test_quick_pass_through_never_expands(self, qapp, mocker):
+        """A cursor sweeping across several pills in a row used to fully
+        expand-then-collapse each one it merely passed over, cascading into
+        a whole-row recenter for every one -- the actual expand now waits
+        for the hover-delay timer, so leaving before it fires must cancel
+        it outright rather than starting (and then immediately reversing)
+        the width animation."""
+        from PyQt6.QtGui import QEnterEvent
+        from PyQt6.QtCore import QEvent, QPointF
+        pill = self._pill(qapp, "input", "USB Mic", mocker)
+        collapsed_width = pill.width()
+
+        pill.enterEvent(QEnterEvent(QPointF(0, 0), QPointF(0, 0), QPointF(0, 0)))
+        assert pill._hover_delay_timer.isActive()
+
+        pill.leaveEvent(QEvent(QEvent.Type.Leave))
+
+        assert not pill._hover_delay_timer.isActive()
+        assert pill.width() == collapsed_width
+        assert pill.label.isHidden()
+
+    def test_stuck_mid_animation_gets_corrected_by_the_safety_net(self, qapp, mocker):
+        """Rapid hover/leave cycles across the dock row (each one moving
+        every sibling pill via _reflow_widget_dock) can spuriously
+        re-trigger enter/leaveEvent on a pill the cursor is sliding under,
+        interrupting its own animation before finished() ever fires and
+        leaving it stuck part-expanded with the label visibly stuck open.
+        _settle_animation (scheduled after every transition) must force it
+        back to whatever the pill's CURRENT hover state actually calls
+        for."""
+        from PyQt6.QtGui import QEnterEvent
+        from PyQt6.QtCore import QPointF
+        pill = self._pill(qapp, "input", "USB Mic", mocker)
+        pill.enterEvent(QEnterEvent(QPointF(0, 0), QPointF(0, 0), QPointF(0, 0)))
+        pill._begin_expand()
+
+        # Simulate the animation being interrupted mid-flight (a spurious
+        # reflow-triggered leave/enter) so it never reaches its own
+        # finished() signal, leaving it part-expanded with the label shown.
+        pill._anim.setCurrentTime(pill._anim.duration() // 2)
+        pill._anim.stop()
+        assert pill.diameter < pill.width() < pill.expanded_width
+        assert not pill.label.isHidden()
+
+        # By the time the safety net fires, the mouse has actually left.
+        mocker.patch.object(pill, "underMouse", return_value=False)
+        pill._settle_animation(pill._anim_generation)
+
+        assert pill.width() == pill.diameter
+        assert pill.label.isHidden()
+
+    def test_stale_safety_net_does_not_cut_short_a_newer_animation(self, qapp, mocker):
+        """A safety net scheduled for a since-superseded transition must
+        not snap a still-legitimate newer animation short -- only the
+        latest one (matching the current _anim_generation) may act."""
+        from PyQt6.QtGui import QEnterEvent
+        from PyQt6.QtCore import QPointF
+        pill = self._pill(qapp, "input", "USB Mic", mocker)
+        pill.enterEvent(QEnterEvent(QPointF(0, 0), QPointF(0, 0), QPointF(0, 0)))
+        pill._begin_expand()
+        stale_generation = pill._anim_generation
+
+        pill._anim.setCurrentTime(pill._anim.duration() // 2)
+        mid_width = pill.width()
+        pill._animate_to(pill.diameter)  # a newer, still-legitimate transition
+
+        pill._settle_animation(stale_generation)  # the OLD (superseded) safety net firing late
+
+        assert pill.width() == mid_width, "a stale safety net must not touch a newer animation"
+
+    def test_set_sizes_mid_hover_does_not_leave_the_label_stuck_visible(self, qapp, mocker):
+        """set_sizes() (called on every refresh_layout(), e.g. a window
+        resize) used to reset the width via setFixedWidth() directly,
+        bypassing the label hide/reset logic entirely -- a resize while a
+        pill happened to be mid-hover snapped it back to a collapsed
+        circle with the label still shown, stuck, since nothing ever told
+        it to hide. setPillWidth's hide check must fire no matter which
+        caller changes the width, not just a completed animation."""
+        from PyQt6.QtGui import QEnterEvent
+        from PyQt6.QtCore import QPointF
+        pill = self._pill(qapp, "input", "USB Mic", mocker)
+        pill.enterEvent(QEnterEvent(QPointF(0, 0), QPointF(0, 0), QPointF(0, 0)))
+        pill._begin_expand()
+        pill._anim.setCurrentTime(pill._anim.duration())
+        assert not pill.label.isHidden()
+
+        pill.set_sizes(pill.diameter, pill.expanded_width)
+
+        assert pill.width() == pill.diameter
+        assert pill.label.isHidden(), "label must not stay visible once set_sizes() snaps back to collapsed"
+
+    def test_expand_first_frame_does_not_immediately_hide_the_label(self, qapp, mocker):
+        """An expand animation starts AT the collapsed diameter and grows
+        from there -- the width-change hide-check must key off intent
+        (_target_expanded), not instantaneous width <= diameter, or every
+        expand's own first frame would immediately undo its own show()."""
+        from PyQt6.QtGui import QEnterEvent
+        from PyQt6.QtCore import QPointF
+        pill = self._pill(qapp, "input", "USB Mic", mocker)
+
+        pill.enterEvent(QEnterEvent(QPointF(0, 0), QPointF(0, 0), QPointF(0, 0)))
+        pill._begin_expand()
+
+        assert not pill.label.isHidden(), "the label must survive the expand animation's own first frame"
 
     def test_grow_left_keeps_right_edge_anchored_while_expanding(self, qapp, mocker):
         pill = self._pill(qapp, "input", "USB Mic", mocker, grow_direction="left")
@@ -308,6 +415,84 @@ class TestAudioQuickSwitchPill:
         cb(core)
         assert core["settings"]["audio_settings"]["output_device"] == "Speakers (Realtek Audio)"
         mock_dispatch.assert_called_once_with("tts.control", action="set_output_device", device_name="Speakers (Realtek Audio)")
+
+
+class TestWidgetDockRow:
+    """The widget-toggle pills (Music/Lights/.../Debug) sit in one
+    horizontal row centered in the left margin next to the text bar, each
+    only owning its own hover-expand width rather than a fixed screen
+    anchor -- _reflow_widget_dock() re-centers the whole row around a
+    fixed midpoint on every width change (collapsed layout AND every frame
+    of any pill's hover animation) so the group never drifts as one pill
+    grows or shrinks."""
+
+    @pytest.fixture(autouse=True)
+    def no_real_mqtt_thread(self, mocker):
+        import clUI
+        mocker.patch.object(clUI.MqttThread, "start")
+
+    def _ui(self, mocker):
+        import clUI
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "0"})
+        ui = clUI.JarvisUI()
+        ui.resize(1920, 1080)
+        ui.refresh_layout()
+        return ui
+
+    def _midpoint(self, pills):
+        left = min(p.x() for p in pills)
+        right = max(p.x() + p.width() for p in pills)
+        return (left + right) // 2
+
+    def test_collapsed_row_is_centered_and_level(self, qapp, mocker):
+        ui = self._ui(mocker)
+        pills = ui.widget_toggle_pills
+
+        assert len(set(p.y() for p in pills)) == 1, "all pills must sit on the same row"
+        assert self._midpoint(pills) == ui._widget_dock_center_x
+
+    def test_row_stays_centered_while_one_pill_is_hover_expanded(self, qapp, mocker):
+        from PyQt6.QtGui import QEnterEvent
+        from PyQt6.QtCore import QPointF
+        ui = self._ui(mocker)
+        pills = ui.widget_toggle_pills
+        for p in pills:
+            p.show()
+
+        hovered = pills[3]
+        collapsed_width = hovered.width()
+        hovered.enterEvent(QEnterEvent(QPointF(0, 0), QPointF(0, 0), QPointF(0, 0)))
+        hovered._begin_expand()  # simulates the hover-intent delay elapsing
+        hovered._anim.setCurrentTime(hovered._anim.duration())
+
+        assert hovered.width() > collapsed_width, "hovered pill must actually expand for this test to mean anything"
+        assert self._midpoint(pills) == ui._widget_dock_center_x
+        assert len(set(p.y() for p in pills)) == 1
+
+    def test_short_label_keeps_the_same_icon_label_gap_as_a_longer_one(self, qapp, mocker):
+        """MarqueeLabel.minimumSizeHint() always reports 50px regardless of
+        content -- a short word like 'Music' measures narrower than that,
+        so sizing the pill to the raw text width undershot what the label
+        actually needs, and Qt's layout quietly ate the difference out of
+        the icon-label spacing instead (2px instead of 6px), making the
+        text start right against the icon."""
+        from PyQt6.QtGui import QEnterEvent
+        from PyQt6.QtCore import QPointF
+        ui = self._ui(mocker)
+        ui.show()  # internal icon/label geometry only resolves once actually shown
+        qapp.processEvents()
+
+        for pill, label in [(ui.btn_media, "Music"), (ui.btn_reminders, "Reminders")]:
+            assert pill._widget_label == label
+            pill.show()
+            qapp.processEvents()
+            pill.enterEvent(QEnterEvent(QPointF(0, 0), QPointF(0, 0), QPointF(0, 0)))
+            pill._begin_expand()  # simulates the hover-intent delay elapsing
+            pill._anim.setCurrentTime(pill._anim.duration())
+            qapp.processEvents()
+
+            gap = pill.label.x() - (pill.icon_btn.x() + pill.icon_btn.width())
+            assert gap == pill._layout_spacing, f"{label}: expected {pill._layout_spacing}px icon-label gap, got {gap}px"
 
 
 class TestLoadUiStateClampsStaleUnpinnedPosition:
@@ -436,6 +621,33 @@ class TestFullscreenSwitchPreservesLiveWidgetState:
             ui.load_ui_state()
 
         assert not w.isHidden(), "an already-live widget must not be re-hidden by a stale on-disk snapshot"
+
+
+class TestOverlaySwitchHidesDebugButton:
+    """set_overlay's hide-list was missing btn_debug -- set_fullscreen shows
+    it whenever ECOSYSTEM_STATE is 'debug', but switching back to overlay
+    never hid it again, leaving it drawn on top of the small idle overlay
+    window (only noticed once it got a distinct icon)."""
+
+    @pytest.fixture(autouse=True)
+    def no_real_mqtt_thread(self, mocker):
+        import clUI
+        mocker.patch.object(clUI.MqttThread, "start")
+
+    def test_btn_debug_hidden_after_switching_to_overlay(self, qapp, fake_state_file, mocker):
+        import clUI
+        mocker.patch.object(clUI, "ECOSYSTEM_STATE", "debug")
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "0"})
+        with open(fake_state_file, "w") as f:
+            json.dump({"is_fullscreen": False, "current_monitor_idx": 0, "active_widgets": {}}, f)
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            ui = clUI.JarvisUI()
+            ui.set_ui_mode("set_fullscreen")
+            assert not ui.btn_debug.isHidden()
+
+            ui.set_ui_mode("set_overlay")
+            assert ui.btn_debug.isHidden()
 
 
 class TestSpawnWidgetMainWindowReference:

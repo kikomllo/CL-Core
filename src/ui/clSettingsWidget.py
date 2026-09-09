@@ -536,6 +536,45 @@ class SettingsWidget(QWidget):
         ))
         audio_layout.addSpacing(20)
 
+        # --- TAB 7: DEBUG ---
+        debug_scroll, debug_layout = self._create_scroll_tab()
+        self.tabs.addTab(debug_scroll, "Debug")
+
+        debug_flags = {}
+        try:
+            debug_flags = self.loader.load_json("core.json").get("settings", {}).get("debug_flags", {})
+        except Exception:
+            pass
+
+        debug_layout.addWidget(self._create_section_label("Diagnostics (console spam, off by default)"))
+        debug_layout.addWidget(self._create_checkbox(
+            "wakeword_diagnostics", "Wake Word Diagnostics (confidence logs + saved clips)",
+            debug_flags.get("wakeword_diagnostics", False),
+            lambda state: self._toggle_debug_flag("wakeword_diagnostics", state)
+        ))
+
+        debug_layout.addWidget(self._create_section_label("Training Data Capture (for future model retraining)"))
+        debug_layout.addWidget(self._create_checkbox(
+            "capture_wakeword_positive", "Save successful wake word triggers",
+            debug_flags.get("capture_wakeword_positive", False),
+            lambda state: self._toggle_debug_flag("capture_wakeword_positive", state)
+        ))
+        debug_layout.addWidget(self._create_checkbox(
+            "capture_stt_training_data", "Save correct STT-to-action pairs",
+            debug_flags.get("capture_stt_training_data", False),
+            lambda state: self._toggle_debug_flag("capture_stt_training_data", state)
+        ))
+        debug_layout.addSpacing(20)
+
+    def _toggle_debug_flag(self, flag_key, state):
+        is_enabled = (state == 2)
+
+        def update_cb(core):
+            core.setdefault("settings", {}).setdefault("debug_flags", {})[flag_key] = is_enabled
+        self.loader.update_json_atomic("core.json", update_cb)
+
+        self.router.dispatch("debug.set_flag", flag=flag_key, enabled=is_enabled)
+
     def _update_audio_setting(self, key, value):
         def update_cb(core):
             core.setdefault("settings", {}).setdefault("audio_settings", {})[key] = value

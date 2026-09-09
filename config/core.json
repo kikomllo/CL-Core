@@ -11,7 +11,7 @@
         "stt_processing_mode": "parallel",
         "audio_settings": {
             "input_device": "Microphone (G435 Wireless Gaming Headset)",
-            "output_device": "System Default"
+            "output_device": "Headset Earphone (G435 Wireless Gaming Headset)"
         },
         "slm_settings": {
             "enabled": true,
@@ -52,7 +52,11 @@
                 }
             }
         },
-        "hardware": "cuda"
+        "hardware": "cuda",
+        "debug_flags": {
+            "wakeword_diagnostics": false,
+            "capture_wakeword_positive": true
+        }
     },
     "nlp_rules": {
         "abort_keywords": [

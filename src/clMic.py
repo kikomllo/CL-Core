@@ -97,10 +97,12 @@ class VoiceSensor:
         self.pre_speech_buffer: Deque[np.ndarray] = collections.deque(maxlen=15)
         self.ring_buffer: Deque[np.ndarray] = collections.deque(maxlen=30) # <--- ADD THIS HERE
         self.last_vol_publish: float = 0.0
-        self._wakeword_debug_frames: list = []  # temporary: see _save_wakeword_debug_clip
-        
+        self._wakeword_debug_frames: list = []  # see _save_wakeword_debug_clip
+
         self.attention_multiplier = self._load_attention_multiplier()
         self.target_input_device = self._load_initial_input_device()
+        self.debug_wakeword_diagnostics: bool = self._load_debug_flag("wakeword_diagnostics")
+        self.capture_wakeword_positive: bool = self._load_debug_flag("capture_wakeword_positive")
 
         with silence_c_errors():
             self.audio: pyaudio.PyAudio = pyaudio.PyAudio()
@@ -127,6 +129,14 @@ class VoiceSensor:
                 return json.load(f).get("settings", {}).get("audio_settings", {}).get("input_device")
         except Exception:
             return None
+
+    def _load_debug_flag(self, flag: str) -> bool:
+        config_path = os.path.abspath(os.path.join(self.base_dir, "..", "config", "core.json"))
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                return bool(json.load(f).get("settings", {}).get("debug_flags", {}).get(flag, False))
+        except Exception:
+            return False
 
     def _init_wakeword(self) -> Any:
         logging.info("Booting Wake Word Engine...")
@@ -165,6 +175,7 @@ class VoiceSensor:
             client.subscribe("jarvis/sys/tts_state") 
             client.subscribe("jarvis/sys/whisper_state")
             client.subscribe("jarvis/sys/audio_process")
+            client.subscribe("jarvis/sys/debug_control")
             client.loop_start()
             return client
         except Exception as e:
@@ -182,7 +193,16 @@ class VoiceSensor:
 
         action = payload.get("action")
 
-        if msg.topic == "jarvis/sys/audio_process":
+        if msg.topic == "jarvis/sys/debug_control":
+            flag = payload.get("flag")
+            if flag == "wakeword_diagnostics":
+                self.debug_wakeword_diagnostics = bool(payload.get("enabled"))
+            elif flag == "capture_wakeword_positive":
+                self.capture_wakeword_positive = bool(payload.get("enabled"))
+            if not (self.debug_wakeword_diagnostics or self.capture_wakeword_positive):
+                self._wakeword_debug_frames = []
+
+        elif msg.topic == "jarvis/sys/audio_process":
             if payload.get("state") == "idle":
                 self.is_processing = False
 
@@ -433,24 +453,40 @@ class VoiceSensor:
         except Exception:
             pass
 
+    def _write_wakeword_frames_to_wav(self, dest_dir: str, filename: str) -> str:
+        dest_dir = os.path.abspath(dest_dir)
+        os.makedirs(dest_dir, exist_ok=True)
+        path = os.path.join(dest_dir, filename)
+        audio = np.concatenate(self._wakeword_debug_frames)
+        with wave.open(path, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(self.RATE)
+            wf.writeframes(audio.astype(np.int16).tobytes())
+        return path
+
     def _save_wakeword_debug_clip(self) -> None:
-        """Temporary diagnostic: dumps every chunk fed to the wake word model
-        during one activation attempt to a WAV, so it can be inspected or
-        replayed offline -- wake word audio otherwise never touches disk,
-        unlike PTT/dispatched commands. Remove once resolved."""
+        """Dumps every chunk fed to the wake word model during one
+        activation attempt to a WAV, so it can be inspected or replayed
+        offline -- wake word audio otherwise never touches disk, unlike
+        PTT/dispatched commands. Gated by debug_wakeword_diagnostics."""
         try:
-            scratch_dir = os.path.abspath(os.path.join(self.base_dir, "..", "data", "scratch"))
-            os.makedirs(scratch_dir, exist_ok=True)
-            path = os.path.join(scratch_dir, f"wakeword_debug_{int(time.time()*1000)}.wav")
-            audio = np.concatenate(self._wakeword_debug_frames)
-            with wave.open(path, 'wb') as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)
-                wf.setframerate(self.RATE)
-                wf.writeframes(audio.astype(np.int16).tobytes())
+            scratch_dir = os.path.join(self.base_dir, "..", "data", "scratch")
+            path = self._write_wakeword_frames_to_wav(scratch_dir, f"wakeword_debug_{int(time.time()*1000)}.wav")
             logging.debug(f"[WAKEWORD] Saved debug clip: {path}")
         except Exception as e:
             logging.warning(f"[WAKEWORD] Failed to save debug clip: {e}")
+
+    def _save_wakeword_positive_clip(self) -> None:
+        """Saves a genuine successful trigger's audio as a labeled positive
+        example for future wake-word model retraining. Gated by
+        capture_wakeword_positive on the Debug tab."""
+        try:
+            capture_dir = os.path.join(self.base_dir, "..", "data", "training_capture", "wakeword_positive")
+            path = self._write_wakeword_frames_to_wav(capture_dir, f"wakeword_positive_{int(time.time()*1000)}.wav")
+            logging.debug(f"[WAKEWORD] Saved training-positive clip: {path}")
+        except Exception as e:
+            logging.warning(f"[WAKEWORD] Failed to save training-positive clip: {e}")
 
     def _open_stream(self, device_name: Optional[str]) -> None:
         from utils.clAudioDevices import resolve_capture_device_index
@@ -467,10 +503,7 @@ class VoiceSensor:
             self.native_rate = self.RATE
             self.native_chunk = self.CHUNK
         except OSError:
-            # WASAPI (and some other backends) reject 16kHz on devices whose
-            # mix format is 44100/48000Hz -- open at the device's own rate
-            # instead and resample each chunk back down to 16kHz/self.CHUNK
-            # in _read_chunk() so the rest of the pipeline is untouched.
+            # WASAPI rejects 16kHz on some devices -- open native rate, resample in _read_chunk().
             native_rate = int(self.audio.get_device_info_by_index(idx)["defaultSampleRate"]) if idx is not None \
                 else int(self.audio.get_default_input_device_info()["defaultSampleRate"])
             native_chunk = int(round(self.CHUNK * native_rate / self.RATE))
@@ -633,48 +666,45 @@ class VoiceSensor:
 
             if not bypass_wakeword:
                 model_ran = False
+                capture_frames = self.debug_wakeword_diagnostics or self.capture_wakeword_positive
                 if current_rms > a_thresh:
-                    if self.vad_hangtime <= 0:
-                        # Temporary diagnostic: confirms the activation
-                        # threshold is actually being crossed (vs. the model
-                        # simply never running at all) -- remove once resolved.
+                    if self.debug_wakeword_diagnostics and self.vad_hangtime <= 0:
                         logging.debug(f"[WAKEWORD] Activation threshold crossed: rms={current_rms:.0f} > thresh={a_thresh:.0f}")
                     self.vad_hangtime = 15
                     while self.pre_speech_buffer:
                         pre_chunk = self.pre_speech_buffer.popleft()
-                        self._wakeword_debug_frames.append(pre_chunk)
+                        if capture_frames:
+                            self._wakeword_debug_frames.append(pre_chunk)
                         self.oww_model.predict(pre_chunk)
-                    self._wakeword_debug_frames.append(audio_data)
+                    if capture_frames:
+                        self._wakeword_debug_frames.append(audio_data)
                     self.oww_model.predict(audio_data)
                     model_ran = True
 
                 elif self.vad_hangtime > 0:
                     self.vad_hangtime -= 1
-                    self._wakeword_debug_frames.append(audio_data)
+                    if capture_frames:
+                        self._wakeword_debug_frames.append(audio_data)
                     self.oww_model.predict(audio_data)
                     model_ran = True
 
                 else:
-                    # Temporary diagnostic: dump exactly what the model saw on
-                    # this attempt to a WAV so it can be inspected/replayed --
-                    # wake word audio otherwise never touches disk. Remove
-                    # once resolved.
-                    if self._wakeword_debug_frames:
+                    if self.debug_wakeword_diagnostics and self._wakeword_debug_frames:
                         self._save_wakeword_debug_clip()
-                        self._wakeword_debug_frames = []
+                    self._wakeword_debug_frames = []
                     self.pre_speech_buffer.append(audio_data)
                     self.oww_model.reset()
-                    
+
                 if model_ran:
                     for mdl in self.oww_model.prediction_buffer.keys():
                         score = list(self.oww_model.prediction_buffer[mdl])[-1]
-                        # Temporary diagnostic, no floor this time -- the 0.05
-                        # floor never fired even on a loud, clean utterance, so
-                        # we need the actual raw value, not another gate that
-                        # might hide it again. Remove once resolved.
-                        logging.debug(f"[WAKEWORD] '{mdl}' raw score: {score:.5f}")
+                        if self.debug_wakeword_diagnostics:
+                            logging.debug(f"[WAKEWORD] '{mdl}' raw score: {score:.5f}")
                         if score > 0.5:
                             wakeword_triggered = True
+                            if self.capture_wakeword_positive and self._wakeword_debug_frames:
+                                self._save_wakeword_positive_clip()
+                            self._wakeword_debug_frames = []
                             break
             
             if wakeword_triggered or voice_triggered:

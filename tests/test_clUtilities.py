@@ -193,6 +193,57 @@ class TestAlarmReminderDeleteWiring:
         assert not reminder_path.exists()
 
     @pytest.mark.asyncio
+    async def test_handle_reminder_create_deletes_scratch_audio_after_copying(self, utilities, mocker, isolated_dirs, tmp_path):
+        """clWhisper.py's per-command scratch WAV otherwise accumulates
+        forever (nothing else ever deleted it) -- once a voice-message
+        reminder has its own permanent copy, the scratch original is no
+        longer needed and clUtilities.py should remove it itself."""
+        _, reminders_dir = isolated_dirs
+        scratch_dir = tmp_path / "scratch"
+        scratch_dir.mkdir()
+        mocker.patch("clUtilities.SCRATCH_DIR", str(scratch_dir))
+        mocker.patch.object(utilities, "schedule_systemd_timer", return_value=True)
+
+        audio_src = scratch_dir / "voice_command_test.wav"
+        audio_src.write_bytes(b"fake-wav-bytes")
+
+        await utilities.handle_reminder_create({
+            "time": "in 5 minutes",
+            "task": "check the oven",
+            "reminder_id": "reminder_audio_test",
+            "audio_path": str(audio_src),
+        })
+
+        audio_dest = reminders_dir / "reminder_audio_test.wav"
+        assert audio_dest.exists()
+        assert audio_dest.read_bytes() == b"fake-wav-bytes"
+        assert not audio_src.exists()
+
+    @pytest.mark.asyncio
+    async def test_handle_reminder_create_does_not_delete_audio_outside_scratch(self, utilities, mocker, isolated_dirs, tmp_path):
+        """A payload-supplied audio_path pointing anywhere other than
+        data/scratch/ must never be deleted -- it isn't clUtilities.py's to
+        clean up, and tmp_audio_path comes straight from an MQTT payload."""
+        _, reminders_dir = isolated_dirs
+        scratch_dir = tmp_path / "scratch"
+        scratch_dir.mkdir()
+        mocker.patch("clUtilities.SCRATCH_DIR", str(scratch_dir))
+        mocker.patch.object(utilities, "schedule_systemd_timer", return_value=True)
+
+        outside_audio = tmp_path / "not_scratch" / "some_audio.wav"
+        outside_audio.parent.mkdir()
+        outside_audio.write_bytes(b"fake-wav-bytes")
+
+        await utilities.handle_reminder_create({
+            "time": "in 5 minutes",
+            "task": "check the oven",
+            "reminder_id": "reminder_audio_test_2",
+            "audio_path": str(outside_audio),
+        })
+
+        assert outside_audio.exists()
+
+    @pytest.mark.asyncio
     async def test_handle_alarm_delete_all_cancels_every_alarm(self, utilities, mocker, isolated_dirs):
         alarms_dir, _ = isolated_dirs
         mock_cancel = mocker.patch.object(utilities, "cancel_scheduled_timer")

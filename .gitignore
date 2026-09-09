@@ -44,6 +44,7 @@ data/reminders/
 data/alarms/
 data/events/
 data/scratch/
+data/training_capture/
 data/ui_state.json
 data/monitor_registry.json
 config/ui_state.json

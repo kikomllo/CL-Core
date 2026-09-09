@@ -25,6 +25,7 @@ ALARMS_DIR = os.path.join(BASE_DIR, "..", "data", "alarms")
 REMINDERS_DIR = os.path.join(BASE_DIR, "..", "data", "reminders")
 TODOS_DIR = os.path.join(BASE_DIR, "..", "data", "todos")
 EVENTS_DIR = os.path.join(BASE_DIR, "..", "data", "events")
+SCRATCH_DIR = os.path.join(BASE_DIR, "..", "data", "scratch")
 
 os.makedirs(ALARMS_DIR, exist_ok=True)
 os.makedirs(REMINDERS_DIR, exist_ok=True)
@@ -395,6 +396,13 @@ class JarvisUtilities:
                     shutil.copy2(tmp_audio_path, audio_dest)
                     logging.info(f"Copied user audio from {tmp_audio_path} to {audio_dest}")
                     copied_user_audio = True
+                    # Only ever delete a path actually inside data/scratch/ (payload-supplied).
+                    scratch_dir = os.path.abspath(SCRATCH_DIR)
+                    if os.path.commonpath([os.path.abspath(tmp_audio_path), scratch_dir]) == scratch_dir:
+                        try:
+                            os.remove(tmp_audio_path)
+                        except Exception:
+                            pass
                 except Exception as e:
                     fallback_reason = f"Failed to copy user audio: {e}"
                     logging.error(fallback_reason)

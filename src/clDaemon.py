@@ -9,6 +9,7 @@ import datetime
 import collections
 import random
 import re
+import shutil
 import aiomqtt
 from typing import Dict, List, Tuple, Any, Optional
 
@@ -91,6 +92,7 @@ class CentralDaemon:
 
         self.followups_enabled = core_data.get("settings", {}).get("enable_followup", True)
         self.silent_mode = core_data.get("settings", {}).get("silent_mode", False)
+        self.capture_stt_training_data = core_data.get("settings", {}).get("debug_flags", {}).get("capture_stt_training_data", False)
 
         fu_cfg = core_data.get("settings", {}).get("followup_settings", {})
         self.followup_cooldown_asked_s = float(fu_cfg.get("cooldown_asked_minutes", 15)) * 60
@@ -112,6 +114,29 @@ class CentralDaemon:
         media = f"Playing '{self.current_track}'" if self.is_spotify_playing else "Paused/Idle"
         ctx = self.active_context.get("type") or "None"
         return f"Spotify: {media} | ActiveContext: {ctx} | LastTargetLight: {self.last_light_target}"
+
+    def _capture_stt_training_example(self, user_text: str, actions: List[Dict[str, Any]], audio_path: str) -> None:
+        """Saves a (transcription -> action) pair, matching synthetic_lora_dataset.jsonl's shape."""
+        try:
+            capture_dir = os.path.abspath(os.path.join(self.loader.config_dir, "..", "data", "training_capture", "stt_action"))
+            os.makedirs(capture_dir, exist_ok=True)
+
+            example_id = f"stt_action_{int(time.time() * 1000)}"
+            if os.path.exists(audio_path):
+                shutil.copy2(audio_path, os.path.join(capture_dir, f"{example_id}.wav"))
+
+            record = {
+                "messages": [
+                    {"role": "system", "content": f"[STATE]: {self._get_system_snapshot()}"},
+                    {"role": "user", "content": user_text},
+                    {"role": "assistant", "content": json.dumps({"actions": actions})}
+                ],
+                "audio_file": f"{example_id}.wav"
+            }
+            with open(os.path.join(capture_dir, "captured.jsonl"), "a", encoding="utf-8") as f:
+                f.write(json.dumps(record) + "\n")
+        except Exception as e:
+            logging.warning(f"[TRAINING CAPTURE] Failed to save STT/action example: {e}")
 
     def _is_evening_hour(self) -> bool:
         hour = datetime.datetime.now().hour
@@ -523,6 +548,7 @@ class CentralDaemon:
                     await client.subscribe("jarvis/sys/media_status")
                     await client.subscribe("jarvis/sys/light_status")
                     await client.subscribe("jarvis/sys/daemon_control")
+                    await client.subscribe("jarvis/sys/debug_control")
                     
                     logging.info("--- DAEMON READY: Listening for commands ---")
                     await client.publish("jarvis/sys/module_ready", json.dumps({"module": "brain"}))
@@ -654,6 +680,14 @@ class CentralDaemon:
                             except json.JSONDecodeError:
                                 pass
 
+                        elif topic == "jarvis/sys/debug_control":
+                            try:
+                                payload = json.loads(payload_data)
+                                if payload.get("flag") == "capture_stt_training_data":
+                                    self.capture_stt_training_data = bool(payload.get("enabled"))
+                            except json.JSONDecodeError:
+                                pass
+
                         elif topic == "jarvis/sensor/voice":
                             try:
                                 data = json.loads(payload_data)
@@ -664,7 +698,8 @@ class CentralDaemon:
                             except (json.JSONDecodeError, ValueError):
                                 text_payload = payload_data
                                 audio_path = ""
-                                
+
+                            captured_actions: List[Dict[str, Any]] = []
                             raw_payload = self.sanitize_transcription(text_payload)
                             
                             ww_pattern = r'^(?:hey\s+|hi\s+|ok\s+|a\s+|uh\s+|ha\s+|eh\s+)?jarvis\b[.,!?]*\s*'
@@ -687,7 +722,7 @@ class CentralDaemon:
                             
                             if intents:
                                 final_mic_state = "open_window" if (self.followups_enabled and not self.silent_mode) else None
-                                
+
                                 for command, action_id in intents:
                                     if audio_path and "audio_path" not in command:
                                         command["audio_path"] = audio_path
@@ -714,7 +749,9 @@ class CentralDaemon:
                                         if not topic_out:
                                             logging.error(f"[DAEMON] Failed to resolve action_id: {action_id}")
                                             continue
-                                            
+
+                                        captured_actions.append({"action_id": action_id, **{k: v for k, v in command.items() if k != "audio_path"}})
+
                                         action = payload_out.get("action", "")
                                         is_silent = payload_out.get("silent", False)
                                         is_spotify_status = (action_id == "spotify.control" and action.startswith("status_"))
@@ -794,6 +831,9 @@ class CentralDaemon:
 
                                 if final_mic_state and final_mic_state != "request_reply":
                                     await client.publish("jarvis/sys/mic_control", json.dumps({"action": final_mic_state}))
+
+                                if self.capture_stt_training_data and captured_actions and audio_path:
+                                    self._capture_stt_training_example(raw_payload, captured_actions, audio_path)
                             else:
                                 # Standalone wake word fallback
                                 hallucinations = ["thank you", "thanks", "thanks for watching", "you", "a", "it"]
@@ -811,6 +851,14 @@ class CentralDaemon:
                                     logging.warning(f"[UNMATCHED STT] Could not resolve intent for: '{text_payload}' | Clean text: '{clean_text}'")
                                     await self.evaluate_ducking(client)
                                         
+                            # reminder.create copies+deletes this itself (clUtilities.py); clean up otherwise.
+                            if audio_path and not any(a["action_id"] == "reminder.create" for a in captured_actions):
+                                try:
+                                    if os.path.exists(audio_path):
+                                        os.remove(audio_path)
+                                except Exception as e:
+                                    logging.warning(f"[SCRATCH CLEANUP] Failed to remove {audio_path}: {e}")
+
                             await client.publish("jarvis/sys/audio_process", json.dumps({"state": "idle"}))
                             await client.publish("jarvis/sys/mic_state", json.dumps({"state": "idle"}))
                         

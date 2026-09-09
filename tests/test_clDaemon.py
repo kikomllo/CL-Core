@@ -458,3 +458,110 @@ class TestDaemonEdgeCases:
         # Should complete successfully
         await daemon.run()
         assert not daemon.pending_mic_request
+
+
+class TestSttTrainingCapture:
+    """The Debug tab's 'Save correct STT-to-action pairs' toggle: a voice
+    command that resolves to a real action should be written out as a
+    training example (matching training/data/synthetic_lora_dataset.jsonl's
+    {messages: [...]} shape) plus its paired audio, but only while the flag
+    is on, and only for commands that actually resolved to something."""
+
+    @pytest.mark.asyncio
+    async def test_toggle_via_mqtt_and_capture_on_resolved_action(self, daemon, mock_mqtt, message_stream, tmp_path):
+        daemon.loader.config_dir = str(tmp_path / "config")
+        os.makedirs(daemon.loader.config_dir, exist_ok=True)
+
+        audio_src = tmp_path / "voice_command_test.wav"
+        audio_src.write_bytes(b"fake-wav-bytes")
+
+        assert daemon.capture_stt_training_data is False
+
+        mock_mqtt.messages = message_stream([
+            ("jarvis/sys/debug_control", json.dumps({"flag": "capture_stt_training_data", "enabled": True})),
+            ("jarvis/sensor/voice", json.dumps({"text": "turn the lights on", "audio_path": str(audio_src)})),
+        ])
+
+        await daemon.run()
+
+        assert daemon.capture_stt_training_data is True
+
+        capture_dir = tmp_path / "data" / "training_capture" / "stt_action"
+        jsonl_path = capture_dir / "captured.jsonl"
+        assert jsonl_path.exists()
+
+        lines = jsonl_path.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["messages"][0]["role"] == "system"
+        assert record["messages"][1] == {"role": "user", "content": "turn the lights on"}
+        actions = json.loads(record["messages"][2]["content"])["actions"]
+        assert any(a["action_id"] == "light.set" for a in actions)
+
+        wav_files = list(capture_dir.glob("*.wav"))
+        assert len(wav_files) == 1
+        assert wav_files[0].read_bytes() == b"fake-wav-bytes"
+
+    @pytest.mark.asyncio
+    async def test_nothing_written_while_flag_stays_off(self, daemon, mock_mqtt, message_stream, tmp_path):
+        daemon.loader.config_dir = str(tmp_path / "config")
+        os.makedirs(daemon.loader.config_dir, exist_ok=True)
+
+        audio_src = tmp_path / "voice_command_test.wav"
+        audio_src.write_bytes(b"fake-wav-bytes")
+
+        mock_mqtt.messages = message_stream([
+            ("jarvis/sensor/voice", json.dumps({"text": "turn the lights on", "audio_path": str(audio_src)})),
+        ])
+
+        await daemon.run()
+
+        assert not (tmp_path / "data" / "training_capture").exists()
+
+
+class TestScratchAudioCleanup:
+    """clWhisper.py saves a scratch WAV for every voice command and never
+    cleans it up itself (data/scratch/ otherwise grows forever). The daemon
+    is the one place that knows the outcome of a command, so it deletes the
+    file once nothing downstream needs it -- except for a reminder.create
+    with a voice message, which clUtilities.py copies out and deletes
+    asynchronously on its own."""
+
+    @pytest.mark.asyncio
+    async def test_unmatched_stt_deletes_scratch_audio(self, daemon, mock_mqtt, message_stream, tmp_path):
+        audio_src = tmp_path / "voice_command_unmatched.wav"
+        audio_src.write_bytes(b"fake-wav-bytes")
+
+        mock_mqtt.messages = message_stream([
+            ("jarvis/sensor/voice", json.dumps({"text": "asdkjfh qwoiuer", "audio_path": str(audio_src)})),
+        ])
+
+        await daemon.run()
+
+        assert not audio_src.exists()
+
+    @pytest.mark.asyncio
+    async def test_resolved_non_reminder_command_deletes_scratch_audio(self, daemon, mock_mqtt, message_stream, tmp_path):
+        audio_src = tmp_path / "voice_command_lights.wav"
+        audio_src.write_bytes(b"fake-wav-bytes")
+
+        mock_mqtt.messages = message_stream([
+            ("jarvis/sensor/voice", json.dumps({"text": "turn the lights on", "audio_path": str(audio_src)})),
+        ])
+
+        await daemon.run()
+
+        assert not audio_src.exists()
+
+    @pytest.mark.asyncio
+    async def test_reminder_command_leaves_scratch_audio_for_clutilities_to_clean_up(self, daemon, mock_mqtt, message_stream, tmp_path):
+        audio_src = tmp_path / "voice_command_reminder.wav"
+        audio_src.write_bytes(b"fake-wav-bytes")
+
+        mock_mqtt.messages = message_stream([
+            ("jarvis/sensor/voice", json.dumps({"text": "remind me to call mom in 30 minutes", "audio_path": str(audio_src)})),
+        ])
+
+        await daemon.run()
+
+        assert audio_src.exists()

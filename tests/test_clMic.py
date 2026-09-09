@@ -25,7 +25,12 @@ class TestMicEdgeCases:
         """Test the mic state machine based on incoming MQTT messages."""
         from clMic import VoiceSensor
         sensor = VoiceSensor()
-        
+        # Debug flags are loaded from the real config/core.json at construction
+        # time, so their actual on-disk value (e.g. left on from manually
+        # exploring the Debug tab) must not leak into this test's expectations.
+        sensor.debug_wakeword_diagnostics = False
+        sensor.capture_wakeword_positive = False
+
         # Helper to simulate incoming MQTT messages
         def send_mqtt(topic, payload):
             msg = MagicMock()
@@ -71,6 +76,33 @@ class TestMicEdgeCases:
         send_mqtt("jarvis/sys/mic_control", '{"action": "set_input_device", "device_name": "USB Mic"}')
         assert sensor.pending_input_device_change is True
         assert sensor.target_input_device == "USB Mic"
+
+        # Test live debug flag toggle (Settings UI -> debug_control)
+        assert sensor.debug_wakeword_diagnostics is False
+        send_mqtt("jarvis/sys/debug_control", '{"flag": "wakeword_diagnostics", "enabled": true}')
+        assert sensor.debug_wakeword_diagnostics is True
+
+        # Turning it back off mid-attempt discards whatever was buffered
+        # rather than saving a stale clip once diagnostics resume later.
+        sensor._wakeword_debug_frames.append(np.zeros(10, dtype=np.int16))
+        send_mqtt("jarvis/sys/debug_control", '{"flag": "wakeword_diagnostics", "enabled": false}')
+        assert sensor.debug_wakeword_diagnostics is False
+        assert sensor._wakeword_debug_frames == []
+
+        # Test the training-capture flag toggles independently
+        assert sensor.capture_wakeword_positive is False
+        send_mqtt("jarvis/sys/debug_control", '{"flag": "capture_wakeword_positive", "enabled": true}')
+        assert sensor.capture_wakeword_positive is True
+
+        # Buffered frames must survive disabling ONE flag while the other is
+        # still on -- only clear once BOTH capture reasons are off.
+        sensor.debug_wakeword_diagnostics = True
+        sensor._wakeword_debug_frames.append(np.zeros(10, dtype=np.int16))
+        send_mqtt("jarvis/sys/debug_control", '{"flag": "capture_wakeword_positive", "enabled": false}')
+        assert sensor.capture_wakeword_positive is False
+        assert len(sensor._wakeword_debug_frames) == 1
+        send_mqtt("jarvis/sys/debug_control", '{"flag": "wakeword_diagnostics", "enabled": false}')
+        assert sensor._wakeword_debug_frames == []
 
 
 class TestMicInputDeviceSwitching:
@@ -232,3 +264,38 @@ class TestMicReadChunkResampling:
 
         assert len(resampled) == sensor.CHUNK
         sensor.mic_stream.read.assert_called_once_with(sensor.native_chunk, exception_on_overflow=False)
+
+
+class TestWakewordClipSaving:
+    """Debug tab toggles: 'Wake Word Diagnostics' saves every attempt to
+    data/scratch for troubleshooting; 'Save successful wake word triggers'
+    saves only genuine hits to data/training_capture for future retraining.
+    Both write through the same _write_wakeword_frames_to_wav helper."""
+
+    @patch('clMic.mqtt_client.Client')
+    @patch('clMic.pyaudio.PyAudio')
+    @patch('clMic.VoiceSensor._init_wakeword')
+    def test_debug_clip_written_to_scratch(self, mock_wakeword, mock_pyaudio, mock_mqtt, tmp_path):
+        from clMic import VoiceSensor
+        sensor = VoiceSensor()
+        sensor.base_dir = str(tmp_path / "src")
+        sensor._wakeword_debug_frames = [np.zeros(1280, dtype=np.int16)]
+
+        sensor._save_wakeword_debug_clip()
+
+        files = list((tmp_path / "data" / "scratch").glob("wakeword_debug_*.wav"))
+        assert len(files) == 1
+
+    @patch('clMic.mqtt_client.Client')
+    @patch('clMic.pyaudio.PyAudio')
+    @patch('clMic.VoiceSensor._init_wakeword')
+    def test_positive_clip_written_to_training_capture(self, mock_wakeword, mock_pyaudio, mock_mqtt, tmp_path):
+        from clMic import VoiceSensor
+        sensor = VoiceSensor()
+        sensor.base_dir = str(tmp_path / "src")
+        sensor._wakeword_debug_frames = [np.ones(1280, dtype=np.int16) * 100]
+
+        sensor._save_wakeword_positive_clip()
+
+        files = list((tmp_path / "data" / "training_capture" / "wakeword_positive").glob("wakeword_positive_*.wav"))
+        assert len(files) == 1

@@ -56,6 +56,15 @@
       }
     }
   },
+  "debug": {
+    "set_flag": {
+      "topic": "jarvis/sys/debug_control",
+      "schema": {
+        "flag": {"type": "string", "required": true},
+        "enabled": {"type": "boolean", "required": true}
+      }
+    }
+  },
   "mic": {
     "ptt_start": {
       "topic": "jarvis/sys/mic_control",

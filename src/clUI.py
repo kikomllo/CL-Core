@@ -719,12 +719,7 @@ class IconPill(QWidget):
     Clicking (icon or expanded area) calls _activate(). Subclasses supply
     the icon path and override _activate()/_label_text()."""
 
-    # SVG, not emoji/font glyph: color emoji is bitmap/COLR-table based and
-    # ignores the theme's text color entirely (always renders in its own
-    # fixed native colors), and even a plain text glyph depends on OS font
-    # fallback for any character our bundled font doesn't cover. A vector
-    # file we render ourselves is identical on both machines regardless of
-    # installed fonts, and trivially recolored (see load_recolored_svg_icon).
+    # SVG, not emoji/font glyph: renders identically cross-platform and recolors trivially.
 
     def __init__(self, icon_path: str, grow_direction: str = "right", parent=None, icon_padding: int = 14):
         super().__init__(parent)
@@ -734,17 +729,15 @@ class IconPill(QWidget):
         self.diameter = 35
         self.expanded_width = 140
         self._anchor_x = 0  # the edge that stays fixed on screen while (de)expanding
+        self.on_width_changed = None  # optional: group-relayout hook, see WidgetTogglePill/_reflow_widget_dock
+        self._anim_generation = 0  # see _animate_to/_settle_animation
+        self._target_expanded = False  # intent, not instantaneous width -- an expand's first frame is also AT diameter
 
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)  # plain QWidget needs this to paint QSS background/border at all
 
-        # Only present while expanded (see enterEvent/_on_animation_finished)
-        # -- a permanent margin here would eat into the collapsed circle's
-        # exact fixed diameter. Applied on whichever side actually touches
-        # the pill's outer rounded border: MarqueeLabel draws its scrolling/
-        # elided text manually in paintEvent and ignores stylesheet padding,
-        # so the inset has to come from real layout margin, not CSS.
+        # Real layout margin, not CSS padding -- MarqueeLabel paints its own text and ignores CSS.
         self._edge_gap = 10
         self._layout_spacing = 6
         self._collapsed_margins = (0, 0, 0, 0)
@@ -771,9 +764,14 @@ class IconPill(QWidget):
             layout.addWidget(self.label, 1)
 
         self._anim = QPropertyAnimation(self, b"pillWidth")
-        self._anim.setDuration(150)
+        self._anim.setDuration(260)
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._anim.finished.connect(self._on_animation_finished)
+
+        # Delay avoids expanding every pill a cursor merely sweeps past.
+        self._hover_delay_timer = QTimer(self)
+        self._hover_delay_timer.setSingleShot(True)
+        self._hover_delay_timer.timeout.connect(self._begin_expand)
 
         self.setStyleSheet("background: transparent; border: none;")
         self.set_sizes(self.diameter, self.expanded_width)
@@ -791,8 +789,9 @@ class IconPill(QWidget):
         except Exception as e:
             logging.warning(f"Failed to load pill icon '{self._icon_path}': {e}")
 
+        self._target_expanded = False
         self.setFixedHeight(diameter)
-        self.setFixedWidth(diameter)
+        self.setPillWidth(diameter)
 
     def set_anchor(self, anchor_x: int, y: int):
         """anchor_x is the edge that must stay put on screen as the pill
@@ -812,28 +811,61 @@ class IconPill(QWidget):
 
     def setPillWidth(self, w: int):
         self.setFixedWidth(w)
-        self._apply_position(w)
+        if not self._target_expanded and w <= self.diameter and not self.label.isHidden():
+            # Keyed off intent, not width -- an expand's own first frame is also at diameter.
+            self.label.hide()
+            self.label.stop_scrolling()
+            self.layout().setContentsMargins(*self._collapsed_margins)
+            self.setStyleSheet("background: transparent; border: none;")
+        if self.on_width_changed:
+            # Positioning is fully external (see _reflow_widget_dock) --
+            # the anchor-based _apply_position below is only for a
+            # standalone pill that owns its own fixed edge.
+            self.on_width_changed()
+        else:
+            self._apply_position(w)
 
     pillWidth = pyqtProperty(int, getPillWidth, setPillWidth)
 
     def enterEvent(self, event):
+        self._hover_delay_timer.start(80)
+        super().enterEvent(event)
+
+    def _begin_expand(self):
+        self._target_expanded = True
         self.setStyleSheet(Theme.get_style("IconPill", radius=self.diameter // 2))
         self.layout().setContentsMargins(*self._expanded_margins)
         self.label.setText(self._label_text())
         self.label.show()
-        self._anim.stop()
-        self._anim.setStartValue(self.width())
-        self._anim.setEndValue(self.expanded_width)
-        self._anim.start()
-        super().enterEvent(event)
+        self._animate_to(self.expanded_width)
 
     def leaveEvent(self, event):
+        self._target_expanded = False
+        self._hover_delay_timer.stop()
         self.label.stop_scrolling()
+        self._animate_to(self.diameter)
+        super().leaveEvent(event)
+
+    def _animate_to(self, end_value: int):
         self._anim.stop()
         self._anim.setStartValue(self.width())
-        self._anim.setEndValue(self.diameter)
+        self._anim.setEndValue(end_value)
         self._anim.start()
-        super().leaveEvent(event)
+        # Safety net for interrupted animations (see _settle_animation); generation guards stale checks.
+        self._anim_generation += 1
+        generation = self._anim_generation
+        QTimer.singleShot(self._anim.duration() + 50, lambda: self._settle_animation(generation))
+
+    def _settle_animation(self, generation: int):
+        if generation != self._anim_generation:
+            return
+        self._target_expanded = self.underMouse()
+        target = self.expanded_width if self._target_expanded else self.diameter
+        if self.width() == target:
+            return
+        self._anim.stop()
+        self.setPillWidth(target)
+        self._on_animation_finished()
 
     def _on_animation_finished(self):
         if self.width() <= self.diameter:
@@ -957,7 +989,6 @@ class WidgetTogglePill(IconPill):
         icon_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "icons")
         icon_path = os.path.join(icon_dir, icon_file)
         super().__init__(icon_path, grow_direction, parent, icon_padding=20)
-        self.icon_btn.setToolTip(label_text)
 
     def _activate(self):
         self._callback()
@@ -966,12 +997,12 @@ class WidgetTogglePill(IconPill):
         return self._widget_label
 
     def _resolve_expanded_width(self, expanded_width: int) -> int:
-        # The widget name is fixed (unlike the audio pills' device name),
-        # so the expanded pill can be sized to fit it exactly instead of
-        # taking a generic width with dead space past the text.
+        # max() with minimumSizeHint: MarqueeLabel always wants >=50px, so a short
+        # label undershot here squeezed the icon-label spacing instead of the text.
         fm = QFontMetrics(self.label.font())
         text_width = fm.horizontalAdvance(self._widget_label)
-        return self.diameter + self._layout_spacing + text_width + self._edge_gap
+        label_width = max(text_width, self.label.minimumSizeHint().width())
+        return self.diameter + self._layout_spacing + label_width + self._edge_gap
 
 
 class JarvisUI(QWidget):
@@ -1048,10 +1079,10 @@ class JarvisUI(QWidget):
             def eventFilter(self, obj, event):
                 if event.type() == QEvent.Type.FocusIn:
                     import logging
-                    logging.info(f"[DEBUG FOCUS] text_input focusInEvent. Reason: {event.reason()}")
+                    logging.debug(f"[DEBUG FOCUS] text_input focusInEvent. Reason: {event.reason()}")
                 elif event.type() == QEvent.Type.FocusOut:
                     import logging
-                    logging.info(f"[DEBUG FOCUS] text_input focusOutEvent. Reason: {event.reason()}")
+                    logging.debug(f"[DEBUG FOCUS] text_input focusOutEvent. Reason: {event.reason()}")
                 return False
 
         self.focus_filter = FocusFilter()
@@ -1089,6 +1120,11 @@ class JarvisUI(QWidget):
             self.btn_media, self.btn_lights, self.btn_reminders,
             self.btn_todos, self.btn_settings, self.btn_updates, self.btn_debug,
         ]
+        # Laid out as one horizontal, center-anchored row (see
+        # _reflow_widget_dock) rather than each pill owning a fixed edge --
+        # every pill needs to shift when ANY one of them resizes on hover.
+        for pill in self.widget_toggle_pills:
+            pill.on_width_changed = self._reflow_widget_dock
 
         # Mic (left) expands leftward, speaker (right) expands rightward --
         # each grows away from the other so they never collide mid-hover.
@@ -1143,6 +1179,20 @@ class JarvisUI(QWidget):
         if is_reboot and saved_state and saved_state.get("is_fullscreen", False):
             self.set_ui_mode("set_fullscreen")
 
+    def _reflow_widget_dock(self):
+        """Re-centers the widget-toggle pill row around self._widget_dock_center_x
+        using each pill's CURRENT width -- called once to lay out the
+        collapsed row, then again on every frame any pill's hover-expand
+        animation reports a width change, so the row's midpoint never
+        drifts as one pill grows or shrinks."""
+        pills = self.widget_toggle_pills
+        gap = self._widget_dock_gap
+        total_width = sum(p.width() for p in pills) + gap * (len(pills) - 1)
+        x = self._widget_dock_center_x - total_width // 2
+        for p in pills:
+            p.move(x, self._widget_dock_y)
+            x += p.width() + gap
+
     def refresh_layout(self, force_monitor_idx=None):
         screens = UIScaler.get().get_stable_screens()
         
@@ -1168,36 +1218,35 @@ class JarvisUI(QWidget):
         
         import logging
         target_screen_name = screens[idx].name() if idx < len(screens) else 'Unknown'
-        logging.info(f"[DEBUG LAYOUT] Physical Screen: {target_screen_name} (idx: {idx})")
-        logging.info(f"[DEBUG LAYOUT] Window Size: {win_w}x{win_h}")
-        logging.info(f"[DEBUG LAYOUT] Applied Scale: {s(100)/100.0}")
+        logging.debug(f"[DEBUG LAYOUT] Physical Screen: {target_screen_name} (idx: {idx})")
+        logging.debug(f"[DEBUG LAYOUT] Window Size: {win_w}x{win_h}")
+        logging.debug(f"[DEBUG LAYOUT] Applied Scale: {s(100)/100.0}")
 
         # Re-apply stylesheets so the scaling dynamically updates font sizes and border radii
         self.setStyleSheet(Theme.get_global_stylesheet())
         self.btn_calendar.setStyleSheet(Theme.get_style("CalendarButton"))
 
-        # Dashboard shortcut pills -- collapsed circles stacked in a column
-        # along the far-left edge, matching the audio quick-switch pills'
-        # style; each expands rightward on hover to reveal the widget's name.
-        widget_pill_diameter = s(48)
-        widget_pill_expanded_width = s(170)
-        widget_pill_gap = s(12)
-        widget_pill_x = s(20)
-        widget_pill_bottom_margin = s(20)
-        stack_height = (len(self.widget_toggle_pills) * widget_pill_diameter
-                        + (len(self.widget_toggle_pills) - 1) * widget_pill_gap)
-        stack_top_y = win_h - widget_pill_bottom_margin - stack_height
-        for i, pill in enumerate(self.widget_toggle_pills):
-            pill.set_sizes(widget_pill_diameter, widget_pill_expanded_width)
-            pill_y = stack_top_y + i * (widget_pill_diameter + widget_pill_gap)
-            pill.set_anchor(widget_pill_x, pill_y)
-
         # Text Input (positioned here, ahead of its old spot below, so the
-        # audio pills can be laid out relative to it)
+        # audio pills and widget dock can be laid out relative to it)
         box_width = s(600)
         box_x = win_w // 2 - (box_width // 2)
         box_y = win_h - s(80)
-        self.text_input.setGeometry(box_x, box_y, box_width, s(40))
+        box_height = s(40)
+        self.text_input.setGeometry(box_x, box_y, box_width, box_height)
+
+        # Horizontal row centered in the left margin, vertically centered on the text bar.
+        widget_pill_diameter = s(48)
+        widget_pill_expanded_width = s(170)  # unused: WidgetTogglePill fits its own label width instead
+        widget_dock_left_margin = s(20)
+        widget_dock_bar_gap = s(20)
+
+        self._widget_dock_gap = s(12)
+        self._widget_dock_y = box_y + box_height // 2 - widget_pill_diameter // 2
+        self._widget_dock_center_x = (widget_dock_left_margin + (box_x - widget_dock_bar_gap)) // 2
+
+        for pill in self.widget_toggle_pills:
+            pill.set_sizes(widget_pill_diameter, widget_pill_expanded_width)
+        self._reflow_widget_dock()
 
         # Audio quick-switch pills -- collapsed to small circles, centered as
         # a pair directly above the text bar; each expands outward on hover
@@ -1618,11 +1667,7 @@ class JarvisUI(QWidget):
 
         # Position in center of screen by default
         if is_standalone:
-            # This widget has no Qt parent, same as a toggle_pin()-unpinned
-            # widget -- is_unpinned must say so too, or the pin button/label
-            # lies about its state and mouseMoveEvent's off-screen drag clamp
-            # (which only applies "if self.parent() and not self.is_unpinned")
-            # never engages, letting a widget that looks pinned drag anywhere.
+            # No Qt parent, so is_unpinned must say so too (drives the drag clamp/pin label).
             wrapper.is_unpinned = True
             if hasattr(wrapper, "pin_btn"):
                 wrapper.pin_btn.setText("↧")
@@ -1643,12 +1688,7 @@ class JarvisUI(QWidget):
         
         self.active_widgets[widget_id] = wrapper
         if not getattr(self, '_restoring_ui_state', False):
-            # Skip persisting mid-restore: load_ui_state() can call spawn_widget()
-            # before a widget's saved visibility/pin state has been fully applied
-            # (e.g. it's first spawned while still in overlay, pre-fullscreen), and
-            # saving here would overwrite the on-disk state with that incomplete
-            # snapshot before a later load_ui_state() pass ever reads the real one --
-            # a widget saved visible would come back permanently hidden.
+            # Skip mid-restore: would overwrite on-disk state with an incomplete snapshot.
             self.save_ui_state()
         if self.is_fullscreen:
             if hasattr(wrapper, "title_bar"):
@@ -1680,17 +1720,17 @@ class JarvisUI(QWidget):
 
     def focusInEvent(self, event):
         import logging
-        logging.info(f"[DEBUG FOCUS] JarvisUI focusInEvent. Reason: {event.reason()}")
+        logging.debug(f"[DEBUG FOCUS] JarvisUI focusInEvent. Reason: {event.reason()}")
         super().focusInEvent(event)
 
     def focusOutEvent(self, event):
         import logging
-        logging.info(f"[DEBUG FOCUS] JarvisUI focusOutEvent. Reason: {event.reason()}")
+        logging.debug(f"[DEBUG FOCUS] JarvisUI focusOutEvent. Reason: {event.reason()}")
         super().focusOutEvent(event)
 
     def keyPressEvent(self, event):
         import logging
-        logging.info(f"[DEBUG KEY] JarvisUI keyPressEvent: key={event.key()} text={event.text()}")
+        logging.debug(f"[DEBUG KEY] JarvisUI keyPressEvent: key={event.key()} text={event.text()}")
         super().keyPressEvent(event)
 
     def mousePressEvent(self, event):
@@ -1740,7 +1780,7 @@ class JarvisUI(QWidget):
             return
             
         if mode == "set_fullscreen":
-            logging.info(f"[DEBUG UI] set_fullscreen triggered. is_fullscreen: {getattr(self, 'is_fullscreen', False)}")
+            logging.debug(f"[DEBUG UI] set_fullscreen triggered. is_fullscreen: {getattr(self, 'is_fullscreen', False)}")
             screens = UIScaler.get().get_stable_screens()
             is_monitor_swap = getattr(self, 'is_fullscreen', False)
             old_geom = None
@@ -1869,7 +1909,7 @@ class JarvisUI(QWidget):
             if getattr(self, "calendar_is_open", False):
                 self.router.dispatch("calendar.read")
 
-            logging.info(f"[DEBUG UI] Calling showFullScreen(). Current focus: {self.hasFocus()}")
+            logging.debug(f"[DEBUG UI] Calling showFullScreen(). Current focus: {self.hasFocus()}")
             self.showFullScreen()
             
             if is_monitor_swap:
@@ -1883,14 +1923,14 @@ class JarvisUI(QWidget):
                 self.update()
                 QApplication.processEvents()
                 
-            logging.info(f"[DEBUG UI] After showFullScreen() -> isVisible: {self.isVisible()}, isFullScreen: {self.isFullScreen()}")
+            logging.debug(f"[DEBUG UI] After showFullScreen() -> isVisible: {self.isVisible()}, isFullScreen: {self.isFullScreen()}")
             
             def force_focus():
                 self.setWindowState((self.windowState() & ~Qt.WindowState.WindowMinimized) | Qt.WindowState.WindowActive)
                 self.raise_()
                 self.activateWindow() 
                 self.setFocus()
-                logging.info(f"[DEBUG UI] After delayed activate/focus -> isActiveWindow: {self.isActiveWindow()}, hasFocus: {self.hasFocus()}")
+                logging.debug(f"[DEBUG UI] After delayed activate/focus -> isActiveWindow: {self.isActiveWindow()}, hasFocus: {self.hasFocus()}")
             
             # Delay focus grab slightly on Wayland to allow compositor to map the fullscreen surface
             QTimer.singleShot(150, force_focus)
@@ -1929,6 +1969,7 @@ class JarvisUI(QWidget):
             self.btn_todos.hide()
             self.btn_settings.hide()
             self.btn_updates.hide()
+            self.btn_debug.hide()
             self.btn_calendar.hide()
             self.pill_mic.hide()
             self.pill_speaker.hide()
@@ -2127,19 +2168,7 @@ class JarvisUI(QWidget):
                     is_visible = info.get("visible", False)
                     pos = info.get("pos")
                     size = info.get("size")
-                    # set_ui_mode('set_fullscreen') calls load_ui_state() on every
-                    # manual overlay -> fullscreen switch, not just at boot -- a
-                    # widget that's already alive in memory (e.g. hidden by
-                    # set_overlay a moment ago) must keep its live show/hide
-                    # state rather than being reconfigured from a stale
-                    # on-disk snapshot (typically 'everything hidden', saved
-                    # during that same overlay transition). This only guards
-                    # visibility below, NOT pos/size/pin: a genuine reboot
-                    # restore spawns a widget in an earlier pass while still
-                    # in overlay (is_fullscreen False, tiny window), and a
-                    # later pass -- once real fullscreen dimensions are known
-                    # -- must still be able to reposition/re-clamp it even
-                    # though it "already exists" from that earlier pass.
+                    # Guards visibility only (not pos/size/pin) against a stale on-disk snapshot below.
                     already_existed = widget_id in self.active_widgets
 
                     if widget_id == "widget_media_controls":
