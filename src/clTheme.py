@@ -1,4 +1,6 @@
 class Theme:
+    _icon_cache = {}
+
     # Colors
     C_PRIMARY = "#ffaa00"
     C_PRIMARY_HOVER = "#ffcc00"
@@ -85,7 +87,38 @@ class Theme:
                 height: 0px;
             }}
         """
-        
+
+    @classmethod
+    def get_icon(cls, filename: str, size: int, color: str = None):
+        """Loads assets/icons/<filename>, recolors its fill (default C_PRIMARY),
+        and returns a QIcon at size x size. Shared by every plain QPushButton
+        icon (IconPill has its own copy for pill-specific caching needs)."""
+        import os
+        cache_key = (filename, size, color or cls.C_PRIMARY)
+        if cache_key in cls._icon_cache:
+            return cls._icon_cache[cache_key]
+
+        import re
+        from PyQt6.QtCore import QByteArray, Qt
+        from PyQt6.QtGui import QIcon, QPainter, QPixmap
+        from PyQt6.QtSvg import QSvgRenderer
+
+        icon_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "icons")
+        with open(os.path.join(icon_dir, filename), "r", encoding="utf-8") as f:
+            svg_text = f.read()
+        svg_text = re.sub(r'fill="#[0-9a-fA-F]{3,8}"', f'fill="{color or cls.C_PRIMARY}"', svg_text)
+
+        renderer = QSvgRenderer(QByteArray(svg_text.encode("utf-8")))
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        renderer.render(painter)
+        painter.end()
+
+        icon = QIcon(pixmap)
+        cls._icon_cache[cache_key] = icon
+        return icon
+
     @classmethod
     def get_style(cls, component, **kwargs):
         if component == "TitleLabel":
@@ -159,12 +192,12 @@ class Theme:
             return f"color: {cls.C_PRIMARY}; font-size: 10px; font-weight: 800; letter-spacing: 1px; border: none; background: transparent;"
         elif component == "MediaSmallBtn":
             return f"""
-                QPushButton {{ text-align: center; padding-bottom: 4px; background-color: rgba(35, 18, 5, 0.8); color: {cls.C_PRIMARY}; border-radius: 16px; border: 1px solid rgba(255, 160, 0, 0.4); font-size: {cls.F_SMALL}; font-family: "Segoe UI Symbol", sans-serif; }}
-                QPushButton:hover {{ background-color: rgba(255, 150, 0, 0.35); color: #ffffff; border: 1px solid {cls.C_PRIMARY}; }}
+                QPushButton {{ background-color: rgba(35, 18, 5, 0.8); border-radius: 16px; border: 1px solid rgba(255, 160, 0, 0.4); }}
+                QPushButton:hover {{ background-color: rgba(255, 150, 0, 0.35); border: 1px solid {cls.C_PRIMARY}; }}
             """
         elif component == "MediaPlayBtn":
             return f"""
-                QPushButton {{ text-align: center; padding-bottom: 4px; background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ff8c00, stop:1 #e65c00); color: #ffffff; border-radius: 20px; border: 1px solid #ffcc66; font-size: {cls.F_LARGE}; font-weight: bold; font-family: "Segoe UI Symbol", sans-serif; }}
+                QPushButton {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ff8c00, stop:1 #e65c00); border-radius: 20px; border: 1px solid #ffcc66; }}
                 QPushButton:hover {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ffa01a, stop:1 #ff701a); }}
             """
         elif component == "RefreshButton":

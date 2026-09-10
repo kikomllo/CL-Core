@@ -3,7 +3,7 @@ import logging
 from clTheme import Theme
 from utils.clActionRouter import ActionRouter
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QTimer, QSize
 from clUIScaler import UIScaler
 from ui.clMarqueeLabel import MarqueeLabel
 
@@ -52,18 +52,24 @@ class MediaWidget(QWidget):
         self.controls_layout = QHBoxLayout()
         self.controls_layout.setSpacing(s(18))
         
-        self.prev_btn = QPushButton("<<")
+        self.prev_btn = QPushButton()
         self.prev_btn.setFixedSize(32, 32)
+        self.prev_btn.setIcon(Theme.get_icon("skip_back.svg", 16))
+        self.prev_btn.setIconSize(QSize(16, 16))
         self.prev_btn.setStyleSheet(Theme.get_style("MediaSmallBtn"))
         self.prev_btn.clicked.connect(lambda: self.send_cmd("prev", silent=True))
-        
-        self.play_btn = QPushButton("▶")
+
+        self.play_btn = QPushButton()
         self.play_btn.setFixedSize(40, 40)
+        self.play_btn.setIcon(Theme.get_icon("play.svg", 18, "#ffffff"))
+        self.play_btn.setIconSize(QSize(18, 18))
         self.play_btn.setStyleSheet(Theme.get_style("MediaPlayBtn"))
         self.play_btn.clicked.connect(self.toggle_optimistic)
-        
-        self.next_btn = QPushButton(">>")
+
+        self.next_btn = QPushButton()
         self.next_btn.setFixedSize(32, 32)
+        self.next_btn.setIcon(Theme.get_icon("skip_forward.svg", 16))
+        self.next_btn.setIconSize(QSize(16, 16))
         self.next_btn.setStyleSheet(Theme.get_style("MediaSmallBtn"))
         self.next_btn.clicked.connect(lambda: self.send_cmd("next", silent=True))
         
@@ -102,7 +108,7 @@ class MediaWidget(QWidget):
         
     def toggle_optimistic(self):
         self.status = "Paused" if self.status == "Playing" else "Playing"
-        self.play_btn.setText("⏸" if self.status == "Playing" else "▶")
+        self.play_btn.setIcon(Theme.get_icon("pause.svg" if self.status == "Playing" else "play.svg", 18, "#ffffff"))
         self.send_cmd("toggle", silent=True)
 
     def _tick(self):
@@ -141,7 +147,7 @@ class MediaWidget(QWidget):
         self.artist_lbl.setText(artist)
         
         self._update_time_label()
-        self.play_btn.setText("⏸" if self.status == "Playing" else "▶")
+        self.play_btn.setIcon(Theme.get_icon("pause.svg" if self.status == "Playing" else "play.svg", 18, "#ffffff"))
 
 
     def get_standalone_min_size(self):

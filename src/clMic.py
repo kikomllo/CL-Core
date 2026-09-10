@@ -98,10 +98,12 @@ class VoiceSensor:
         self.ring_buffer: Deque[np.ndarray] = collections.deque(maxlen=30) # <--- ADD THIS HERE
         self.last_vol_publish: float = 0.0
         self._wakeword_debug_frames: list = []  # see _save_wakeword_debug_clip
+        self._wakeword_peak_score: float = 0.0  # highest score seen this attempt; filters noise from debug saves
 
         self.attention_multiplier = self._load_attention_multiplier()
         self.target_input_device = self._load_initial_input_device()
-        self.debug_wakeword_diagnostics: bool = self._load_debug_flag("wakeword_diagnostics")
+        self.debug_wakeword_logging: bool = self._load_debug_flag("wakeword_debug_logging")
+        self.debug_wakeword_saving: bool = self._load_debug_flag("wakeword_debug_saving")
         self.capture_wakeword_positive: bool = self._load_debug_flag("capture_wakeword_positive")
 
         with silence_c_errors():
@@ -195,12 +197,15 @@ class VoiceSensor:
 
         if msg.topic == "jarvis/sys/debug_control":
             flag = payload.get("flag")
-            if flag == "wakeword_diagnostics":
-                self.debug_wakeword_diagnostics = bool(payload.get("enabled"))
+            if flag == "wakeword_debug_logging":
+                self.debug_wakeword_logging = bool(payload.get("enabled"))
+            elif flag == "wakeword_debug_saving":
+                self.debug_wakeword_saving = bool(payload.get("enabled"))
             elif flag == "capture_wakeword_positive":
                 self.capture_wakeword_positive = bool(payload.get("enabled"))
-            if not (self.debug_wakeword_diagnostics or self.capture_wakeword_positive):
+            if not (self.debug_wakeword_saving or self.capture_wakeword_positive):
                 self._wakeword_debug_frames = []
+                self._wakeword_peak_score = 0.0
 
         elif msg.topic == "jarvis/sys/audio_process":
             if payload.get("state") == "idle":
@@ -469,7 +474,7 @@ class VoiceSensor:
         """Dumps every chunk fed to the wake word model during one
         activation attempt to a WAV, so it can be inspected or replayed
         offline -- wake word audio otherwise never touches disk, unlike
-        PTT/dispatched commands. Gated by debug_wakeword_diagnostics."""
+        PTT/dispatched commands. Gated by debug_wakeword_saving."""
         try:
             scratch_dir = os.path.join(self.base_dir, "..", "data", "scratch")
             path = self._write_wakeword_frames_to_wav(scratch_dir, f"wakeword_debug_{int(time.time()*1000)}.wav")
@@ -666,9 +671,9 @@ class VoiceSensor:
 
             if not bypass_wakeword:
                 model_ran = False
-                capture_frames = self.debug_wakeword_diagnostics or self.capture_wakeword_positive
+                capture_frames = self.debug_wakeword_saving or self.capture_wakeword_positive
                 if current_rms > a_thresh:
-                    if self.debug_wakeword_diagnostics and self.vad_hangtime <= 0:
+                    if self.debug_wakeword_logging and self.vad_hangtime <= 0:
                         logging.debug(f"[WAKEWORD] Activation threshold crossed: rms={current_rms:.0f} > thresh={a_thresh:.0f}")
                     self.vad_hangtime = 15
                     while self.pre_speech_buffer:
@@ -689,16 +694,21 @@ class VoiceSensor:
                     model_ran = True
 
                 else:
-                    if self.debug_wakeword_diagnostics and self._wakeword_debug_frames:
+                    # Only worth saving if the model saw something even faintly
+                    # wake-word-like -- pure noise (keyboard clicks, etc.) that
+                    # never nudges the score at all has no diagnostic value.
+                    if self.debug_wakeword_saving and self._wakeword_debug_frames and self._wakeword_peak_score >= 0.01:
                         self._save_wakeword_debug_clip()
                     self._wakeword_debug_frames = []
+                    self._wakeword_peak_score = 0.0
                     self.pre_speech_buffer.append(audio_data)
                     self.oww_model.reset()
 
                 if model_ran:
                     for mdl in self.oww_model.prediction_buffer.keys():
                         score = list(self.oww_model.prediction_buffer[mdl])[-1]
-                        if self.debug_wakeword_diagnostics:
+                        self._wakeword_peak_score = max(self._wakeword_peak_score, score)
+                        if self.debug_wakeword_logging:
                             logging.debug(f"[WAKEWORD] '{mdl}' raw score: {score:.5f}")
                         if score > 0.5:
                             wakeword_triggered = True

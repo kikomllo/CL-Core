@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from clTheme import Theme
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QStackedWidget, QFrame, QScrollArea, QSizePolicy
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QSize
 
 from clCalendarWidget import CalendarWidget
 from ui.clTodoWidget import TodoWidget
@@ -200,12 +200,16 @@ class WidgetCarousel(QWidget):
         nav_layout = QHBoxLayout(self.nav_frame)
         nav_layout.setContentsMargins(s(8), s(3), s(8), s(3))
         
-        self.btn_prev = QPushButton("❮")
+        self.btn_prev = QPushButton()
+        self.btn_prev.setIcon(Theme.get_icon("chevron_left.svg", 16))
+        self.btn_prev.setIconSize(QSize(16, 16))
         self.btn_prev.setStyleSheet(Theme.get_style("TransparentButton"))
         self.btn_prev.setFixedSize(25, 25)
         self.btn_prev.clicked.connect(self.prev_slide)
-        
-        self.btn_next = QPushButton("❯")
+
+        self.btn_next = QPushButton()
+        self.btn_next.setIcon(Theme.get_icon("chevron_right.svg", 16))
+        self.btn_next.setIconSize(QSize(16, 16))
         self.btn_next.setStyleSheet(Theme.get_style("TransparentButton"))
         self.btn_next.setFixedSize(25, 25)
         self.btn_next.clicked.connect(self.next_slide)

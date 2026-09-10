@@ -148,6 +148,133 @@ class TestUiStateRestoreOnStartup:
         assert ui.active_widgets["widget_settings"].is_unpinned is False
 
 
+class TestSaveUiStateNeverClobbersLayoutFromOverlay:
+    """Overlay mode force-hides the drawer and every dashboard widget --
+    that's a transient view change, not the user closing anything. A save
+    taken while collapsed to overlay used to persist that blanket hidden
+    state as if it were real, permanently losing the last real fullscreen
+    layout the moment the user (or an ecosystem restart) touched overlay.
+    save_ui_state() now only lets active_widgets/drawer_open/carousel_tab
+    update while actually in fullscreen; a save from overlay must carry
+    those fields forward from disk untouched."""
+
+    @pytest.fixture(autouse=True)
+    def no_real_mqtt_thread(self, mocker):
+        import clUI
+        mocker.patch.object(clUI.MqttThread, "start")
+
+    def test_saving_from_overlay_preserves_the_last_fullscreen_layout(self, qapp, fake_state_file, mocker):
+        import clUI
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "0"})
+        previous_layout = {
+            "drawer_open": True,
+            "carousel_tab": 2,
+            "reminder_widget": {"visible": True},
+            "active_widgets": {
+                "widget_todo_list": {"visible": True, "pos": [500, 400], "size": [230, 100], "is_unpinned": False}
+            },
+            "current_monitor_idx": 0,
+            "screen_size": [1920, 1080],
+            "is_fullscreen": True
+        }
+        with open(fake_state_file, "w") as f:
+            json.dump(previous_layout, f)
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            ui = clUI.JarvisUI()
+            assert ui.is_fullscreen is False  # cold start always opens in overlay
+            ui.save_ui_state()
+
+        with open(fake_state_file, "r") as f:
+            saved = json.load(f)
+
+        assert saved["is_fullscreen"] is False  # reflects the real current mode
+        assert saved["active_widgets"] == previous_layout["active_widgets"]
+        assert saved["drawer_open"] == previous_layout["drawer_open"]
+        assert saved["carousel_tab"] == previous_layout["carousel_tab"]
+        assert saved["reminder_widget"] == previous_layout["reminder_widget"]
+
+
+class TestTextInputEscapeClearsFocus:
+    """The fullscreen text-command box had no way to lose focus except
+    clicking elsewhere -- Escape is the conventional way out of a focused
+    text field and should just defocus it, not do nothing."""
+
+    @pytest.fixture(autouse=True)
+    def no_real_mqtt_thread(self, mocker):
+        import clUI
+        mocker.patch.object(clUI.MqttThread, "start")
+
+    def test_escape_clears_focus_on_the_text_input(self, qapp, mocker):
+        import clUI
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "0"})
+        ui = clUI.JarvisUI()
+        try:
+            clear_focus = mocker.patch.object(ui.text_input, "clearFocus")
+
+            from PyQt6.QtCore import QEvent
+            from PyQt6.QtGui import QKeyEvent
+            event = QKeyEvent(QEvent.Type.KeyPress, clUI.Qt.Key.Key_Escape, clUI.Qt.KeyboardModifier.NoModifier)
+            consumed = ui.focus_filter.eventFilter(ui.text_input, event)
+
+            clear_focus.assert_called_once()
+            assert consumed is True
+        finally:
+            ui.close()
+
+
+class TestDraggableWidgetUpdateScalingPreservesSize:
+    """update_scaling() runs on every refresh_layout() call, which fires on
+    ANY main-window resize -- an overlay <-> fullscreen transition, a
+    monitor swap, even Wayland's geometry-correction resizes -- regardless
+    of whether this widget's own content actually changed. It used to end
+    with an unconditional adjustSize(), snapping back to the natural
+    minimum content size every time and silently discarding a user's manual
+    drag-resize (or a size just restored from ui_state.json)."""
+
+    def test_a_manually_enlarged_widget_keeps_its_size_after_update_scaling(self, qapp):
+        import clUI
+        from PyQt6.QtWidgets import QLabel
+        content = QLabel("content")
+        wrapper = clUI.DraggableWidget("widget_test", "Test", content)
+        try:
+            wrapper.show()
+
+            natural_hint = wrapper.sizeHint()
+            enlarged_w = natural_hint.width() + 200
+            enlarged_h = natural_hint.height() + 200
+            wrapper.resize(enlarged_w, enlarged_h)
+
+            wrapper.update_scaling()
+
+            assert wrapper.width() == enlarged_w
+            assert wrapper.height() == enlarged_h
+        finally:
+            # A top-level DraggableWidget left showing would otherwise linger
+            # as a real on-screen window for the rest of the test session,
+            # potentially skewing later tests' QCursor/active-screen detection.
+            wrapper.close()
+
+    def test_still_grows_to_fit_if_current_size_is_smaller_than_the_new_hint(self, qapp, mocker):
+        import clUI
+        from PyQt6.QtCore import QSize
+        from PyQt6.QtWidgets import QLabel
+        content = QLabel("content")
+        wrapper = clUI.DraggableWidget("widget_test", "Test", content)
+        try:
+            wrapper.show()
+
+            bigger_hint = QSize(wrapper.width() + 200, wrapper.height() + 200)
+            mocker.patch.object(clUI.DraggableWidget, "sizeHint", return_value=bigger_hint)
+
+            wrapper.update_scaling()
+
+            assert wrapper.width() >= bigger_hint.width()
+            assert wrapper.height() >= bigger_hint.height()
+        finally:
+            wrapper.close()
+
+
 class TestOverlayIdleWidgetCleanup:
     """set_state('IDLE') closes floating widgets while in overlay mode --
     fires naturally any time nothing is actively speaking/listening/
@@ -538,6 +665,59 @@ class TestLoadUiStateClampsStaleUnpinnedPosition:
         assert screen_geom.y() <= w.y() <= screen_geom.y() + screen_geom.height() - 50
 
 
+class TestLoadUiStateRestoresRealPositionOnReboot:
+    """load_ui_state()'s first pass runs during __init__, before the window
+    has resized off its tiny overlay geometry -- scaling a saved position
+    against self.width()/height() there used to crush every widget toward
+    the top-left corner using the overlay box's own tiny dimensions instead
+    of the real monitor. Scaling against self.screen().geometry() instead
+    keeps the restored position proportionate to the actual screen no
+    matter which pass (pre- or post-fullscreen-resize) applies it."""
+
+    @pytest.fixture(autouse=True)
+    def no_real_mqtt_thread(self, mocker):
+        import clUI
+        mocker.patch.object(clUI.MqttThread, "start")
+
+    def test_widget_lands_near_its_saved_position_not_crushed_to_top_left(self, qapp, fake_state_file, mocker):
+        import clUI
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "1"})
+
+        # set_ui_mode("set_fullscreen") picks its target monitor from the
+        # live mouse cursor position, which this test doesn't control (and
+        # must not try to mock -- QCursor.pos is a sip/C++-bound static
+        # method, and patching it crashes the process rather than raising a
+        # normal Python exception). Deriving the expected geometry from a
+        # throwaway construction, back-to-back with the real one, keeps both
+        # self-consistent even though the exact monitor picked can vary
+        # between separate test runs on a multi-monitor machine.
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            probe = clUI.JarvisUI()
+            screen_geom = probe.screen().geometry()
+            probe.close()
+
+        saved_x = screen_geom.x() + int(screen_geom.width() * 0.6)
+        saved_y = screen_geom.y() + int(screen_geom.height() * 0.6)
+        with open(fake_state_file, "w") as f:
+            json.dump({
+                "is_fullscreen": True, "current_monitor_idx": 0,
+                "screen_size": [screen_geom.width(), screen_geom.height()],
+                "active_widgets": {
+                    "widget_todo_list": {"visible": True, "pos": [saved_x, saved_y], "size": [230, 100], "is_unpinned": False}
+                }
+            }, f)
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            ui = clUI.JarvisUI()
+
+        w = ui.active_widgets["widget_todo_list"]
+        # Same screen, same resolution saved -- position should come back
+        # essentially unchanged, not crushed toward (0, 0) by the overlay
+        # window's own tiny size.
+        assert abs(w.x() - saved_x) < 20
+        assert abs(w.y() - saved_y) < 20
+
+
 class TestLoadUiStateDoesNotClobberVisibilityMidRestore:
     """A reboot with saved is_fullscreen=True runs load_ui_state() twice:
     once in __init__ (while is_fullscreen is still False, pre-transition)
@@ -648,6 +828,41 @@ class TestOverlaySwitchHidesDebugButton:
 
             ui.set_ui_mode("set_overlay")
             assert ui.btn_debug.isHidden()
+
+
+class TestClosedWidgetStaysClosedAcrossOverlayRoundTrip:
+    """close_draggable_widget() used to only hide the widget, never drop it
+    from active_widgets. Every _toggle_* method treats 'in active_widgets'
+    as 'currently open', and set_ui_mode('set_fullscreen') unconditionally
+    re-shows everything still in that dict on the way back from overlay --
+    so a widget the user had actually closed silently reappeared the next
+    time they returned to fullscreen from overlay."""
+
+    @pytest.fixture(autouse=True)
+    def no_real_mqtt_thread(self, mocker):
+        import clUI
+        mocker.patch.object(clUI.MqttThread, "start")
+
+    def test_a_closed_widget_does_not_reappear_after_an_overlay_round_trip(self, qapp, fake_state_file, mocker):
+        import clUI
+        from PyQt6.QtWidgets import QLabel
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "0"})
+        with open(fake_state_file, "w") as f:
+            json.dump({"is_fullscreen": False, "current_monitor_idx": 0, "active_widgets": {}}, f)
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            ui = clUI.JarvisUI()
+            ui.set_ui_mode("set_fullscreen")
+            ui.spawn_widget("widget_updates", "System Updates", QLabel("content"))
+            assert "widget_updates" in ui.active_widgets
+
+            ui.close_draggable_widget("widget_updates")
+            assert "widget_updates" not in ui.active_widgets
+
+            ui.set_ui_mode("set_overlay")
+            ui.set_ui_mode("set_fullscreen")
+
+            assert "widget_updates" not in ui.active_widgets
 
 
 class TestSpawnWidgetMainWindowReference:

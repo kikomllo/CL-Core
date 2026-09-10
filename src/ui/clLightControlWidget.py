@@ -2,7 +2,7 @@ import json
 import logging
 from clTheme import Theme
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QTimer, QSize
 from utils.clActionRouter import ActionRouter
 from clUIScaler import UIScaler
 
@@ -22,8 +22,10 @@ class LightControlWidget(QWidget):
         self.title_lbl = QLabel("Smart Lights")
         self.title_lbl.setStyleSheet(Theme.get_style("TitleLabel"))
         
-        self.refresh_btn = QPushButton("⟳")
+        self.refresh_btn = QPushButton()
         self.refresh_btn.setFixedSize(30, 30)
+        self.refresh_btn.setIcon(Theme.get_icon("refresh.svg", 16))
+        self.refresh_btn.setIconSize(QSize(16, 16))
         self.refresh_btn.setStyleSheet(Theme.get_style("RefreshButton"))
         self.refresh_btn.clicked.connect(lambda: self.send_cmd("refresh_lights", "all"))
         
@@ -68,7 +70,7 @@ class LightControlWidget(QWidget):
             if "indicator" in row_data:
                 row_data["indicator"].setFixedWidth(22)
             if "toggle_btn" in row_data:
-                row_data["toggle_btn"].setFixedHeight(26)
+                row_data["toggle_btn"].setFixedSize(26, 26)
             if "delete_btn" in row_data:
                 row_data["delete_btn"].setFixedSize(26, 26)
         if hasattr(self, 'lights_container'):
@@ -177,13 +179,18 @@ class LightControlWidget(QWidget):
                 name_lbl = QLabel(l.get("name", "Unknown"))
                 name_lbl.setStyleSheet(Theme.get_style("SubtitleLabel"))
                 
-                toggle_btn = QPushButton("Toggle")
-                toggle_btn.setFixedHeight(26)
-                toggle_btn.setStyleSheet(Theme.get_style("SecondaryButton") + " font-size: 9pt; padding: 0;")
+                toggle_btn = QPushButton()
+                toggle_btn.setFixedSize(26, 26)
+                toggle_btn.setIcon(Theme.get_icon("power.svg", 14))
+                toggle_btn.setIconSize(QSize(14, 14))
+                toggle_btn.setToolTip("Toggle")
+                toggle_btn.setStyleSheet(Theme.get_style("SecondaryButton") + " padding: 0;")
                 toggle_btn.clicked.connect(lambda checked, t=target_name: self.send_cmd("toggle", t, silent=True))
-                
-                delete_btn = QPushButton("X")
+
+                delete_btn = QPushButton()
                 delete_btn.setFixedSize(26, 26)
+                delete_btn.setIcon(Theme.get_icon("close.svg", 14))
+                delete_btn.setIconSize(QSize(14, 14))
                 delete_btn.setToolTip("Remove light")
                 delete_btn.setStyleSheet(Theme.get_style("SmallDangerButton"))
                 delete_btn.clicked.connect(lambda checked, t=target_name: self._delete_light(t))

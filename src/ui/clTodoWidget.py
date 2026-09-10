@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QLineEdit, QPushButton, QCheckBox, QTabWidget, QInputDialog, QStackedWidget, QSizePolicy
 )
 from clUIScaler import UIScaler
-from PyQt6.QtCore import Qt, QPoint
+from PyQt6.QtCore import Qt, QPoint, QSize
 
 def s(val):
     return UIScaler.get().scale(val)
@@ -27,8 +27,10 @@ class TodoWidget(QWidget):
         self.tabs.setUsesScrollButtons(True)
         self.tabs.setStyleSheet(Theme.get_style("TodoTabs"))
         self.layout.addWidget(self.tabs, stretch=1)
-        self.btn_add_list = QPushButton("+")
+        self.btn_add_list = QPushButton()
         self.btn_add_list.setFixedSize(24, 24)
+        self.btn_add_list.setIcon(Theme.get_icon("add.svg", 16))
+        self.btn_add_list.setIconSize(QSize(16, 16))
         self.btn_add_list.setStyleSheet(Theme.get_style("TransparentButton"))
         self.btn_add_list.clicked.connect(self.prompt_new_list)
         self.tabs.setCornerWidget(self.btn_add_list)
@@ -65,8 +67,10 @@ class TodoWidget(QWidget):
         self.bottom_layout.setSpacing(s(10))
         self.bottom_layout.addWidget(self.bottom_stack, stretch=1)
         
-        self.btn_delete_list = QPushButton("X")
+        self.btn_delete_list = QPushButton()
         self.btn_delete_list.setFixedSize(32, 32)
+        self.btn_delete_list.setIcon(Theme.get_icon("close.svg", 16))
+        self.btn_delete_list.setIconSize(QSize(16, 16))
         self.btn_delete_list.setToolTip("Delete List")
         self.btn_delete_list.setStyleSheet(Theme.get_style("DangerButton"))
         

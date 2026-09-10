@@ -548,9 +548,14 @@ class SettingsWidget(QWidget):
 
         debug_layout.addWidget(self._create_section_label("Diagnostics (console spam, off by default)"))
         debug_layout.addWidget(self._create_checkbox(
-            "wakeword_diagnostics", "Wake Word Diagnostics (confidence logs + saved clips)",
-            debug_flags.get("wakeword_diagnostics", False),
-            lambda state: self._toggle_debug_flag("wakeword_diagnostics", state)
+            "wakeword_debug_logging", "Wake Word Confidence Logs",
+            debug_flags.get("wakeword_debug_logging", False),
+            lambda state: self._toggle_debug_flag("wakeword_debug_logging", state)
+        ))
+        debug_layout.addWidget(self._create_checkbox(
+            "wakeword_debug_saving", "Wake Word Debug Clips (saved to data/scratch)",
+            debug_flags.get("wakeword_debug_saving", False),
+            lambda state: self._toggle_debug_flag("wakeword_debug_saving", state)
         ))
 
         debug_layout.addWidget(self._create_section_label("Training Data Capture (for future model retraining)"))

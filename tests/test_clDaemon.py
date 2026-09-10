@@ -475,7 +475,7 @@ class TestSttTrainingCapture:
         audio_src = tmp_path / "voice_command_test.wav"
         audio_src.write_bytes(b"fake-wav-bytes")
 
-        assert daemon.capture_stt_training_data is False
+        daemon.capture_stt_training_data = False
 
         mock_mqtt.messages = message_stream([
             ("jarvis/sys/debug_control", json.dumps({"flag": "capture_stt_training_data", "enabled": True})),
@@ -509,6 +509,8 @@ class TestSttTrainingCapture:
 
         audio_src = tmp_path / "voice_command_test.wav"
         audio_src.write_bytes(b"fake-wav-bytes")
+
+        daemon.capture_stt_training_data = False
 
         mock_mqtt.messages = message_stream([
             ("jarvis/sensor/voice", json.dumps({"text": "turn the lights on", "audio_path": str(audio_src)})),

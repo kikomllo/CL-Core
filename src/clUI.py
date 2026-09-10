@@ -295,14 +295,18 @@ class DraggableWidget(QWidget):
                 title_layout.addStretch()
                 
             if closable:
-                self.pin_btn = QPushButton("↥")
+                self.pin_btn = QPushButton()
                 self.pin_btn.setFixedSize(22, 22)
+                self.pin_btn.setIcon(Theme.get_icon("pin_off.svg", 13))
+                self.pin_btn.setIconSize(QSize(13, 13))
                 self.pin_btn.setStyleSheet(Theme.get_style("NotificationCloseBtn"))
                 self.pin_btn.clicked.connect(lambda: self.toggle_pin())
                 title_layout.addWidget(self.pin_btn)
-                
-                btn = QPushButton("X")
+
+                btn = QPushButton()
                 btn.setFixedSize(22, 22)
+                btn.setIcon(Theme.get_icon("close.svg", 13))
+                btn.setIconSize(QSize(13, 13))
                 btn.setStyleSheet(Theme.get_style("NotificationCloseBtn"))
                 btn.clicked.connect(self.close_widget)
                 title_layout.addWidget(btn)
@@ -323,12 +327,22 @@ class DraggableWidget(QWidget):
     def update_scaling(self):
         if hasattr(self, 'content_widget') and hasattr(self.content_widget, 'update_scaling'):
             self.content_widget.update_scaling()
-            
-        s = UIScaler.get().scale
+
         if hasattr(self, 'title_bar'):
             self.title_bar.setFixedHeight(24)
-            
-        self.adjustSize()
+
+        # Grow to fit the freshly-rescaled content if it no longer fits, but
+        # never shrink -- adjustSize() unconditionally snapped back to the
+        # natural minimum size here, and refresh_layout() (which calls this)
+        # fires on every window resize, including an overlay transition or a
+        # monitor swap that doesn't actually change this widget's content at
+        # all -- silently discarding a user's manual drag-resize or a size
+        # just restored from ui_state.json.
+        hint = self.sizeHint()
+        new_w = max(self.width(), hint.width())
+        new_h = max(self.height(), hint.height())
+        if (new_w, new_h) != (self.width(), self.height()):
+            self.resize(new_w, new_h)
 
     def close_widget(self):
         parent_ui = self.main_window if self.is_unpinned else self.parent()
@@ -354,7 +368,7 @@ class DraggableWidget(QWidget):
             self.setParent(None, Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool)
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
             if hasattr(self, 'pin_btn'):
-                self.pin_btn.setText("↧")
+                self.pin_btn.setIcon(Theme.get_icon("pin.svg", 13))
             self.move(global_pos)
         else:
             global_pos = self.pos()
@@ -373,8 +387,8 @@ class DraggableWidget(QWidget):
                 self.setParent(None, Qt.WindowType.Widget)
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
             if hasattr(self, 'pin_btn'):
-                self.pin_btn.setText("↥")
-                
+                self.pin_btn.setIcon(Theme.get_icon("pin_off.svg", 13))
+
         if hasattr(self, 'resizeUnscaled'):
             self.resizeUnscaled(current_size.width(), current_size.height())
         else:
@@ -1083,6 +1097,9 @@ class JarvisUI(QWidget):
                 elif event.type() == QEvent.Type.FocusOut:
                     import logging
                     logging.debug(f"[DEBUG FOCUS] text_input focusOutEvent. Reason: {event.reason()}")
+                elif event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
+                    obj.clearFocus()
+                    return True
                 return False
 
         self.focus_filter = FocusFilter()
@@ -1134,7 +1151,9 @@ class JarvisUI(QWidget):
         self.pill_speaker = AudioQuickSwitchPill("output", grow_direction="right", parent=self)
         self.pill_speaker.hide()
 
-        self.btn_calendar = QPushButton("❮", self)
+        self.btn_calendar = QPushButton(self)
+        self.btn_calendar.setIcon(Theme.get_icon("chevron_left.svg", 14))
+        self.btn_calendar.setIconSize(QSize(14, 14))
         self.btn_calendar.setStyleSheet(Theme.get_style("CalendarButton"))
         self.btn_calendar.clicked.connect(self._toggle_calendar)
         self.btn_calendar.hide()
@@ -1168,13 +1187,17 @@ class JarvisUI(QWidget):
 
         # Only restore fullscreen mode -- and any dashboard widgets that were
         # open in it -- on a reboot/crash-recovery/restart (JARVIS_REBOOT=1,
-        # set by clJarvis.py). A cold start always opens clean in overlay:
-        # restoring widgets here too would pop a saved-visible widget like
-        # Settings straight onto the overlay, and since is_fullscreen is
-        # still False at this point, spawn_widget's overlay path would force
-        # it unpinned regardless of what was actually saved.
+        # set by clJarvis.py). Widgets are never restored from this early
+        # call (restore_widgets=False): the window is still sized/positioned
+        # as the tiny overlay box here, so spawn_widget's overlay path would
+        # force every widget unpinned, and the toggle_pin() call that syncs
+        # it back to its saved pinned state clamps its position against
+        # main_window's CURRENT (still tiny) size -- crushing every restored
+        # position toward (0,0). set_ui_mode("set_fullscreen") below does its
+        # own full widget restore once the window is actually at real
+        # fullscreen geometry, which is the only correct place to do it.
         is_reboot = os.environ.get("JARVIS_REBOOT") == "1"
-        saved_state = self.load_ui_state(restore_widgets=is_reboot)
+        saved_state = self.load_ui_state(restore_widgets=False)
 
         if is_reboot and saved_state and saved_state.get("is_fullscreen", False):
             self.set_ui_mode("set_fullscreen")
@@ -1450,7 +1473,7 @@ class JarvisUI(QWidget):
             # Move button
             current_btn_geom = self.btn_calendar.geometry()
             btn_animation.setEndValue(QRect(geom.width() - drawer_width - s(30), current_btn_geom.y(), s(30), s(80)))
-            self.btn_calendar.setText("❯")
+            self.btn_calendar.setIcon(Theme.get_icon("chevron_right.svg", 14))
             
             self.calendar_is_open = True
             
@@ -1463,7 +1486,7 @@ class JarvisUI(QWidget):
             
             current_btn_geom = self.btn_calendar.geometry()
             btn_animation.setEndValue(QRect(geom.width() - 30, current_btn_geom.y(), s(30), s(80)))
-            self.btn_calendar.setText("❮")
+            self.btn_calendar.setIcon(Theme.get_icon("chevron_left.svg", 14))
             
             self.calendar_is_open = False
             
@@ -1670,7 +1693,7 @@ class JarvisUI(QWidget):
             # No Qt parent, so is_unpinned must say so too (drives the drag clamp/pin label).
             wrapper.is_unpinned = True
             if hasattr(wrapper, "pin_btn"):
-                wrapper.pin_btn.setText("↧")
+                wrapper.pin_btn.setIcon(Theme.get_icon("pin.svg", 13))
             # Atomic setParent(None, flags), matching toggle_pin()'s unpin branch --
             # detaches to a real top-level frameless window while main_window
             # (a plain Python attribute, untouched by setParent) still points at self.
@@ -1711,8 +1734,16 @@ class JarvisUI(QWidget):
 
     def close_draggable_widget(self, widget_id):
         if widget_id in self.active_widgets:
-            w = self.active_widgets[widget_id]
+            # Actually drop it, not just hide it -- every _toggle_* method
+            # already treats "in active_widgets" as "currently open" to
+            # decide whether to spawn fresh, and set_ui_mode("set_fullscreen")
+            # unconditionally re-shows everything still in this dict on the
+            # way back from overlay. Leaving a closed widget parked here
+            # (merely hidden) meant it silently came back the next time the
+            # user returned to fullscreen.
+            w = self.active_widgets.pop(widget_id)
             w.hide()
+            w.deleteLater()
             self.save_ui_state()
 
     def update_animation(self):
@@ -1864,7 +1895,7 @@ class JarvisUI(QWidget):
             self.visualizer.lower()
             
             self.refresh_layout(force_monitor_idx=self.current_monitor_idx)
-            self.btn_calendar.setText("❮")
+            self.btn_calendar.setIcon(Theme.get_icon("chevron_left.svg", 14))
             self.calendar_is_open = False
             
             self.btn_media.show()
@@ -1977,7 +2008,7 @@ class JarvisUI(QWidget):
             
             if getattr(self, 'calendar_is_open', False):
                 self.calendar_is_open = False
-                self.btn_calendar.setText("❮")
+                self.btn_calendar.setIcon(Theme.get_icon("chevron_left.svg", 14))
                 if hasattr(self, 'calendar_animation') and self.calendar_animation.state() == QPropertyAnimation.State.Running:
                     self.calendar_animation.stop()
                 self.save_ui_state()
@@ -2097,34 +2128,75 @@ class JarvisUI(QWidget):
 
     def save_ui_state(self):
         try:
-            active_widgets_data = {}
-            for wid, wrapper in self.active_widgets.items():
-                active_widgets_data[wid] = {
-                    "visible": wrapper.isVisible(),
-                    "pos": [wrapper.x(), wrapper.y()],
-                    "size": [wrapper.width(), wrapper.height()],
-                    "is_unpinned": getattr(wrapper, "is_unpinned", False)
+            is_fullscreen = getattr(self, 'is_fullscreen', False)
+
+            if is_fullscreen:
+                active_widgets_data = {}
+                for wid, wrapper in self.active_widgets.items():
+                    active_widgets_data[wid] = {
+                        "visible": wrapper.isVisible(),
+                        "pos": [wrapper.x(), wrapper.y()],
+                        "size": [wrapper.width(), wrapper.height()],
+                        "is_unpinned": getattr(wrapper, "is_unpinned", False)
+                    }
+
+                reminder_data = {
+                    "visible": self.reminder_widget.isVisible() if hasattr(self, 'reminder_widget') else False
                 }
-                
-            reminder_data = {
-                "visible": self.reminder_widget.isVisible() if hasattr(self, 'reminder_widget') else False
-            }
-            
-            carousel_idx = self.calendar_drawer.carousel.stack.currentIndex() if hasattr(self, 'calendar_drawer') else 0
-            
+
+                drawer_open = getattr(self, 'calendar_is_open', False)
+                carousel_idx = self.calendar_drawer.carousel.stack.currentIndex() if hasattr(self, 'calendar_drawer') else 0
+
+                # The real monitor resolution, not self.width()/height() --
+                # saving while collapsed to the tiny overlay box would
+                # otherwise pair every widget's real (fullscreen) position
+                # with a tiny "canvas" size, corrupting the scale math on the
+                # next restore.
+                target_screen = self.screen()
+                screen_size = [target_screen.geometry().width(), target_screen.geometry().height()] if target_screen else [self.width(), self.height()]
+                current_monitor_idx = getattr(self, 'current_monitor_idx', 0)
+            else:
+                # Overlay force-hides every widget/drawer -- that's a
+                # transient view change, not the user closing anything, so a
+                # save made here must carry the last real fullscreen layout
+                # forward unchanged instead of overwriting it with "nothing
+                # is visible, everything is at overlay's tiny geometry".
+                existing = {}
+                if os.path.exists(STATE_FILE):
+                    try:
+                        with open(STATE_FILE, "r", encoding="utf-8") as f:
+                            existing = json.load(f)
+                    except Exception:
+                        existing = {}
+                active_widgets_data = existing.get("active_widgets", {})
+                reminder_data = existing.get("reminder_widget", {"visible": False})
+                drawer_open = existing.get("drawer_open", False)
+                carousel_idx = existing.get("carousel_tab", 0)
+                screen_size = existing.get("screen_size", [self.width(), self.height()])
+                current_monitor_idx = existing.get("current_monitor_idx", getattr(self, 'current_monitor_idx', 0))
+
             state_payload = {
-                "drawer_open": getattr(self, 'calendar_is_open', False),
+                "drawer_open": drawer_open,
                 "carousel_tab": carousel_idx,
                 "reminder_widget": reminder_data,
                 "active_widgets": active_widgets_data,
-                "current_monitor_idx": getattr(self, 'current_monitor_idx', 0),
-                "screen_size": [self.width(), self.height()],
-                "is_fullscreen": getattr(self, 'is_fullscreen', False)
+                "current_monitor_idx": current_monitor_idx,
+                "screen_size": screen_size,
+                "is_fullscreen": is_fullscreen
             }
-            
+
+            # Write via a temp file + atomic replace -- stop_native() kills this
+            # process outright (TerminateProcess on Windows) shortly after
+            # requesting this save, and a write caught mid-flush would leave
+            # truncated/corrupt JSON that silently fails to load on the next
+            # boot, discarding the whole saved session back to a cold overlay.
             os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-            with open(STATE_FILE, "w", encoding="utf-8") as f:
+            tmp_path = STATE_FILE + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(state_payload, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, STATE_FILE)
         except Exception as e:
             logging.error(f"Failed to save UI state: {e}")
 
@@ -2195,25 +2267,34 @@ class JarvisUI(QWidget):
                     if widget_id in self.active_widgets:
                         w = self.active_widgets[widget_id]
 
+                        # Scale against the real target monitor's resolution, not
+                        # self.width()/height() -- on a reboot this runs while the
+                        # window is still sized as the tiny overlay box (pre-
+                        # fullscreen transition), which used to crush every saved
+                        # position toward (0,0).
+                        target_screen = self.screen()
+                        canvas_w = target_screen.geometry().width() if target_screen else self.width()
+                        canvas_h = target_screen.geometry().height() if target_screen else self.height()
+
                         if pos and len(pos) == 2:
                             prev_screen = state.get("screen_size", [1920, 1080]) # Fallback for old states
-                            scale_x = self.width() / max(1, prev_screen[0])
-                            scale_y = self.height() / max(1, prev_screen[1])
+                            scale_x = canvas_w / max(1, prev_screen[0])
+                            scale_y = canvas_h / max(1, prev_screen[1])
 
                             p_x = int(pos[0] * scale_x)
                             p_y = int(pos[1] * scale_y)
 
                             # Clamp to current screen bounds
-                            p_x = max(0, min(p_x, self.width() - 50))
-                            p_y = max(0, min(p_y, self.height() - 50))
+                            p_x = max(0, min(p_x, canvas_w - 50))
+                            p_y = max(0, min(p_y, canvas_h - 50))
 
                             w.move(p_x, p_y)
 
                         if size and len(size) == 2:
                             # Scale the saved size to match the current monitor proportions just like we do for position
                             prev_screen = state.get("screen_size", [1920, 1080])
-                            scale_x = self.width() / max(1, prev_screen[0])
-                            scale_y = self.height() / max(1, prev_screen[1])
+                            scale_x = canvas_w / max(1, prev_screen[0])
+                            scale_y = canvas_h / max(1, prev_screen[1])
                             s_w = int(size[0] * scale_x)
                             s_h = int(size[1] * scale_y)
                             w.resize(s_w, s_h)

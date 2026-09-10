@@ -28,7 +28,8 @@ class TestMicEdgeCases:
         # Debug flags are loaded from the real config/core.json at construction
         # time, so their actual on-disk value (e.g. left on from manually
         # exploring the Debug tab) must not leak into this test's expectations.
-        sensor.debug_wakeword_diagnostics = False
+        sensor.debug_wakeword_logging = False
+        sensor.debug_wakeword_saving = False
         sensor.capture_wakeword_positive = False
 
         # Helper to simulate incoming MQTT messages
@@ -77,16 +78,24 @@ class TestMicEdgeCases:
         assert sensor.pending_input_device_change is True
         assert sensor.target_input_device == "USB Mic"
 
-        # Test live debug flag toggle (Settings UI -> debug_control)
-        assert sensor.debug_wakeword_diagnostics is False
-        send_mqtt("jarvis/sys/debug_control", '{"flag": "wakeword_diagnostics", "enabled": true}')
-        assert sensor.debug_wakeword_diagnostics is True
+        # Test live debug flag toggles (Settings UI -> debug_control) -- logging
+        # and saving are independent, since the logs are console spam the user
+        # may want off while still saving clips (or vice versa).
+        assert sensor.debug_wakeword_logging is False
+        send_mqtt("jarvis/sys/debug_control", '{"flag": "wakeword_debug_logging", "enabled": true}')
+        assert sensor.debug_wakeword_logging is True
+        send_mqtt("jarvis/sys/debug_control", '{"flag": "wakeword_debug_logging", "enabled": false}')
+        assert sensor.debug_wakeword_logging is False
+
+        assert sensor.debug_wakeword_saving is False
+        send_mqtt("jarvis/sys/debug_control", '{"flag": "wakeword_debug_saving", "enabled": true}')
+        assert sensor.debug_wakeword_saving is True
 
         # Turning it back off mid-attempt discards whatever was buffered
-        # rather than saving a stale clip once diagnostics resume later.
+        # rather than saving a stale clip once saving resumes later.
         sensor._wakeword_debug_frames.append(np.zeros(10, dtype=np.int16))
-        send_mqtt("jarvis/sys/debug_control", '{"flag": "wakeword_diagnostics", "enabled": false}')
-        assert sensor.debug_wakeword_diagnostics is False
+        send_mqtt("jarvis/sys/debug_control", '{"flag": "wakeword_debug_saving", "enabled": false}')
+        assert sensor.debug_wakeword_saving is False
         assert sensor._wakeword_debug_frames == []
 
         # Test the training-capture flag toggles independently
@@ -96,12 +105,12 @@ class TestMicEdgeCases:
 
         # Buffered frames must survive disabling ONE flag while the other is
         # still on -- only clear once BOTH capture reasons are off.
-        sensor.debug_wakeword_diagnostics = True
+        sensor.debug_wakeword_saving = True
         sensor._wakeword_debug_frames.append(np.zeros(10, dtype=np.int16))
         send_mqtt("jarvis/sys/debug_control", '{"flag": "capture_wakeword_positive", "enabled": false}')
         assert sensor.capture_wakeword_positive is False
         assert len(sensor._wakeword_debug_frames) == 1
-        send_mqtt("jarvis/sys/debug_control", '{"flag": "wakeword_diagnostics", "enabled": false}')
+        send_mqtt("jarvis/sys/debug_control", '{"flag": "wakeword_debug_saving", "enabled": false}')
         assert sensor._wakeword_debug_frames == []
 
 
