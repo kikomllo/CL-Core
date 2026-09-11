@@ -641,7 +641,14 @@ class TestLoadUiStateClampsStaleUnpinnedPosition:
 
     def test_stale_offscreen_unpinned_widget_is_clamped_back_onto_screen(self, qapp, fake_state_file, mocker):
         import clUI
+        from PyQt6.QtWidgets import QApplication
         mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "1"})
+        # set_ui_mode("set_fullscreen") picks its target monitor from
+        # wherever the mouse cursor actually is (see _screen_for_cursor) --
+        # pinning it to the primary screen keeps this deterministic
+        # regardless of the real cursor position or monitor count on the
+        # machine running the test.
+        mocker.patch.object(clUI.JarvisUI, "_screen_for_cursor", return_value=QApplication.primaryScreen())
         with open(fake_state_file, "w") as f:
             json.dump({
                 "is_fullscreen": True, "current_monitor_idx": 0, "screen_size": [1920, 1080],
@@ -664,6 +671,9 @@ class TestLoadUiStateClampsStaleUnpinnedPosition:
         assert screen_geom.x() <= w.x() <= screen_geom.x() + screen_geom.width() - 50
         assert screen_geom.y() <= w.y() <= screen_geom.y() + screen_geom.height() - 50
 
+        ui.close()
+        QApplication.processEvents()
+
 
 class TestLoadUiStateRestoresRealPositionOnReboot:
     """load_ui_state()'s first pass runs during __init__, before the window
@@ -681,20 +691,16 @@ class TestLoadUiStateRestoresRealPositionOnReboot:
 
     def test_widget_lands_near_its_saved_position_not_crushed_to_top_left(self, qapp, fake_state_file, mocker):
         import clUI
+        from PyQt6.QtWidgets import QApplication
         mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "1"})
 
-        # set_ui_mode("set_fullscreen") picks its target monitor from the
-        # live mouse cursor position, which this test doesn't control (and
-        # must not try to mock -- QCursor.pos is a sip/C++-bound static
-        # method, and patching it crashes the process rather than raising a
-        # normal Python exception). Deriving the expected geometry from a
-        # throwaway construction, back-to-back with the real one, keeps both
-        # self-consistent even though the exact monitor picked can vary
-        # between separate test runs on a multi-monitor machine.
-        with patch.object(clUI, "STATE_FILE", fake_state_file):
-            probe = clUI.JarvisUI()
-            screen_geom = probe.screen().geometry()
-            probe.close()
+        # set_ui_mode("set_fullscreen") picks its target monitor from
+        # wherever the mouse cursor actually is (see _screen_for_cursor) --
+        # pinning it to the primary screen keeps this deterministic
+        # regardless of the real cursor position or monitor count on the
+        # machine running the test.
+        mocker.patch.object(clUI.JarvisUI, "_screen_for_cursor", return_value=QApplication.primaryScreen())
+        screen_geom = QApplication.primaryScreen().geometry()
 
         saved_x = screen_geom.x() + int(screen_geom.width() * 0.6)
         saved_y = screen_geom.y() + int(screen_geom.height() * 0.6)
@@ -716,6 +722,9 @@ class TestLoadUiStateRestoresRealPositionOnReboot:
         # window's own tiny size.
         assert abs(w.x() - saved_x) < 20
         assert abs(w.y() - saved_y) < 20
+
+        ui.close()
+        QApplication.processEvents()
 
 
 class TestLoadUiStateDoesNotClobberVisibilityMidRestore:

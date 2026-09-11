@@ -4,7 +4,7 @@ import json
 import math
 import random
 import paho.mqtt.client as mqtt
-from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton
+from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QGraphicsDropShadowEffect, QStackedLayout
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPointF, QPoint, QSize, QFileSystemWatcher, QPropertyAnimation, QEasingCurve, QRect, pyqtProperty
 from datetime import datetime
 import paho.mqtt.publish as publish
@@ -62,11 +62,12 @@ class MqttThread(QThread):
     state_change_signal = pyqtSignal(str)
     ui_mode_signal = pyqtSignal(str)
     media_status_signal = pyqtSignal(dict)
+    app_volumes_signal = pyqtSignal(dict)
     light_status_signal = pyqtSignal(dict)
     feedback_signal = pyqtSignal(dict)
     todo_status_signal = pyqtSignal(dict)
     calendar_status_signal = pyqtSignal(dict)
-    
+
     def __init__(self, mode="overlay"):
         super().__init__()
         self.router = ActionRouter()
@@ -124,6 +125,7 @@ class MqttThread(QThread):
         client.subscribe("jarvis/sys/volume")
         client.subscribe("jarvis/sys/state_change")
         client.subscribe("jarvis/sys/media_status")
+        client.subscribe("jarvis/sys/app_volumes")
         client.subscribe("jarvis/sys/light_status")
         client.subscribe("jarvis/feedback")
         client.subscribe("jarvis/sys/todo/status")
@@ -148,10 +150,11 @@ class MqttThread(QThread):
             "jarvis/sys/ui_control": self._handle_ui_control,
             "jarvis/sys/state_change": self._handle_state_change,
             "jarvis/sys/media_status": self._handle_media_status,
+            "jarvis/sys/app_volumes": self._handle_app_volumes,
             "jarvis/sys/light_status": self._handle_light_status,
             "jarvis/feedback": self._handle_feedback,
             "jarvis/sys/todo/status": self._handle_todo_status,
-            "jarvis/sys/calendar/status": self._handle_calendar_status
+            "jarvis/sys/calendar/status": self._handle_calendar_status,
         }
         
         handler = handlers.get(topic)
@@ -172,6 +175,10 @@ class MqttThread(QThread):
 
     def _handle_media_status(self, payload):
         self.media_status_signal.emit(payload)
+
+    def _handle_app_volumes(self, payload):
+        if isinstance(payload, dict):
+            self.app_volumes_signal.emit(payload)
 
     def _handle_feedback(self, payload):
         self.feedback_signal.emit(payload)
@@ -286,7 +293,28 @@ class DraggableWidget(QWidget):
             self.title_bar.setStyleSheet(Theme.get_style("NotificationTitleBar"))
             title_layout = QHBoxLayout(self.title_bar)
             title_layout.setContentsMargins(10, 0, 5, 0)
-            
+
+            # Small glowing accent dot -- QSS has no box-shadow equivalent, so
+            # two labels stacked on the same spot approximate a layered CSS
+            # glow (tight core + soft outer halo); a single
+            # QGraphicsDropShadowEffect can only paint one layer.
+            dot_holder = QWidget()
+            dot_holder.setFixedSize(6, 6)
+            dot_stack = QStackedLayout(dot_holder)
+            dot_stack.setStackingMode(QStackedLayout.StackingMode.StackAll)
+            dot_stack.setContentsMargins(0, 0, 0, 0)
+            for blur, alpha, color in ((16, 82, (255, 140, 0)), (6, 166, (255, 170, 0))):
+                dot = QLabel()
+                dot.setStyleSheet(f"background: {Theme.C_PRIMARY}; border-radius: 3px;")
+                glow_effect = QGraphicsDropShadowEffect(dot)
+                glow_effect.setBlurRadius(blur)
+                glow_effect.setOffset(0, 0)
+                glow_effect.setColor(QColor(*color, alpha))
+                dot.setGraphicsEffect(glow_effect)
+                dot_stack.addWidget(dot)
+            title_layout.addWidget(dot_holder)
+            title_layout.addSpacing(7)
+
             if title:
                 lbl = QLabel(title)
                 lbl.setStyleSheet(Theme.get_style("NotificationTitle"))
@@ -619,9 +647,11 @@ class JarvisVisualizer(QWidget):
         
         painter.setOpacity(self.current_opacity)
         
+        # Stronger than the original (was 60/30) -- no glow on the wave
+        # lines this time, so the center bloom carries the glow instead.
         gradient = QRadialGradient(cx, cy, s(100))
-        gradient.setColorAt(0.0, QColor(255, 150, 0, 60))
-        gradient.setColorAt(0.5, QColor(255, 100, 0, 30))
+        gradient.setColorAt(0.0, QColor(255, 150, 0, 110))
+        gradient.setColorAt(0.5, QColor(255, 100, 0, 55))
         gradient.setColorAt(1.0, QColor(200, 50, 0, 0))
         
         painter.setBrush(QBrush(gradient))
@@ -656,7 +686,7 @@ class JarvisVisualizer(QWidget):
         colors = [QColor(255, 120, 0, 100), QColor(255, 180, 0, 180), QColor(255, 230, 100, 255)]
         phases = [0, 2, 4]
         amplitudes = [s(self.amplitude), s(self.amplitude * 0.6), s(self.amplitude * 0.3)]
-        
+
         for i in range(3):
             path = QPainterPath()
             path.moveTo(0, cy)
@@ -665,16 +695,16 @@ class JarvisVisualizer(QWidget):
                 envelope = math.pow(math.sin(math.pi * x / self.width()), 3)
                 y = cy + math.sin(x * self.frequency + self.time_offset + phases[i]) * amplitudes[i] * envelope
                 path.lineTo(x, y)
-                
+
             wave_grad = QLinearGradient(0, cy, self.width(), cy)
             base_color = colors[i]
             transparent_color = QColor(base_color.red(), base_color.green(), base_color.blue(), 0)
-            
+
             wave_grad.setColorAt(0.0, transparent_color)
             wave_grad.setColorAt(0.20, base_color)
             wave_grad.setColorAt(0.80, base_color)
             wave_grad.setColorAt(1.0, transparent_color)
-            
+
             pen = QPen(QBrush(wave_grad), 2 if i < 2 else 1)
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -1179,6 +1209,7 @@ class JarvisUI(QWidget):
         self.mqtt_thread.state_change_signal.connect(self.update_ecosystem_state)
         self.mqtt_thread.ui_mode_signal.connect(self.set_ui_mode)
         self.mqtt_thread.media_status_signal.connect(self._handle_media_status)
+        self.mqtt_thread.app_volumes_signal.connect(self._handle_app_volumes)
         self.mqtt_thread.light_status_signal.connect(self._handle_light_status)
         self.mqtt_thread.feedback_signal.connect(self._handle_feedback)
         self.mqtt_thread.todo_status_signal.connect(self._handle_todo_status)
@@ -1349,7 +1380,6 @@ class JarvisUI(QWidget):
             if widget_id not in self.active_widgets:
                 media_widget = MediaWidget()
                 self.spawn_widget(widget_id, "Media Controls", media_widget)
-                
             else:
                 w = self.active_widgets[widget_id]
                 if w.isHidden():
@@ -1529,6 +1559,22 @@ class JarvisUI(QWidget):
                 wrapper.content_widget.update_status(data)
         if hasattr(self, 'calendar_drawer'):
             self.calendar_drawer.carousel.media_widget.update_status(data)
+
+    def _handle_app_volumes(self, data):
+        apps = data.get("apps", [])
+        widget_id = "widget_media_controls"
+        if widget_id in self.active_widgets:
+            wrapper = self.active_widgets[widget_id]
+            if isinstance(wrapper.content_widget, MediaWidget):
+                wrapper.content_widget.update_app_volumes(apps)
+        if hasattr(self, 'calendar_drawer'):
+            # Rebuilding real rows (icons, MarqueeLabels, sliders) on every
+            # single app_volumes message even when this copy's own drawer
+            # isn't open doubles the widget-construction work for nothing
+            # the user can see.
+            calendar_media_widget = self.calendar_drawer.carousel.media_widget
+            if calendar_media_widget.app_volume_body.isVisible():
+                calendar_media_widget.update_app_volumes(apps)
 
     def _on_app_state_changed(self, state):
         if not getattr(self, 'is_fullscreen', False) or getattr(self, 'text_input', None) is None:
@@ -1801,6 +1847,16 @@ class JarvisUI(QWidget):
         SetWindowLong(hwnd, GWL_EXSTYLE, new_style)
         user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0023)  # SWP_NOMOVE|SWP_NOSIZE|SWP_FRAMECHANGED
 
+    def _screen_for_cursor(self):
+        """Which screen the mouse cursor is currently on, falling back to
+        the primary screen. Split out of set_ui_mode so tests can mock this
+        one Python-level method instead of QCursor.pos() itself -- that's a
+        sip/C++-bound static method, and patching it directly crashes the
+        process rather than raising a normal Python exception."""
+        from PyQt6.QtGui import QCursor
+        screen = QApplication.screenAt(QCursor.pos())
+        return screen or QApplication.primaryScreen()
+
     def set_ui_mode(self, mode):
         if mode == "save_state":
             self.save_ui_state()
@@ -1835,12 +1891,8 @@ class JarvisUI(QWidget):
                 # We DO NOT call QApplication.processEvents() here.
                 self.hide()
             else:
-                from PyQt6.QtGui import QCursor
-                cursor_pos = QCursor.pos()
-                active_screen = QApplication.screenAt(cursor_pos)
-                if not active_screen:
-                    active_screen = QApplication.primaryScreen()
-                    
+                active_screen = self._screen_for_cursor()
+
                 self.current_monitor_idx = 0
                 active_name = active_screen.name() if active_screen else ""
                 for i, s in enumerate(screens):
@@ -2122,6 +2174,24 @@ class JarvisUI(QWidget):
         v_grad.setColorAt(1.0, QColor(0, 0, 0, 220))
         painter.setBrush(v_grad)
         painter.setPen(Qt.PenStyle.NoPen)
+
+        # A faint warm orange tint radiating from the exact center, fading
+        # to nothing well before the edges (which stay exactly as they were).
+        # Many stops (not just 3) so the falloff reads as one smooth curve --
+        # a single midpoint stop leaves two straight segments that meet at a
+        # visible kink where their slopes change.
+        ambient_grad = QRadialGradient(cx, cy, max(self.width(), self.height()) * 0.7)
+        ambient_grad.setColorAt(0.0, QColor(255, 150, 0, 11))
+        ambient_grad.setColorAt(0.15, QColor(255, 145, 0, 9))
+        ambient_grad.setColorAt(0.3, QColor(255, 140, 0, 7))
+        ambient_grad.setColorAt(0.45, QColor(255, 135, 0, 5))
+        ambient_grad.setColorAt(0.6, QColor(255, 125, 0, 3))
+        ambient_grad.setColorAt(0.8, QColor(255, 110, 0, 1))
+        ambient_grad.setColorAt(1.0, QColor(255, 100, 0, 0))
+        painter.setBrush(ambient_grad)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRect(self.rect())
+
     def closeEvent(self, event):
         self.save_ui_state()
         super().closeEvent(event)

@@ -28,7 +28,10 @@ if sys.platform == 'win32':
 
 class SpotifyManager:
     """Enterprise state controller for Spotify API interaction and playback logic."""
-    
+
+    # Generous margin over clTerminal.py's ~10s local-session poll interval.
+    LOCAL_STATUS_FRESHNESS_SECONDS = 15.0
+
     def __init__(self, debug_math: bool = True):
         self.base_dir: str = os.path.dirname(os.path.abspath(__file__))
         self.env = EnvLoader()
@@ -60,6 +63,13 @@ class SpotifyManager:
         self.ducked_device_id: Optional[str] = None
         self.last_known_normal_volume: Optional[int] = None
         self._last_duck_cycle_time: float = 0.0
+
+        # Free, local track/artist/position/state from clTerminal.py's
+        # Spotify-filtered OS media session (see status()'s lightweight
+        # fast path) -- kept fresh via the jarvis/sys/spotify_local_status
+        # subscription in mqtt_service_listener.
+        self._local_status: Optional[Dict[str, Any]] = None
+        self._local_status_time: float = 0.0
         
         self.confidence_threshold: float = 0.60
         self.perfect_match_threshold: float = 0.85
@@ -289,12 +299,61 @@ class SpotifyManager:
             device = self._get_active_device()
         return device
 
+    def _get_any_device(self) -> Optional[str]:
+        """Like _get_active_device, but falls back to any connected (not
+        necessarily 'active'/playing) device instead of waking playback --
+        for commands like volume that shouldn't start music just to run."""
+        device = self._get_active_device()
+        if device:
+            return device
+        try:
+            devices = self.sp.devices().get('devices', [])
+            return devices[0].get('id') if devices else None
+        except Exception as e:
+            logging.error(f"Failed to get Spotify devices: {e}")
+            return None
+
     # --- STATUS ENGINE ---
+    def _lightweight_status_from_local_session(self) -> Optional[Dict[str, Any]]:
+        """Builds a lightweight status() response from clTerminal.py's free,
+        local Spotify-filtered OS media session instead of a real Web API
+        call -- the fast path for the media widget's regular polling.
+        Volume isn't part of that OS session data at all, so it falls back
+        to our own best-known cached value rather than a real reading.
+        Returns None (falling through to the real API) whenever that local
+        data is missing, stale, or reports nothing found -- including
+        whenever local Spotify isn't the active playback device, e.g. the
+        user is listening on a different Spotify Connect device."""
+        if self._local_status is None:
+            return None
+        if time.time() - self._local_status_time > self.LOCAL_STATUS_FRESHNESS_SECONDS:
+            return None
+        if not self._local_status.get("found"):
+            return None
+
+        volume = self.last_known_normal_volume if self.last_known_normal_volume is not None else "Unknown"
+        return {
+            "status": "success",
+            "is_playing": self._local_status.get("status") == "Playing",
+            "volume": volume,
+            "track": self._local_status.get("title") or "Unknown",
+            "artist": self._local_status.get("artist") or "Unknown",
+            "context": "Unknown",
+            "next_in_queue": "Unknown",
+            "progress_ms": int(self._local_status.get("position", 0.0) * 1000),
+            "duration_ms": int(self._local_status.get("duration", 0.0) * 1000),
+        }
+
     def status(self, lightweight: bool = False, force_refresh: bool = False) -> Dict[str, Any]:
         """
         Retrieve comprehensive status of the current playback.
         If lightweight=True, skips secondary API calls for context/queue.
         """
+        if lightweight and not force_refresh:
+            local = self._lightweight_status_from_local_session()
+            if local is not None:
+                return local
+
         try:
             playback = self._get_current_playback(force_refresh=force_refresh)
             if not playback or not playback.get('item'):
@@ -571,8 +630,14 @@ class SpotifyManager:
                     logging.info("[DUCK] Spotify is not currently playing. Skipping ducking.")
                     return False, "Not currently playing"
 
-                # Trust our own recent baseline over a possibly-stale API read.
-                recently_self_initiated = (time.time() - self._last_duck_cycle_time) < 30.0
+                # Trust our own recent baseline over a possibly-stale API read
+                # -- but only for a few seconds, matching how long Spotify
+                # Connect's read actually takes to catch up to a PUT we just
+                # issued. The old window was 30s, long enough for a real
+                # external change (e.g. the user adjusting volume in the
+                # Spotify app itself) to also fall inside it and get silently
+                # overridden by our stale cache.
+                recently_self_initiated = (time.time() - self._last_duck_cycle_time) < 4.0
                 if recently_self_initiated and self.last_known_normal_volume is not None:
                     self.pre_duck_volume = self.last_known_normal_volume
                 else:
@@ -732,7 +797,10 @@ class SpotifyManager:
                 return True, "Returned to previous track."
                 
             if action == "volume" and volume is not None:
-                device = self._ensure_active_device()
+                # _get_any_device, not _ensure_active_device -- the latter
+                # wakes/resumes playback when nothing's active, which made
+                # dragging the volume slider start the music.
+                device = self._get_any_device()
                 if not device: return False, "Spotify is not active."
                 clean_vol = max(0, min(100, volume))
                 self.sp.volume(clean_vol, device_id=device)
@@ -768,13 +836,14 @@ async def mqtt_service_listener(manager: SpotifyManager) -> None:
             async with aiomqtt.Client("localhost") as mqtt_client:
                 await mqtt_client.subscribe("pc/spotify/control")
                 await mqtt_client.subscribe("jarvis/sys/ui_control")
+                await mqtt_client.subscribe("jarvis/sys/spotify_local_status")
                 await mqtt_client.publish("jarvis/sys/module_ready", json.dumps({"module": "music"}))
-                
+
                 async for message in mqtt_client.messages:
                     try:
                         topic = message.topic.value
                         payload = json.loads(message.payload.decode('utf-8'))
-                        
+
                         # --- Track Fullscreen UI State ---
                         if topic == "jarvis/sys/ui_control":
                             if payload.get("action") == "set_fullscreen":
@@ -782,7 +851,14 @@ async def mqtt_service_listener(manager: SpotifyManager) -> None:
                             elif payload.get("action") == "set_overlay":
                                 manager.ui_is_fullscreen = False
                             continue
-                            
+
+                        # --- Cache clTerminal.py's free, local Spotify-filtered
+                        # OS media session (see status()'s lightweight fast path) ---
+                        if topic == "jarvis/sys/spotify_local_status":
+                            manager._local_status = payload
+                            manager._local_status_time = time.time()
+                            continue
+
                         if topic == "pc/spotify/control":
                             if not isinstance(payload, dict):
                                 logging.error(f"Invalid payload type: Expected dict, got {type(payload)}")
@@ -795,15 +871,17 @@ async def mqtt_service_listener(manager: SpotifyManager) -> None:
                                 manager.last_ui_poll_time = time.time()
                                 status_data = await asyncio.to_thread(manager.status, lightweight=True)
                                 if status_data and status_data.get("status") == "success":
+                                    raw_volume = status_data.get("volume")
                                     refresh_payload = {
                                         "title": status_data.get("track", "Unknown"),
                                         "artist": status_data.get("artist", "Unknown"),
                                         "position": status_data.get("progress_ms", 0) / 1000.0,
                                         "duration": status_data.get("duration_ms", 0) / 1000.0,
-                                        "status": "Playing" if status_data.get("is_playing") else "Paused"
+                                        "status": "Playing" if status_data.get("is_playing") else "Paused",
+                                        "volume": raw_volume if isinstance(raw_volume, int) else 100
                                     }
                                     await mqtt_client.publish("jarvis/sys/media_status", json.dumps(refresh_payload))
-                                continue 
+                                continue
                             
                             # --- Execution Layer ---
                             await mqtt_client.publish("jarvis/feedback", json.dumps({
@@ -846,12 +924,14 @@ async def mqtt_service_listener(manager: SpotifyManager) -> None:
                                         try:
                                             status_data = await asyncio.to_thread(manager.status, lightweight=True, force_refresh=True)
                                             if status_data and status_data.get("status") == "success":
+                                                raw_volume = status_data.get("volume")
                                                 refresh_payload = {
                                                     "title": status_data.get("track", "Unknown"),
                                                     "artist": status_data.get("artist", "Unknown"),
                                                     "position": status_data.get("progress_ms", 0) / 1000.0,
                                                     "duration": status_data.get("duration_ms", 0) / 1000.0,
-                                                    "status": "Playing" if status_data.get("is_playing") else "Paused"
+                                                    "status": "Playing" if status_data.get("is_playing") else "Paused",
+                                                    "volume": raw_volume if isinstance(raw_volume, int) else 100
                                                 }
                                                 async with aiomqtt.Client("localhost") as bg_client:
                                                     await bg_client.publish("jarvis/sys/media_status", json.dumps(refresh_payload))

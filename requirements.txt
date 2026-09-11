@@ -98,3 +98,4 @@ Pillow
 pycaw==20251023 ; sys_platform == 'win32'
 comtypes ; sys_platform == 'win32'
 winsdk==1.0.0b10 ; sys_platform == 'win32'
+psutil ; sys_platform == 'win32'

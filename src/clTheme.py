@@ -13,7 +13,7 @@ class Theme:
     C_BORDER_FOCUS = "rgba(255, 180, 0, 150)"
     
     C_TEXT = "#ffe6cc"
-    C_TEXT_DIM = "#aaaaaa"
+    C_TEXT_DIM = "#a89a8c"
     C_TEXT_TITLE = "#ff7700"
     
     C_SUCCESS = "#88ff88"
@@ -85,6 +85,25 @@ class Theme:
             }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
                 height: 0px;
+            }}
+        """
+
+    @classmethod
+    def _slider_extreme_state_qss(cls, orientation: str, gradient_coords: str) -> str:
+        """At true 0%/100%, Qt's own slider-position math still leaves a
+        stray ~1px sliver on whichever page sub-control is meant to have
+        zero size there (a Qt rendering floor, not something a groove/handle
+        geometry tweak can eliminate) -- only visible when that sliver's
+        color differs from its neighbor. Forcing both pages to the same
+        color at each extreme (toggled via a dynamic property, see
+        clMediaWidget._sync_slider_extreme_state) makes the stray pixel
+        blend in invisibly instead."""
+        return f"""
+            QSlider[atMin="true"]::sub-page:{orientation}, QSlider[atMin="true"]::add-page:{orientation} {{
+                background: rgba(255,255,255,0.12);
+            }}
+            QSlider[atMax="true"]::sub-page:{orientation}, QSlider[atMax="true"]::add-page:{orientation} {{
+                background: qlineargradient({gradient_coords}, stop:0 #ff8c00, stop:1 #ffcc00);
             }}
         """
 
@@ -191,14 +210,59 @@ class Theme:
         elif component == "BadgeLabel":
             return f"color: {cls.C_PRIMARY}; font-size: 10px; font-weight: 800; letter-spacing: 1px; border: none; background: transparent;"
         elif component == "MediaSmallBtn":
+            # radius must be passed as exactly half the button's real size for
+            # a true circle -- QSS doesn't clamp an oversized radius down
+            # gracefully (see IconPill above), so this can't just hardcode
+            # the main player's own 32px-button value for reuse at other sizes.
+            radius = kwargs.get("radius", 16)
             return f"""
-                QPushButton {{ background-color: rgba(35, 18, 5, 0.8); border-radius: 16px; border: 1px solid rgba(255, 160, 0, 0.4); }}
+                QPushButton {{ background-color: rgba(35, 18, 5, 0.8); border-radius: {radius}px; border: 1px solid rgba(255, 160, 0, 0.4); }}
                 QPushButton:hover {{ background-color: rgba(255, 150, 0, 0.35); border: 1px solid {cls.C_PRIMARY}; }}
             """
         elif component == "MediaPlayBtn":
             return f"""
                 QPushButton {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ff8c00, stop:1 #e65c00); border-radius: 20px; border: 1px solid #ffcc66; }}
                 QPushButton:hover {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ffa01a, stop:1 #ff701a); }}
+            """
+        elif component == "MediaVolumeSlider":
+            # sub-page/add-page read backwards from what the names suggest
+            # for a vertical slider here -- add-page is the filled
+            # (current-value) side, sub-page is the empty remainder. The
+            # handle is invisible (background/border none) and only exists
+            # as a drag hotspot, but a nonzero size still reserves that much
+            # travel room from Qt's own sub/add-page math -- leaving a
+            # permanent sliver of "empty" color at full value that a fill
+            # color can never reach. Zero size removes that reserved room.
+            return f"""
+                QSlider::groove:vertical {{ width: 4px; background: rgba(255,255,255,0.12); border-radius: 2px; }}
+                QSlider::add-page:vertical {{ background: qlineargradient(x1:0, y1:1, x2:0, y2:0, stop:0 #ff8c00, stop:1 #ffcc00); border-radius: 2px; }}
+                QSlider::sub-page:vertical {{ background: rgba(255,255,255,0.12); border-radius: 2px; }}
+                QSlider::handle:vertical {{ background: transparent; border: none; height: 0px; margin: 0; }}
+                {cls._slider_extreme_state_qss("vertical", "x1:0, y1:1, x2:0, y2:0")}
+            """
+        elif component == "AppVolumeSlider":
+            # See MediaVolumeSlider above -- same zero-size-handle fix so the
+            # fill can actually reach 100% instead of stopping short.
+            return f"""
+                QSlider::groove:horizontal {{ height: 4px; background: rgba(255,255,255,0.12); border-radius: 2px; }}
+                QSlider::sub-page:horizontal {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ff8c00, stop:1 #ffcc00); border-radius: 2px; }}
+                QSlider::add-page:horizontal {{ background: rgba(255,255,255,0.12); border-radius: 2px; }}
+                QSlider::handle:horizontal {{ background: transparent; border: none; width: 0px; margin: 0; }}
+                {cls._slider_extreme_state_qss("horizontal", "x1:0, y1:0, x2:1, y2:0")}
+            """
+        elif component == "AppIconPlaceholder":
+            # Real per-app icons (extracted from the app itself) are a
+            # follow-up -- this is just an empty slot until then.
+            return "border: 1px dashed rgba(255,170,0,0.3); border-radius: 5px; background: transparent;"
+        elif component == "MediaProgressBar":
+            return f"""
+                QProgressBar {{ background: rgba(255,255,255,0.10); border: none; border-radius: 2px; }}
+                QProgressBar::chunk {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ff8c00, stop:1 #ffcc00); border-radius: 2px; }}
+            """
+        elif component == "MediaAppVolumeTab":
+            return f"""
+                QPushButton {{ background: rgba(255,150,0,0.05); color: {cls.C_TEXT_DIM}; border: none; border-top: 1px solid rgba(255,150,0,0.18); font-size: {cls.F_TINY}; font-weight: 800; letter-spacing: 1px; padding: 6px 0; }}
+                QPushButton:hover {{ background: rgba(255,150,0,0.11); color: {cls.C_PRIMARY}; }}
             """
         elif component == "RefreshButton":
             return f"""
@@ -335,7 +399,7 @@ class Theme:
         elif component == "NotificationCloseBtn":
             return f"QPushButton {{ color: rgba(255, 150, 0, 200); background: transparent; border: none; font-weight: bold; font-size: {cls.F_NORMAL}; }} QPushButton:hover {{ color: #ffffff; background-color: rgba(255, 50, 0, 150); border-top-right-radius: 12px; }}"
         elif component == "NotificationBody":
-            return f"#PopupMain {{ background-color: rgba(15, 8, 2, 230); border: 1px solid rgba(255, 150, 0, 80); border-radius: 12px; }} QLabel {{ color: #ffe6cc; font-size: {cls.F_NORMAL}; }}"
+            return f"#PopupMain {{ background-color: rgba(27, 13, 3, 245); border: 1px solid rgba(255, 150, 0, 80); border-radius: 12px; }} QLabel {{ color: #ffe6cc; font-size: {cls.F_NORMAL}; }}"
         elif component == "HealthDanger":
             return f"color: rgba(255, 100, 100, 180); font-size: {cls.F_TINY}; background: transparent;"
         elif component == "HealthWarning":

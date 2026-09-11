@@ -1,8 +1,9 @@
 import json
 import logging
 from clTheme import Theme
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGraphicsDropShadowEffect, QStackedLayout
 from PyQt6.QtCore import QTimer, QSize
+from PyQt6.QtGui import QColor
 from utils.clActionRouter import ActionRouter
 from clUIScaler import UIScaler
 
@@ -67,8 +68,8 @@ class LightControlWidget(QWidget):
         for row_data in self.light_rows.values():
             if "layout" in row_data:
                 row_data["layout"].setSpacing(s(6))
-            if "indicator" in row_data:
-                row_data["indicator"].setFixedWidth(22)
+            if "indicator_holder" in row_data:
+                row_data["indicator_holder"].setFixedWidth(22)
             if "toggle_btn" in row_data:
                 row_data["toggle_btn"].setFixedSize(26, 26)
             if "delete_btn" in row_data:
@@ -114,7 +115,32 @@ class LightControlWidget(QWidget):
                 row_data["is_on"] = new_state
                 self._update_indicator(row_data["indicator"], new_state, False)
 
+    def _make_indicator(self):
+        # Two labels stacked on the same spot approximate a layered CSS
+        # glow (tight core + soft outer halo) -- a single
+        # QGraphicsDropShadowEffect can only paint one layer.
+        holder = QWidget()
+        stack = QStackedLayout(holder)
+        stack.setStackingMode(QStackedLayout.StackingMode.StackAll)
+        stack.setContentsMargins(0, 0, 0, 0)
+        halo = QLabel("●")
+        front = QLabel("●")
+        stack.addWidget(halo)
+        stack.addWidget(front)
+        front._glow_halo = halo
+        return holder, front
+
+    def _set_glow(self, widget, blur, color):
+        glow = widget.graphicsEffect()
+        if not isinstance(glow, QGraphicsDropShadowEffect):
+            glow = QGraphicsDropShadowEffect(widget)
+            glow.setOffset(0, 0)
+            widget.setGraphicsEffect(glow)
+        glow.setBlurRadius(blur)
+        glow.setColor(color)
+
     def _update_indicator(self, indicator, is_on, is_offline):
+        halo = getattr(indicator, '_glow_halo', None)
         if is_offline:
             color = "rgba(120, 120, 120, 255)"
         elif is_on:
@@ -122,6 +148,19 @@ class LightControlWidget(QWidget):
         else:
             color = "rgba(255, 50, 50, 255)"
         indicator.setStyleSheet(f"color: {color}; font-size: 16pt;")
+        if halo is not None:
+            halo.setStyleSheet(f"color: {color}; font-size: 16pt;")
+
+        # Only a genuinely "on" light glows -- off/offline dots stay flat,
+        # matching how a real light actually looks.
+        if is_on and not is_offline:
+            self._set_glow(indicator, 6, QColor(80, 255, 80, 191))
+            if halo is not None:
+                self._set_glow(halo, 16, QColor(80, 255, 80, 107))
+        else:
+            indicator.setGraphicsEffect(None)
+            if halo is not None:
+                halo.setGraphicsEffect(None)
 
     def update_status(self, data):
         network_name = data.get("network", "")
@@ -171,9 +210,9 @@ class LightControlWidget(QWidget):
                 row_layout.setContentsMargins(0, 0, 0, 0)
                 row_layout.setSpacing(s(6))
                 
-                indicator = QLabel("●")
+                indicator_holder, indicator = self._make_indicator()
+                indicator_holder.setFixedWidth(22)
                 indicator.setStyleSheet("color: rgba(100, 100, 100, 255); font-size: 16pt;")
-                indicator.setFixedWidth(22)
                 self._update_indicator(indicator, is_on, is_offline)
                 
                 name_lbl = QLabel(l.get("name", "Unknown"))
@@ -195,17 +234,18 @@ class LightControlWidget(QWidget):
                 delete_btn.setStyleSheet(Theme.get_style("SmallDangerButton"))
                 delete_btn.clicked.connect(lambda checked, t=target_name: self._delete_light(t))
                 
-                row_layout.addWidget(indicator)
+                row_layout.addWidget(indicator_holder)
                 row_layout.addWidget(name_lbl)
                 row_layout.addStretch()
                 row_layout.addWidget(toggle_btn)
                 row_layout.addWidget(delete_btn)
-                
+
                 self.lights_layout.addWidget(row)
                 self.light_rows[target_name] = {
                     "widget": row,
                     "layout": row_layout,
                     "indicator": indicator,
+                    "indicator_holder": indicator_holder,
                     "toggle_btn": toggle_btn,
                     "delete_btn": delete_btn,
                     "is_on": is_on,

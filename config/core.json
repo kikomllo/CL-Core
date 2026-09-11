@@ -11,7 +11,7 @@
         "stt_processing_mode": "parallel",
         "audio_settings": {
             "input_device": "Microphone (G435 Wireless Gaming Headset)",
-            "output_device": "Altifalantes (Realtek High Definition Audio)"
+            "output_device": "Headset Earphone (G435 Wireless Gaming Headset)"
         },
         "slm_settings": {
             "enabled": true,
@@ -31,7 +31,7 @@
             "temperature": 0.7,
             "gpu_layers": -1
         },
-        "last_light_target": "bedroom",
+        "last_light_target": "all",
         "followup_settings": {
             "cooldown_asked_minutes": 15,
             "cooldown_declined_minutes": 60,

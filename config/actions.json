@@ -146,6 +146,17 @@
       }
     }
   },
+  "terminal": {
+    "app_volume": {
+      "topic": "pc/system/control",
+      "schema": {
+        "action": {"type": "string", "required": true},
+        "target": {"type": "string"},
+        "level": {"type": "integer"},
+        "silent": {"type": "boolean", "default": false}
+      }
+    }
+  },
   "updates": {
     "check": {
       "topic": "jarvis/sys/updates",

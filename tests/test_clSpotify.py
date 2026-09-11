@@ -162,13 +162,37 @@ class TestSpotify:
         assert spotify_manager.pre_duck_volume == 70
         mock_vol.assert_called_with(56, device_id="device")  # 70 * 0.8
 
+    def test_duck_picks_up_an_external_change_made_outside_the_lag_window(self, spotify_manager, mocker):
+        """Live bug: the user lowers volume directly in the Spotify app (not
+        through our system), then triggers a wake word ~10s later. The old
+        30s self-trust window still covered that gap, so the fresh, correct
+        API reading got silently discarded in favor of our stale cached
+        baseline -- ducking (and the following unduck) moved volume toward
+        the stale value instead of the user's real one. Shrunk to a window
+        that only covers genuine Spotify Connect read lag (which resolves
+        within a second or two), not several seconds of real elapsed time."""
+        mocker.patch.object(spotify_manager, '_get_active_device', return_value="device")
+        mock_vol = mocker.patch.object(spotify_manager.sp, 'volume')
+
+        mocker.patch.object(spotify_manager.sp, 'current_playback', return_value={"device": {"volume_percent": 82}, "is_playing": True})
+        spotify_manager.execute_command("duck")
+        spotify_manager.execute_command("unduck")
+
+        # 10s later -- past any real API lag, but still inside the old 30s window.
+        spotify_manager._last_duck_cycle_time = time.time() - 10.0
+        mocker.patch.object(spotify_manager.sp, 'current_playback', return_value={"device": {"volume_percent": 60}, "is_playing": True})
+        spotify_manager.execute_command("duck")
+
+        assert spotify_manager.pre_duck_volume == 60
+        assert spotify_manager.last_known_normal_volume == 60
+        mock_vol.assert_called_with(48, device_id="device")  # 60 * 0.8
+
     def test_explicit_volume_change_survives_the_next_duck_cycle(self, spotify_manager, mocker):
         """Reproduces a live failure: user says 'set volume to 100%' right
         after a duck/unduck cycle. The 'volume' action never updated
-        last_known_normal_volume, so the next duck (still inside the 30s
+        last_known_normal_volume, so the next duck (still inside the
         self-trust window) used the stale pre-change baseline and the
         following unduck silently reverted the user's explicit change."""
-        mocker.patch.object(spotify_manager, '_ensure_active_device', return_value="device")
         mocker.patch.object(spotify_manager, '_get_active_device', return_value="device")
         mock_vol = mocker.patch.object(spotify_manager.sp, 'volume')
 
@@ -187,6 +211,91 @@ class TestSpotify:
 
         spotify_manager.execute_command("unduck")
         mock_vol.assert_called_with(100, device_id="device")
+
+    def test_volume_change_does_not_wake_or_start_playback(self, spotify_manager, mocker):
+        """Live bug: dragging the media widget's volume slider was starting
+        the music. The 'volume' action used _ensure_active_device(), which
+        calls _wake_up_spotify() (and can issue a real Play) whenever
+        nothing is currently active -- exactly the paused/idle state a user
+        is likely to be adjusting volume from. It must use a device lookup
+        that never wakes playback."""
+        mocker.patch.object(spotify_manager, '_get_active_device', return_value=None)
+        mock_wake = mocker.patch.object(spotify_manager, '_wake_up_spotify')
+        mocker.patch.object(spotify_manager.sp, 'devices', return_value={"devices": [{"id": "device_x", "is_active": False}]})
+        mock_vol = mocker.patch.object(spotify_manager.sp, 'volume')
+
+        success, _ = spotify_manager.execute_command("volume", volume=50)
+
+        assert success is True
+        mock_wake.assert_not_called()
+        mock_vol.assert_called_once_with(50, device_id="device_x")
+
+
+class TestLightweightStatusPrefersLocalSession:
+    """status(lightweight=True) should skip the real Spotify Web API
+    entirely when clTerminal.py's free, local Spotify-filtered OS media
+    session (jarvis/sys/spotify_local_status) is fresh -- this is the fast
+    path for the media widget's regular polling, meant to cut down on API
+    request volume."""
+
+    def test_uses_local_session_instead_of_the_api_when_fresh(self, spotify_manager, mocker):
+        mock_playback = mocker.patch.object(spotify_manager.sp, 'current_playback')
+        spotify_manager.last_known_normal_volume = 70
+        spotify_manager._local_status = {
+            "found": True, "title": "Song Title", "artist": "Some Artist",
+            "status": "Playing", "position": 12.5, "duration": 200.0,
+        }
+        spotify_manager._local_status_time = time.time()
+
+        result = spotify_manager.status(lightweight=True)
+
+        mock_playback.assert_not_called()
+        assert result == {
+            "status": "success", "is_playing": True, "volume": 70,
+            "track": "Song Title", "artist": "Some Artist", "context": "Unknown",
+            "next_in_queue": "Unknown", "progress_ms": 12500, "duration_ms": 200000,
+        }
+
+    def test_falls_back_to_the_api_when_local_session_is_stale(self, spotify_manager, mocker):
+        mocker.patch.object(spotify_manager.sp, 'current_playback', return_value={
+            "item": {"name": "API Song", "artists": [{"name": "API Artist"}], "duration_ms": 100000},
+            "device": {"volume_percent": 55}, "is_playing": True, "progress_ms": 5000,
+        })
+        spotify_manager._local_status = {"found": True, "title": "Old Song", "artist": "Old Artist", "status": "Playing", "position": 1.0, "duration": 1.0}
+        spotify_manager._local_status_time = time.time() - 20.0  # older than LOCAL_STATUS_FRESHNESS_SECONDS
+
+        result = spotify_manager.status(lightweight=True)
+
+        assert result["track"] == "API Song"
+
+    def test_falls_back_to_the_api_when_local_session_found_nothing(self, spotify_manager, mocker):
+        """found=False means clTerminal.py checked and there's no local
+        Spotify session (e.g. playback is on a different Connect device) --
+        must not be treated as 'nothing is playing'."""
+        mocker.patch.object(spotify_manager.sp, 'current_playback', return_value={
+            "item": {"name": "API Song", "artists": [{"name": "API Artist"}], "duration_ms": 100000},
+            "device": {"volume_percent": 55}, "is_playing": True, "progress_ms": 5000,
+        })
+        spotify_manager._local_status = {"found": False}
+        spotify_manager._local_status_time = time.time()
+
+        result = spotify_manager.status(lightweight=True)
+
+        assert result["track"] == "API Song"
+
+    def test_force_refresh_always_bypasses_the_local_session(self, spotify_manager, mocker):
+        mock_playback = mocker.patch.object(spotify_manager.sp, 'current_playback', return_value={
+            "item": {"name": "API Song", "artists": [{"name": "API Artist"}], "duration_ms": 100000},
+            "device": {"volume_percent": 55}, "is_playing": True, "progress_ms": 5000,
+        })
+        spotify_manager._local_status = {"found": True, "title": "Local Song", "artist": "Local Artist", "status": "Playing", "position": 1.0, "duration": 1.0}
+        spotify_manager._local_status_time = time.time()
+
+        result = spotify_manager.status(lightweight=True, force_refresh=True)
+
+        mock_playback.assert_called_once()
+        assert result["track"] == "API Song"
+
 
 class TestSpotifyEdgeCases:
     def test_search_zero_results(self, spotify_manager, mocker):
