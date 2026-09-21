@@ -11,7 +11,7 @@
         "stt_processing_mode": "sequential",
         "audio_settings": {
             "input_device": "Microphone (G435 Wireless Gaming Headset)",
-            "output_device": "Tiger Lake-LP Smart Sound Technology Audio Controller Speaker"
+            "output_device": "BIK-8"
         },
         "slm_settings": {
             "enabled": true,

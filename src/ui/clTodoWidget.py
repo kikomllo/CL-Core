@@ -368,9 +368,8 @@ class TodoWidget(QWidget):
                 if is_completed:
                     lbl.setStyleSheet(lbl.styleSheet() + " color: " + Theme.C_TEXT_DIM + "; text-decoration: line-through;")
 
-                # Align items to top to prevent checkboxes from centering strangely on multi-line text
-                task_layout.addWidget(chk, 0, Qt.AlignmentFlag.AlignTop)
-                task_layout.addWidget(lbl, 1, Qt.AlignmentFlag.AlignTop)
+                task_layout.addWidget(chk, 0, Qt.AlignmentFlag.AlignVCenter)
+                task_layout.addWidget(lbl, 1, Qt.AlignmentFlag.AlignVCenter)
 
                 # Left click anywhere on the row (except the selectable label
                 # itself) toggles complete, same as before.

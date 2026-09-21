@@ -1025,17 +1025,23 @@ class LyricsDisplay(QWidget):
         self.current_lbl.setGeometry(0, row_h, w, row_h)
         self.prev_lbl.setGeometry(0, row_h * 2, w, row_h)
 
-    def _needed_row_width(self, current_text, next_text, prev_text):
+    def _needed_row_width(self, current_text, next_text, prev_text, extra_texts=()):
         """How wide the box must be for its widest current line to sit on
         one line without running off the edges -- word wrap is off, so a
-        line longer than the box's own width otherwise just gets clipped."""
+        line longer than the box's own width otherwise just gets clipped.
+
+        extra_texts: additional (label, text) pairs to also measure --
+        _promote() uses this for the outgoing current line, which must
+        still fit at its current (larger) font for the early part of the
+        transition, not just the smaller font it's shrinking down into for
+        the eventual static prev row."""
         widest = self.default_width or self.width()
         margin = UIScaler.get().scale(40)
         for lbl, text in (
             (self.current_lbl, current_text),
             (self.next_lbl, next_text),
             (self.prev_lbl, prev_text),
-        ):
+        ) + tuple(extra_texts):
             if not text:
                 continue
             # A QLabel's .font() doesn't reflect its QSS font-size at all
@@ -1047,8 +1053,8 @@ class LyricsDisplay(QWidget):
             widest = max(widest, fm.horizontalAdvance(text) + margin)
         return widest
 
-    def _apply_dynamic_width(self, current_text, next_text, prev_text):
-        new_width = self._needed_row_width(current_text, next_text, prev_text)
+    def _apply_dynamic_width(self, current_text, next_text, prev_text, extra_texts=()):
+        new_width = self._needed_row_width(current_text, next_text, prev_text, extra_texts)
         if new_width == self.width():
             return
         # Stays horizontally centered as it grows -- the box is already
@@ -1195,7 +1201,16 @@ class LyricsDisplay(QWidget):
         # Resize/reposition for the DESTINATION layout before building the
         # temp labels below -- the transition's row width must already
         # reflect where the text is heading, not the pre-transition size.
-        self._apply_dynamic_width(current_text=new_current_text, next_text=new_next_text, prev_text=old_current_text)
+        # old_current_text is also measured at its still-large current font
+        # (extra_texts), not just the smaller prev font it's shrinking
+        # into -- it's rendered at close to that larger size for the early
+        # part of the slide-down animation, and sizing the box for only
+        # its final, narrower prev-row width clips it until the shrink
+        # catches up.
+        self._apply_dynamic_width(
+            current_text=new_current_text, next_text=new_next_text, prev_text=old_current_text,
+            extra_texts=[(self.current_lbl, old_current_text)],
+        )
 
         w, row_h = self.width(), self._row_height()
         # _AnimatedLyricLabel, not QLabel -- see its own docstring for why
@@ -1338,7 +1353,6 @@ class IconPill(QWidget):
         self._edge_gap = 10
         self._layout_spacing = 6
         self._collapsed_margins = (0, 0, 0, 0)
-        self._expanded_margins = (self._edge_gap, 0, 0, 0) if grow_direction == "left" else (0, 0, self._edge_gap, 0)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(*self._collapsed_margins)
@@ -1375,6 +1389,7 @@ class IconPill(QWidget):
 
     def set_sizes(self, diameter: int, expanded_width: int):
         self.diameter = diameter
+        self._max_expanded_width = expanded_width
         self.expanded_width = self._resolve_expanded_width(expanded_width)
         self.icon_btn.setFixedSize(diameter, diameter)
         self.icon_btn.setStyleSheet(Theme.get_style("IconPillCircle", radius=diameter // 2))
@@ -1408,12 +1423,32 @@ class IconPill(QWidget):
 
     def setPillWidth(self, w: int):
         self.setFixedWidth(w)
-        if not self._target_expanded and w <= self.diameter and not self.label.isHidden():
-            # Keyed off intent, not width -- an expand's own first frame is also at diameter.
-            self.label.hide()
-            self.label.stop_scrolling()
-            self.layout().setContentsMargins(*self._collapsed_margins)
-            self.setStyleSheet("background: transparent; border: none;")
+        # Margin and the label's own (explicitly set, not layout-negotiated
+        # -- MarqueeLabel's minimumSizeHint floor is a fixed 50px regardless
+        # of stretch factor) width are both sized off the actual animated
+        # width here, so margin + spacing-if-labeled + label + the anchored
+        # fixed-size icon always sum to exactly this frame's width. Keeps
+        # the icon flush at every frame instead of Qt's own layout
+        # negotiation squeezing or displacing it when margin/label
+        # visibility would otherwise jump to their final state before the
+        # width has actually grown to fit them.
+        extra = max(0, w - self.diameter)
+        gap = min(self._edge_gap, extra)
+        label_w = max(0, extra - gap - self._layout_spacing)
+        if label_w <= 0:
+            if not self.label.isHidden():
+                self.label.hide()
+                self.label.stop_scrolling()
+                self.setStyleSheet("background: transparent; border: none;")
+            margins = (extra, 0, 0, 0) if self.grow_direction == "left" else (0, 0, extra, 0)
+            self.layout().setContentsMargins(*margins)
+        else:
+            margins = (gap, 0, 0, 0) if self.grow_direction == "left" else (0, 0, gap, 0)
+            self.layout().setContentsMargins(*margins)
+            self.label.setFixedWidth(label_w)
+            if self.label.isHidden():
+                self.label.setText(self._label_text())
+                self.label.show()
         if self.on_width_changed:
             # Positioning is fully external (see _reflow_widget_dock) --
             # the anchor-based _apply_position below is only for a
@@ -1431,9 +1466,6 @@ class IconPill(QWidget):
     def _begin_expand(self):
         self._target_expanded = True
         self.setStyleSheet(Theme.get_style("IconPill", radius=self.diameter // 2))
-        self.layout().setContentsMargins(*self._expanded_margins)
-        self.label.setText(self._label_text())
-        self.label.show()
         self._animate_to(self.expanded_width)
 
     def leaveEvent(self, event):
@@ -1465,15 +1497,12 @@ class IconPill(QWidget):
         self._on_animation_finished()
 
     def _on_animation_finished(self):
-        if self.width() <= self.diameter:
-            self.label.hide()
-            self.label.stop_scrolling()
-            self.layout().setContentsMargins(*self._collapsed_margins)
-            self.setStyleSheet("background: transparent; border: none;")
-        else:
-            # The label's real (post-layout) width is only final once the
-            # expand animation settles, since MarqueeLabel decides whether
-            # to scroll by comparing text width to its own current width.
+        # Margins/label visibility/style are already kept in sync with the
+        # actual width on every frame by setPillWidth -- only the marquee
+        # start remains genuinely settle-only, since MarqueeLabel decides
+        # whether to scroll by comparing text width to its own current
+        # width, which is only final once the expand animation settles.
+        if self.width() > self.diameter:
             self.label.start_scrolling()
 
     def mousePressEvent(self, event):
@@ -1490,6 +1519,13 @@ class IconPill(QWidget):
 
     def _resolve_expanded_width(self, expanded_width: int) -> int:
         return expanded_width
+
+    def _refresh_expanded_width(self):
+        """Re-resolves expanded_width against the original cap -- for a
+        subclass whose label text can change after construction (e.g. a
+        device name), so a later expand uses the current text's width
+        rather than whatever was resolved at the last set_sizes() call."""
+        self.expanded_width = self._resolve_expanded_width(self._max_expanded_width)
 
 
 class AudioQuickSwitchPill(IconPill):
@@ -1520,6 +1556,18 @@ class AudioQuickSwitchPill(IconPill):
     def _label_text(self) -> str:
         return getattr(self, "_cached_display_name", None) or self._current_device()
 
+    def _resolve_expanded_width(self, expanded_width: int) -> int:
+        # Shrinks to fit the current device name instead of always
+        # expanding to the full cap -- a short name (e.g. "USB Mic")
+        # shouldn't open as wide as a long one; a name too long to fit
+        # under the cap is still fully reachable via the label's own
+        # hover marquee-scroll, same as WidgetTogglePill's fixed labels.
+        fm = QFontMetrics(self.label.font())
+        text_width = fm.horizontalAdvance(self._label_text())
+        label_width = max(text_width, self.label.minimumSizeHint().width())
+        natural = self.diameter + self._layout_spacing + label_width + self._edge_gap
+        return min(natural, expanded_width)
+
     def _current_device(self) -> str:
         try:
             settings = self.loader.load_json("core.json").get("settings", {}).get("audio_settings", {})
@@ -1542,7 +1590,7 @@ class AudioQuickSwitchPill(IconPill):
         except Exception:
             display = name
         self._cached_display_name = display
-        self.icon_btn.setToolTip(f"{'Microphone' if self.kind == 'input' else 'Speaker'}: {display}")
+        self._refresh_expanded_width()
         if self.label.isVisible():
             self.label.setText(display)
 
