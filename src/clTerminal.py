@@ -482,10 +482,15 @@ class TerminalManager:
         try:
             import warnings
             from pycaw.pycaw import AudioUtilities
-            from pycaw.constants import EDataFlow
+            from pycaw.constants import EDataFlow, DEVICE_STATE
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                devices = AudioUtilities.GetAllDevices(data_flow=EDataFlow.eRender.value)
+                # GetAllDevices() defaults to DEVICE_STATE.MASK_ALL, which
+                # includes every disabled/unplugged/not-present device
+                # Windows has ever known about (old Bluetooth pairings,
+                # unused HDMI ports) -- ACTIVE-only matches what's actually
+                # selectable in Windows' own volume mixer.
+                devices = AudioUtilities.GetAllDevices(data_flow=EDataFlow.eRender.value, device_state=DEVICE_STATE.ACTIVE.value)
             return [{"id": d.id, "name": d.FriendlyName} for d in devices if d.id and d.FriendlyName]
         except ImportError:
             return []
@@ -734,13 +739,41 @@ class TerminalManager:
         subprocess.Popen(["playerctl", "--player", target, "play-pause"])
         return True, f"Toggled playback for {target}."
 
+    @staticmethod
+    def _all_windows_audio_sessions() -> List[Any]:
+        """Every audio session across every active render device, not just
+        the system default -- pycaw's own AudioUtilities.GetAllSessions()
+        only enumerates the default device's IAudioSessionManager2, so an
+        app routed to a non-default output (see set_app_output_device)
+        would otherwise vanish from here the instant it moves off-default."""
+        import warnings
+        from pycaw.pycaw import AudioUtilities, AudioSession, IAudioSessionControl2
+        from pycaw.constants import EDataFlow, DEVICE_STATE
+        sessions: List[Any] = []
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            devices = AudioUtilities.GetAllDevices(data_flow=EDataFlow.eRender.value, device_state=DEVICE_STATE.ACTIVE.value)
+        for device in devices:
+            try:
+                enumerator = device.AudioSessionManager.GetSessionEnumerator()
+            except Exception:
+                continue
+            for i in range(enumerator.GetCount()):
+                ctl = enumerator.GetSession(i)
+                if ctl is None:
+                    continue
+                ctl2 = ctl.QueryInterface(IAudioSessionControl2)
+                if ctl2 is not None:
+                    sessions.append(AudioSession(ctl2))
+        return sessions
+
     def _list_app_volumes_windows(self) -> List[Dict[str, Any]]:
         try:
             from pycaw.pycaw import AudioUtilities
         except ImportError:
             return []
         apps: Dict[str, Dict[str, Any]] = {}
-        for session in AudioUtilities.GetAllSessions():
+        for session in self._all_windows_audio_sessions():
             process = session.Process
             volume = session.SimpleAudioVolume
             if process is None or volume is None:
@@ -765,8 +798,7 @@ class TerminalManager:
         return list(apps.values())
 
     def _windows_sessions_for(self, name: str) -> List[Any]:
-        from pycaw.pycaw import AudioUtilities
-        return [s for s in AudioUtilities.GetAllSessions() if s.Process and s.Process.name() == name and s.SimpleAudioVolume]
+        return [s for s in self._all_windows_audio_sessions() if s.Process and s.Process.name() == name and s.SimpleAudioVolume]
 
     def _set_app_volume_windows(self, target: str, clean_level: int) -> Tuple[bool, str]:
         try:

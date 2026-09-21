@@ -185,11 +185,27 @@ def main(argv):
     if sys.platform != "win32":
         print("ERROR: per-app output device routing is Windows-only")
         return 1
+    # A fresh process has no COM apartment on its main thread by default --
+    # whether SetPersistedDefaultAudioEndpoint happens to work anyway
+    # depends entirely on unrelated ambient state (e.g. whether some other
+    # import already initialized COM as a side effect), which is why this
+    # was observed working once and then silently failing (CO_E_NOTINITIALIZED)
+    # on every later run. RPC_E_CHANGED_MODE means a COM apartment already
+    # exists on this thread (fine, not our own init to undo); anything else
+    # negative is a real failure.
+    RPC_E_CHANGED_MODE = 0x80010106
+    hr = ctypes.windll.ole32.CoInitializeEx(None, 0) & 0xFFFFFFFF
+    if hr not in (0, 1, RPC_E_CHANGED_MODE):
+        print(f"ERROR: CoInitializeEx failed: HRESULT 0x{hr:08X}")
+        return 1
     try:
         set_persisted_default_audio_endpoint(pid, argv[2])
     except Exception as e:
         print(f"ERROR: {e}")
         return 1
+    finally:
+        if hr != RPC_E_CHANGED_MODE:
+            ctypes.windll.ole32.CoUninitialize()
     print("OK")
     return 0
 
