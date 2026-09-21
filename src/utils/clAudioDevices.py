@@ -92,17 +92,22 @@ def resolve_capture_device_index(pa, device_name: Optional[str]) -> Optional[int
 
 
 def list_output_device_names() -> List[str]:
-    """Enumerates playback devices via SDL2 (pygame). Cross-platform, no CURRENT_OS branch needed."""
+    """Enumerates playback devices via SDL2 (pygame). Cross-platform, no
+    CURRENT_OS branch needed. init()/quit() are deliberately NOT paired per
+    call -- live measurement showed repeated init/quit cycles in the same
+    process make each next pygame.init() dramatically slower (1.5s first
+    call, 15s+ the second), almost certainly SDL2 re-probing audio drivers
+    on every re-init. Initialize once and leave it running for the rest of
+    the process's life instead."""
     import pygame
-    pygame.init()
+    if not pygame.get_init():
+        pygame.init()
     try:
         import pygame._sdl2.audio as sdl2_audio
         return list(sdl2_audio.get_audio_device_names(False))
     except Exception as e:
         logging.error(f"Failed to enumerate output audio devices: {e}")
         return []
-    finally:
-        pygame.quit()
 
 
 def _pycaw_raw_names_by_full_name(kind: str) -> Dict[str, str]:

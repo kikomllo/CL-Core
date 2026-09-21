@@ -258,3 +258,196 @@ class TestAlarmReminderDeleteWiring:
         cancelled_ids = {c.args[1] for c in mock_cancel.call_args_list}
         assert cancelled_ids == {"alarm_all_1", "alarm_all_2"}
         assert all(not p.exists() for p in paths)
+
+
+class TestTodoCreateSilentFlag:
+    """A task typed into the UI is already visible on screen the instant
+    it's added -- a spoken confirmation on top of that only makes sense for
+    voice-added tasks, where it's the only feedback the user gets."""
+
+    @pytest.fixture
+    def isolated_todos_dir(self, tmp_path, mocker):
+        todos_dir = tmp_path / "todos"
+        todos_dir.mkdir()
+        mocker.patch("clUtilities.TODOS_DIR", str(todos_dir))
+        return todos_dir
+
+    def _speak_calls(self, utilities):
+        return [
+            c for c in utilities.mqtt_client.publish.call_args_list
+            if c.args[0] == "jarvis/sys/speak"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_silent_true_skips_the_spoken_confirmation(self, utilities, isolated_todos_dir):
+        await utilities.handle_todo_create({"task": "Buy milk", "silent": True})
+
+        assert self._speak_calls(utilities) == []
+
+    @pytest.mark.asyncio
+    async def test_silent_false_still_speaks_the_confirmation(self, utilities, isolated_todos_dir):
+        await utilities.handle_todo_create({"task": "Buy milk", "silent": False})
+
+        assert len(self._speak_calls(utilities)) == 1
+
+    @pytest.mark.asyncio
+    async def test_omitting_silent_defaults_to_speaking(self, utilities, isolated_todos_dir):
+        """Voice-originated creates never pass silent at all -- must keep
+        speaking by default, not just when explicitly told to."""
+        await utilities.handle_todo_create({"task": "Buy milk"})
+
+        assert len(self._speak_calls(utilities)) == 1
+
+
+class TestTodoCompleteCanMarkIncomplete:
+    """Unchecking a completed task in the UI now marks it incomplete again
+    instead of deleting it -- handle_todo_complete takes a completed flag
+    rather than always hardcoding True, so the one action covers both
+    directions of the toggle."""
+
+    @pytest.fixture
+    def isolated_todos_dir(self, tmp_path, mocker):
+        todos_dir = tmp_path / "todos"
+        todos_dir.mkdir()
+        mocker.patch("clUtilities.TODOS_DIR", str(todos_dir))
+        return todos_dir
+
+    def _write_todo(self, todos_dir, todo_id, completed):
+        (todos_dir / f"{todo_id}.json").write_text(
+            json.dumps({"id": todo_id, "task": "Buy milk", "completed": completed}),
+            encoding="utf-8",
+        )
+
+    def _read_todo(self, todos_dir, todo_id):
+        return json.loads((todos_dir / f"{todo_id}.json").read_text(encoding="utf-8"))
+
+    @pytest.mark.asyncio
+    async def test_completed_false_marks_an_incomplete_task_instead_of_deleting(self, utilities, isolated_todos_dir):
+        self._write_todo(isolated_todos_dir, "1", completed=True)
+
+        await utilities.handle_todo_complete("1", False)
+
+        assert (isolated_todos_dir / "1.json").exists()
+        assert self._read_todo(isolated_todos_dir, "1")["completed"] is False
+
+    @pytest.mark.asyncio
+    async def test_completed_true_marks_it_complete(self, utilities, isolated_todos_dir):
+        self._write_todo(isolated_todos_dir, "1", completed=False)
+
+        await utilities.handle_todo_complete("1", True)
+
+        assert self._read_todo(isolated_todos_dir, "1")["completed"] is True
+
+    @pytest.mark.asyncio
+    async def test_omitting_completed_defaults_to_true(self, utilities, isolated_todos_dir):
+        """Existing callers (e.g. a voice command) only ever pass an id --
+        must keep completing by default, not just when told to explicitly."""
+        self._write_todo(isolated_todos_dir, "1", completed=False)
+
+        await utilities.handle_todo_complete("1")
+
+        assert self._read_todo(isolated_todos_dir, "1")["completed"] is True
+
+
+class TestNoteHandlers:
+    """The quick-notes widget: create/update/delete/list, mirroring the
+    todo handlers' shape but simpler -- a note is just free text with no
+    completed state or list grouping."""
+
+    @pytest.fixture
+    def isolated_notes_dir(self, tmp_path, mocker):
+        notes_dir = tmp_path / "notes"
+        notes_dir.mkdir()
+        mocker.patch("clUtilities.NOTES_DIR", str(notes_dir))
+        return notes_dir
+
+    def _write_note(self, notes_dir, note_id, text, title="", time_created="2026-01-01T00:00:00"):
+        (notes_dir / f"{note_id}.json").write_text(
+            json.dumps({"id": note_id, "title": title, "text": text, "time_created": time_created}),
+            encoding="utf-8",
+        )
+
+    def _read_note(self, notes_dir, note_id):
+        return json.loads((notes_dir / f"{note_id}.json").read_text(encoding="utf-8"))
+
+    def _status_calls(self, utilities):
+        return [
+            c for c in utilities.mqtt_client.publish.call_args_list
+            if c.args[0] == "jarvis/sys/note/status"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_create_writes_a_note_file_and_republishes_the_list(self, utilities, isolated_notes_dir):
+        await utilities.handle_note_create({"text": "Buy milk"})
+
+        files = list(isolated_notes_dir.glob("*.json"))
+        assert len(files) == 1
+        assert json.loads(files[0].read_text(encoding="utf-8"))["text"] == "Buy milk"
+        assert len(self._status_calls(utilities)) == 1
+
+    @pytest.mark.asyncio
+    async def test_create_allows_an_empty_note(self, utilities, isolated_notes_dir):
+        """The "+ Add Note" flow creates an empty note immediately, then the
+        user types into it and it autosaves on focus-out -- creation must
+        not require text up front like todo does."""
+        await utilities.handle_note_create({})
+
+        files = list(isolated_notes_dir.glob("*.json"))
+        assert len(files) == 1
+        assert json.loads(files[0].read_text(encoding="utf-8"))["text"] == ""
+
+    @pytest.mark.asyncio
+    async def test_creating_two_notes_back_to_back_gets_distinct_ids(self, utilities, isolated_notes_dir):
+        """Unlike a todo (created after the user finishes typing a task
+        name), a note is created the instant "+ Add Note" is clicked --
+        second-precision ids (like todo's) could collide if two notes are
+        added within the same second."""
+        await utilities.handle_note_create({"text": "First"})
+        await utilities.handle_note_create({"text": "Second"})
+
+        files = list(isolated_notes_dir.glob("*.json"))
+        assert len(files) == 2
+
+    @pytest.mark.asyncio
+    async def test_update_changes_the_text(self, utilities, isolated_notes_dir):
+        self._write_note(isolated_notes_dir, "1", "Old text", title="Groceries")
+
+        await utilities.handle_note_update("1", "Groceries", "New text")
+
+        assert self._read_note(isolated_notes_dir, "1")["text"] == "New text"
+
+    @pytest.mark.asyncio
+    async def test_update_changes_the_title(self, utilities, isolated_notes_dir):
+        self._write_note(isolated_notes_dir, "1", "Buy milk", title="")
+
+        await utilities.handle_note_update("1", "Groceries", "Buy milk")
+
+        assert self._read_note(isolated_notes_dir, "1")["title"] == "Groceries"
+
+    @pytest.mark.asyncio
+    async def test_create_stores_the_title(self, utilities, isolated_notes_dir):
+        await utilities.handle_note_create({"title": "Groceries", "text": "Buy milk"})
+
+        files = list(isolated_notes_dir.glob("*.json"))
+        assert json.loads(files[0].read_text(encoding="utf-8"))["title"] == "Groceries"
+
+    @pytest.mark.asyncio
+    async def test_delete_removes_the_file(self, utilities, isolated_notes_dir):
+        self._write_note(isolated_notes_dir, "1", "Buy milk")
+
+        await utilities.handle_note_delete("1")
+
+        assert not (isolated_notes_dir / "1.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_list_sorts_newest_first_by_creation_time(self, utilities, isolated_notes_dir):
+        # Sorted by time_created (stable across edits), not last-updated --
+        # editing a note must not make it jump around the list mid-type.
+        self._write_note(isolated_notes_dir, "1", "Oldest", time_created="2026-01-01T00:00:00")
+        self._write_note(isolated_notes_dir, "2", "Newest", time_created="2026-01-03T00:00:00")
+        self._write_note(isolated_notes_dir, "3", "Middle", time_created="2026-01-02T00:00:00")
+
+        await utilities.handle_note_list()
+
+        payload = json.loads(self._status_calls(utilities)[-1].args[1])
+        assert [n["id"] for n in payload["notes"]] == ["2", "3", "1"]

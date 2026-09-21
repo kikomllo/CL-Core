@@ -13,6 +13,7 @@ from typing import Tuple, Optional, Dict, Any, List
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 import aiomqtt
+import aiohttp
 
 # NEW: Import your centralized env loader
 from utils.clEnvLoader import EnvLoader
@@ -25,6 +26,27 @@ setup_logging('SPOTIFY')
 
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+_LRC_LINE_RE = re.compile(r"^\[(\d+):(\d+(?:\.\d+)?)\](.*)$")
+
+def parse_lrc(lrc_text: str) -> List[Dict[str, Any]]:
+    """Parses standard LRC-format synced lyrics ("[mm:ss.xx]line text" per
+    line, as returned by lrclib.net's syncedLyrics field) into a list of
+    {"time": seconds, "text": ...} entries sorted by time. Lines with no
+    timestamp (or empty after stripping it) are skipped -- e.g. lrclib's
+    own [ar:]/[ti:]/[length:] metadata header lines."""
+    entries = []
+    for raw_line in lrc_text.splitlines():
+        match = _LRC_LINE_RE.match(raw_line.strip())
+        if not match:
+            continue
+        minutes, seconds, text = match.groups()
+        text = text.strip()
+        if not text:
+            continue
+        entries.append({"time": int(minutes) * 60 + float(seconds), "text": text})
+    entries.sort(key=lambda e: e["time"])
+    return entries
 
 class SpotifyManager:
     """Enterprise state controller for Spotify API interaction and playback logic."""
@@ -91,6 +113,12 @@ class SpotifyManager:
         self.known_limit: Optional[int] = None
         self._cached_playback_data: Optional[Dict[str, Any]] = None
         self._cached_playback_time: float = 0.0
+
+        # --- NEW: Lyrics (lrclib.net) ---
+        # Only re-fetched when the (title, artist) pair actually changes --
+        # keyed on that rather than a Spotify track id, since that's all
+        # this codebase's media_status payload already carries.
+        self._last_lyrics_track: Optional[Tuple[str, str]] = None
 
     # --- RATE LIMIT & CACHE ENGINES ---
     def _check_rate_limit(self) -> bool:
@@ -434,6 +462,80 @@ class SpotifyManager:
             logging.info(status_text)
         else:
             logging.info(f"\n--- Spotify Status ---\nStatus:\t\t{status_data.get('message', 'Inactive')}\n----------------------\n")
+
+    # --- LYRICS (lrclib.net) ---
+    async def fetch_lyrics(self, title: str, artist: str, duration_seconds: float) -> Dict[str, Any]:
+        """Queries lrclib.net's free, unauthenticated API for synced lyrics
+        matching the given track. Returns {"found": False} on no match or
+        any failure (network error, no synced lyrics available for this
+        track, malformed response) -- never raises, since a missing lyric
+        is an entirely normal, expected outcome, not an error condition."""
+        params = {"track_name": title, "artist_name": artist, "duration": int(round(duration_seconds))}
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+                async with session.get("https://lrclib.net/api/get", params=params) as resp:
+                    if resp.status != 200:
+                        return {"found": False}
+                    data = await resp.json()
+        except Exception as e:
+            logging.warning(f"Lyrics fetch failed for '{title}' by '{artist}': {e}")
+            return {"found": False}
+
+        synced = data.get("syncedLyrics")
+        if not synced:
+            return {"found": False}
+
+        lines = parse_lrc(synced)
+        if not lines:
+            return {"found": False}
+        return {"found": True, "lines": lines}
+
+    async def maybe_publish_lyrics(self, mqtt_client, title: str, artist: str, duration_seconds: float) -> None:
+        """Re-fetches and publishes the full synced lyric sheet only when
+        the (title, artist) pair actually changes. The UI tracks position
+        locally to pick the current/next/previous line by index -- the
+        same way its progress bar already advances between the
+        infrequent status polls (MediaWidget's own timer only re-checks
+        with a real request near a track's end or after an explicit
+        command, interpolating position client-side the rest of the
+        time) -- so there's no need to resolve or re-send anything per
+        line change; one publish per track covers the whole song."""
+        track_key = (title, artist)
+        if track_key == self._last_lyrics_track:
+            return
+        self._last_lyrics_track = track_key
+        result = await self.fetch_lyrics(title, artist, duration_seconds)
+        await mqtt_client.publish("jarvis/sys/spotify_lyrics", json.dumps({
+            "title": title,
+            "artist": artist,
+            **result,
+        }))
+
+    async def handle_local_status_update(self, mqtt_client, payload: Dict[str, Any]) -> None:
+        """Reacts to clTerminal.py's free, local Spotify-filtered OS media
+        session by also pushing a fresh media_status (and re-checking
+        lyrics) directly, rather than only ever refreshing on an explicit
+        UI poll or command. poll_spotify_local_status publishes this
+        unconditionally on its own ~10s timer (not just on change), so
+        this gives the UI a steady, push-driven refresh cadence instead
+        of the much sparser one from MediaWidget's own request-near-
+        track-end/on-command polling -- without clUI.py needing to know
+        this topic exists at all (it stays clSpotify.py's own concern)."""
+        self._local_status = payload
+        self._local_status_time = time.time()
+        if not payload.get("found"):
+            return
+
+        refresh_payload = {
+            "title": payload.get("title") or "Unknown",
+            "artist": payload.get("artist") or "Unknown",
+            "position": payload.get("position", 0.0),
+            "duration": payload.get("duration", 0.0),
+            "status": payload.get("status", "Paused"),
+            "volume": self.last_known_normal_volume if self.last_known_normal_volume is not None else 100,
+        }
+        await mqtt_client.publish("jarvis/sys/media_status", json.dumps(refresh_payload))
+        await self.maybe_publish_lyrics(mqtt_client, refresh_payload["title"], refresh_payload["artist"], refresh_payload["duration"])
 
     # --- MATHEMATICS & LOGIC ENGINES ---
     def _calculate_confidence(self, track_query: str, artist_query: str, actual_name: str, actual_artist: str, popularity: int) -> float:
@@ -852,11 +954,8 @@ async def mqtt_service_listener(manager: SpotifyManager) -> None:
                                 manager.ui_is_fullscreen = False
                             continue
 
-                        # --- Cache clTerminal.py's free, local Spotify-filtered
-                        # OS media session (see status()'s lightweight fast path) ---
                         if topic == "jarvis/sys/spotify_local_status":
-                            manager._local_status = payload
-                            manager._local_status_time = time.time()
+                            await manager.handle_local_status_update(mqtt_client, payload)
                             continue
 
                         if topic == "pc/spotify/control":
@@ -881,8 +980,9 @@ async def mqtt_service_listener(manager: SpotifyManager) -> None:
                                         "volume": raw_volume if isinstance(raw_volume, int) else 100
                                     }
                                     await mqtt_client.publish("jarvis/sys/media_status", json.dumps(refresh_payload))
+                                    await manager.maybe_publish_lyrics(mqtt_client, refresh_payload["title"], refresh_payload["artist"], refresh_payload["duration"])
                                 continue
-                            
+
                             # --- Execution Layer ---
                             await mqtt_client.publish("jarvis/feedback", json.dumps({
                                 "device": "spotify",
@@ -935,6 +1035,7 @@ async def mqtt_service_listener(manager: SpotifyManager) -> None:
                                                 }
                                                 async with aiomqtt.Client("localhost") as bg_client:
                                                     await bg_client.publish("jarvis/sys/media_status", json.dumps(refresh_payload))
+                                                    await manager.maybe_publish_lyrics(bg_client, refresh_payload["title"], refresh_payload["artist"], refresh_payload["duration"])
                                         except Exception as e:
                                             logging.error(f"Post-command status refresh failed: {e}")
                                     

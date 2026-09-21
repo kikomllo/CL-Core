@@ -11,7 +11,7 @@
         "stt_processing_mode": "parallel",
         "audio_settings": {
             "input_device": "Microphone (G435 Wireless Gaming Headset)",
-            "output_device": "Headset Earphone (G435 Wireless Gaming Headset)"
+            "output_device": "Altifalantes (Realtek High Definition Audio)"
         },
         "slm_settings": {
             "enabled": true,
@@ -58,7 +58,8 @@
             "capture_wakeword_positive": true,
             "wakeword_debug_saving": false,
             "capture_stt_training_data": true
-        }
+        },
+        "stt_model": "small"
     },
     "nlp_rules": {
         "abort_keywords": [

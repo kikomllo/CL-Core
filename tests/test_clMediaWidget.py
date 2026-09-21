@@ -378,7 +378,12 @@ class TestAppVolumeRows:
     def test_opening_the_drawer_requests_fresh_app_volumes(self, qapp, mocker):
         w = _widget(mocker)
         w._toggle_app_volume()
-        w.router.dispatch.assert_called_with("terminal.app_volume", action="list_app_volumes")
+        w.router.dispatch.assert_any_call("terminal.app_volume", action="list_app_volumes")
+
+    def test_opening_the_drawer_also_requests_output_devices(self, qapp, mocker):
+        w = _widget(mocker)
+        w._toggle_app_volume()
+        w.router.dispatch.assert_any_call("terminal.app_volume", action="list_output_devices")
 
     def test_populates_a_row_per_app(self, qapp, mocker):
         w = _widget(mocker)
@@ -474,6 +479,12 @@ class TestAppVolumeRows:
         w.app_volume_rows["spotify.exe"]["mute_btn"].click()
 
         w.router.dispatch.assert_called_with("terminal.app_volume", action="toggle_app_mute", target="spotify.exe", silent=True)
+
+    def test_row_has_a_device_button(self, qapp, mocker):
+        w = _widget(mocker)
+        w.update_app_volumes([{"id": "spotify.exe", "name": "Spotify", "volume": 70, "muted": False}])
+
+        assert "device_btn" in w.app_volume_rows["spotify.exe"]
 
     def test_drawer_grows_further_when_more_apps_appear_while_open(self, qapp, mocker):
         """The row list can change while the drawer is already open (a
@@ -578,3 +589,135 @@ class TestAppVolumeRows:
         }])
 
         assert row["play_btn"].isVisibleTo(row["widget"]) is True
+
+
+class TestOutputDeviceMenu:
+    """The per-app output-device dropdown (headphones icon, left of the
+    play button) mirrors ms-settings:apps-volume's own per-app device
+    picker -- "System Default" plus whatever real output devices
+    clTerminal.py's list_output_devices reported, cached once per drawer-
+    open rather than re-fetched per row (see _request_output_devices)."""
+
+    def test_dispatch_sends_set_app_output_device_with_target_and_device_id(self, qapp, mocker):
+        w = _widget(mocker)
+
+        w._dispatch_app_output_device("spotify.exe", "{render-1}")
+
+        w.router.dispatch.assert_called_with(
+            "terminal.app_volume", action="set_app_output_device", target="spotify.exe", device_id="{render-1}", silent=True,
+        )
+
+    def test_system_default_option_dispatches_an_empty_device_id(self, qapp, mocker):
+        w = _widget(mocker)
+
+        w._dispatch_app_output_device("spotify.exe", "")
+
+        w.router.dispatch.assert_called_with(
+            "terminal.app_volume", action="set_app_output_device", target="spotify.exe", device_id="", silent=True,
+        )
+
+    def test_menu_lists_system_default_plus_every_cached_output_device(self, qapp, mocker):
+        from PyQt6.QtWidgets import QMenu
+        w = _widget(mocker)
+        w.update_app_volumes([{"id": "spotify.exe", "name": "Spotify", "volume": 70, "muted": False}])
+        w.update_output_devices([
+            {"id": "{render-1}", "name": "Speakers"},
+            {"id": "{render-2}", "name": "Headset"},
+        ])
+        mocker.patch.object(QMenu, "exec")
+        add_action_mock = mocker.patch.object(QMenu, "addAction")
+
+        row = w.app_volume_rows["spotify.exe"]
+        w._show_output_device_menu("spotify.exe", row["device_btn"])
+
+        texts = [call.args[0].text() for call in add_action_mock.call_args_list]
+        assert texts == ["System Default", "Speakers", "Headset"]
+
+    def test_menu_shows_just_system_default_when_no_devices_cached_yet(self, qapp, mocker):
+        from PyQt6.QtWidgets import QMenu
+        w = _widget(mocker)
+        w.update_app_volumes([{"id": "spotify.exe", "name": "Spotify", "volume": 70, "muted": False}])
+        mocker.patch.object(QMenu, "exec")
+        add_action_mock = mocker.patch.object(QMenu, "addAction")
+
+        row = w.app_volume_rows["spotify.exe"]
+        w._show_output_device_menu("spotify.exe", row["device_btn"])
+
+        texts = [call.args[0].text() for call in add_action_mock.call_args_list]
+        assert texts == ["System Default"]
+
+    def test_clicking_the_device_button_opens_the_menu(self, qapp, mocker):
+        from PyQt6.QtWidgets import QMenu
+        w = _widget(mocker)
+        w.update_app_volumes([{"id": "spotify.exe", "name": "Spotify", "volume": 70, "muted": False}])
+        mock_exec = mocker.patch.object(QMenu, "exec")
+
+        w.app_volume_rows["spotify.exe"]["device_btn"].click()
+
+        mock_exec.assert_called_once()
+
+
+class TestLyricsToggleButton:
+    """Next to the "SPOTIFY PLAYER" badge -- toggles LyricsDisplay, a
+    sibling widget owned by JarvisUI, not this one. There's no signal
+    wired between them; self.window() reaches JarvisUI the same way
+    showEvent()/_tick() already do for other state."""
+
+    def test_starts_enabled(self, qapp, mocker):
+        w = _widget(mocker)
+        assert w._lyrics_enabled is True
+
+    def test_sits_immediately_next_to_the_badge_not_pushed_to_the_row_end(self, qapp, mocker):
+        """The stretch that pushes other things to the row's far right
+        must come AFTER this button, not before it, or it lands at the
+        opposite end from the "SPOTIFY PLAYER" badge instead of right
+        next to it."""
+        w = _widget(mocker)
+        badge_index = w.header_layout.indexOf(w.badge_lbl)
+        button_index = w.header_layout.indexOf(w.lyrics_toggle_btn)
+
+        assert button_index == badge_index + 1
+
+    def test_clicking_disables_and_notifies_lyrics_display(self, qapp, mocker):
+        w = _widget(mocker)
+        fake_lyrics_display = mocker.MagicMock()
+        fake_window = mocker.MagicMock(lyrics_display=fake_lyrics_display)
+        w.window = lambda: fake_window
+
+        w.lyrics_toggle_btn.click()
+
+        assert w._lyrics_enabled is False
+        fake_lyrics_display.set_enabled.assert_called_once_with(False)
+
+    def test_clicking_twice_re_enables(self, qapp, mocker):
+        w = _widget(mocker)
+        fake_lyrics_display = mocker.MagicMock()
+        fake_window = mocker.MagicMock(lyrics_display=fake_lyrics_display)
+        w.window = lambda: fake_window
+
+        w.lyrics_toggle_btn.click()
+        w.lyrics_toggle_btn.click()
+
+        assert w._lyrics_enabled is True
+        fake_lyrics_display.set_enabled.assert_called_with(True)
+
+    def test_clicking_without_a_real_window_does_not_raise(self, qapp, mocker):
+        w = _widget(mocker)  # no parent -- self.window() is just itself, no lyrics_display attribute
+
+        w.lyrics_toggle_btn.click()
+
+        assert w._lyrics_enabled is False
+
+    def test_showEvent_resyncs_from_the_real_lyrics_display_state(self, qapp, mocker):
+        """Two MediaWidget instances exist (this dashboard one and the
+        calendar carousel's own copy) -- toggling one must not leave the
+        other showing a stale icon once it's shown again."""
+        w = _widget(mocker)
+        fake_lyrics_display = mocker.MagicMock(_lyrics_enabled=False)
+        fake_window = mocker.MagicMock(lyrics_display=fake_lyrics_display, is_fullscreen=False)
+        w.window = lambda: fake_window
+        assert w._lyrics_enabled is True
+
+        w.show()
+
+        assert w._lyrics_enabled is False

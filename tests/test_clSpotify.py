@@ -603,3 +603,259 @@ class TestWakeUpSpotifyEscalation:
 
         mock_launch.assert_called_once()
         assert mock_run.call_count == 2
+
+
+class _FakeAiohttpResponse:
+    def __init__(self, status, json_data=None):
+        self.status = status
+        self._json_data = json_data or {}
+
+    async def json(self):
+        return self._json_data
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+
+class _FakeAiohttpSession:
+    """Mimics aiohttp.ClientSession's async-context-manager shape enough
+    for fetch_lyrics' single GET call -- both the session itself and the
+    object session.get(...) returns are used as `async with` blocks."""
+
+    def __init__(self, response=None, raise_exc=None):
+        self._response = response
+        self._raise_exc = raise_exc
+
+    def get(self, url, params=None):
+        if self._raise_exc is not None:
+            raise self._raise_exc
+        return self._response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+
+class TestParseLrc:
+    """LRC parsing for lrclib.net's syncedLyrics field: "[mm:ss.xx]text"
+    per line."""
+
+    def test_parses_basic_synced_lines_in_order(self):
+        from clSpotify import parse_lrc
+        lrc = "[00:12.50]First line\n[00:18.00]Second line"
+
+        result = parse_lrc(lrc)
+
+        assert result == [
+            {"time": 12.5, "text": "First line"},
+            {"time": 18.0, "text": "Second line"},
+        ]
+
+    def test_sorts_out_of_order_lines_by_time(self):
+        from clSpotify import parse_lrc
+        lrc = "[01:00.00]Later\n[00:05.00]Earlier"
+
+        result = parse_lrc(lrc)
+
+        assert [e["text"] for e in result] == ["Earlier", "Later"]
+
+    def test_skips_metadata_header_lines(self):
+        from clSpotify import parse_lrc
+        lrc = "[ar:Some Artist]\n[ti:Some Title]\n[00:10.00]Actual lyric"
+
+        result = parse_lrc(lrc)
+
+        assert result == [{"time": 10.0, "text": "Actual lyric"}]
+
+    def test_skips_lines_with_no_text_after_the_timestamp(self):
+        from clSpotify import parse_lrc
+        lrc = "[00:10.00]\n[00:15.00]Real line"
+
+        result = parse_lrc(lrc)
+
+        assert result == [{"time": 15.0, "text": "Real line"}]
+
+    def test_empty_string_returns_no_entries(self):
+        from clSpotify import parse_lrc
+        assert parse_lrc("") == []
+
+
+class TestFetchLyrics:
+    @pytest.mark.asyncio
+    async def test_returns_found_true_with_parsed_lines_on_success(self, spotify_manager, mocker):
+        response = _FakeAiohttpResponse(200, {"syncedLyrics": "[00:05.00]Hello there"})
+        mocker.patch("clSpotify.aiohttp.ClientSession", return_value=_FakeAiohttpSession(response))
+
+        result = await spotify_manager.fetch_lyrics("Some Track", "Some Artist", 180.0)
+
+        assert result == {"found": True, "lines": [{"time": 5.0, "text": "Hello there"}]}
+
+    @pytest.mark.asyncio
+    async def test_returns_found_false_when_no_synced_lyrics_field(self, spotify_manager, mocker):
+        response = _FakeAiohttpResponse(200, {"plainLyrics": "Hello there"})
+        mocker.patch("clSpotify.aiohttp.ClientSession", return_value=_FakeAiohttpSession(response))
+
+        result = await spotify_manager.fetch_lyrics("Some Track", "Some Artist", 180.0)
+
+        assert result == {"found": False}
+
+    @pytest.mark.asyncio
+    async def test_returns_found_false_on_non_200_status(self, spotify_manager, mocker):
+        response = _FakeAiohttpResponse(404, {})
+        mocker.patch("clSpotify.aiohttp.ClientSession", return_value=_FakeAiohttpSession(response))
+
+        result = await spotify_manager.fetch_lyrics("Unknown Track", "Unknown Artist", 180.0)
+
+        assert result == {"found": False}
+
+    @pytest.mark.asyncio
+    async def test_returns_found_false_on_network_error_without_raising(self, spotify_manager, mocker):
+        mocker.patch("clSpotify.aiohttp.ClientSession", return_value=_FakeAiohttpSession(raise_exc=ConnectionError("boom")))
+
+        result = await spotify_manager.fetch_lyrics("Some Track", "Some Artist", 180.0)
+
+        assert result == {"found": False}
+
+
+class TestMaybePublishLyrics:
+    """Called on every status poll, but should only actually hit the
+    network when the track changes -- the full synced lyric sheet is
+    published once per track, and the UI tracks position locally (the
+    same way its progress bar already advances between the infrequent
+    status polls) to pick the current/next/previous line by index,
+    rather than needing this resolved and re-sent on every poll."""
+
+    def _lines(self):
+        return [
+            {"time": 0.0, "text": "First line"},
+            {"time": 10.0, "text": "Second line"},
+            {"time": 20.0, "text": "Third line"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_fetches_and_publishes_the_full_lyric_sheet_on_first_call(self, spotify_manager, mocker):
+        mock_fetch = mocker.patch.object(spotify_manager, "fetch_lyrics", return_value={"found": True, "lines": self._lines()})
+        mqtt_client = AsyncMock()
+
+        await spotify_manager.maybe_publish_lyrics(mqtt_client, "Track A", "Artist A", 200.0)
+
+        mock_fetch.assert_called_once()
+        topic, payload = mqtt_client.publish.call_args[0]
+        assert topic == "jarvis/sys/spotify_lyrics"
+        assert json.loads(payload) == {
+            "title": "Track A", "artist": "Artist A", "found": True,
+            "lines": self._lines(),
+        }
+
+    @pytest.mark.asyncio
+    async def test_does_not_refetch_or_republish_the_same_track_twice(self, spotify_manager, mocker):
+        mock_fetch = mocker.patch.object(spotify_manager, "fetch_lyrics", return_value={"found": True, "lines": self._lines()})
+        mqtt_client = AsyncMock()
+
+        await spotify_manager.maybe_publish_lyrics(mqtt_client, "Track A", "Artist A", 200.0)
+        await spotify_manager.maybe_publish_lyrics(mqtt_client, "Track A", "Artist A", 200.0)
+
+        mock_fetch.assert_called_once()
+        mqtt_client.publish.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_refetches_when_the_track_changes(self, spotify_manager, mocker):
+        mock_fetch = mocker.patch.object(spotify_manager, "fetch_lyrics", return_value={"found": False})
+        mqtt_client = AsyncMock()
+
+        await spotify_manager.maybe_publish_lyrics(mqtt_client, "Track A", "Artist A", 200.0)
+        await spotify_manager.maybe_publish_lyrics(mqtt_client, "Track B", "Artist B", 210.0)
+
+        assert mock_fetch.call_count == 2
+        assert mqtt_client.publish.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_publishes_found_false_when_no_lyrics_available(self, spotify_manager, mocker):
+        mocker.patch.object(spotify_manager, "fetch_lyrics", return_value={"found": False})
+        mqtt_client = AsyncMock()
+
+        await spotify_manager.maybe_publish_lyrics(mqtt_client, "Track A", "Artist A", 200.0)
+
+        payload = json.loads(mqtt_client.publish.call_args[0][1])
+        assert payload == {"title": "Track A", "artist": "Artist A", "found": False}
+
+
+class TestHandleLocalStatusUpdate:
+    """poll_spotify_local_status (clTerminal.py) publishes unconditionally
+    on its own ~10s timer, not just on change -- reacting to it here gives
+    the UI a steady, push-driven media_status/lyrics refresh instead of
+    only ever refreshing on an explicit UI poll or an explicit command
+    (which could otherwise go tens of seconds, or longer, without any
+    update at all)."""
+
+    def _payload(self, **overrides):
+        base = {
+            "found": True, "title": "Some Song", "artist": "Some Artist",
+            "status": "Playing", "position": 12.5, "duration": 200.0,
+        }
+        base.update(overrides)
+        return base
+
+    @pytest.mark.asyncio
+    async def test_caches_the_local_status_and_its_timestamp(self, spotify_manager, mocker):
+        mocker.patch.object(spotify_manager, "maybe_publish_lyrics")
+        mocker.patch("clSpotify.time.time", return_value=12345.0)
+        mqtt_client = AsyncMock()
+
+        await spotify_manager.handle_local_status_update(mqtt_client, self._payload())
+
+        assert spotify_manager._local_status == self._payload()
+        assert spotify_manager._local_status_time == 12345.0
+
+    @pytest.mark.asyncio
+    async def test_publishes_a_fresh_media_status_when_found(self, spotify_manager, mocker):
+        mocker.patch.object(spotify_manager, "maybe_publish_lyrics")
+        spotify_manager.last_known_normal_volume = 42
+        mqtt_client = AsyncMock()
+
+        await spotify_manager.handle_local_status_update(mqtt_client, self._payload())
+
+        topic, payload = mqtt_client.publish.call_args_list[0].args
+        assert topic == "jarvis/sys/media_status"
+        assert json.loads(payload) == {
+            "title": "Some Song", "artist": "Some Artist",
+            "position": 12.5, "duration": 200.0, "status": "Playing", "volume": 42,
+        }
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_100_volume_when_none_known_yet(self, spotify_manager, mocker):
+        mocker.patch.object(spotify_manager, "maybe_publish_lyrics")
+        spotify_manager.last_known_normal_volume = None
+        mqtt_client = AsyncMock()
+
+        await spotify_manager.handle_local_status_update(mqtt_client, self._payload())
+
+        payload = json.loads(mqtt_client.publish.call_args_list[0].args[1])
+        assert payload["volume"] == 100
+
+    @pytest.mark.asyncio
+    async def test_also_checks_lyrics_for_the_reported_track(self, spotify_manager, mocker):
+        mock_lyrics = mocker.patch.object(spotify_manager, "maybe_publish_lyrics")
+        mqtt_client = AsyncMock()
+
+        await spotify_manager.handle_local_status_update(mqtt_client, self._payload())
+
+        mock_lyrics.assert_called_once_with(mqtt_client, "Some Song", "Some Artist", 200.0)
+
+    @pytest.mark.asyncio
+    async def test_does_not_publish_anything_when_not_found(self, spotify_manager, mocker):
+        mock_lyrics = mocker.patch.object(spotify_manager, "maybe_publish_lyrics")
+        mqtt_client = AsyncMock()
+
+        await spotify_manager.handle_local_status_update(mqtt_client, {"found": False})
+
+        mqtt_client.publish.assert_not_called()
+        mock_lyrics.assert_not_called()
+        # Still cached, though -- status()'s lightweight fast path needs to
+        # know "no local Spotify session" too, not just successful ones.
+        assert spotify_manager._local_status == {"found": False}

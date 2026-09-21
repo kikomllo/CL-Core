@@ -148,6 +148,64 @@ class TestUiStateRestoreOnStartup:
         assert ui.active_widgets["widget_settings"].is_unpinned is False
 
 
+class TestAppStateChangeDoesNotFightForFocus:
+    """_on_app_state_changed reacts to QApplication going Active/Inactive --
+    originally a Wayland-only fix for that platform's focus-stealing
+    prevention spuriously marking the app Inactive. On Windows this handler
+    has no such problem to compensate for, and unconditionally reactivating
+    (activateWindow()/raise_() on text_input, a JarvisUI child) drags
+    JarvisUI's whole top-level window to the front the instant the app
+    becomes Active for ANY reason -- including simply focusing an unpinned
+    dashboard widget, defeating the entire point of unpinning it."""
+
+    @pytest.fixture(autouse=True)
+    def no_real_mqtt_thread(self, mocker):
+        import clUI
+        mocker.patch.object(clUI.MqttThread, "start")
+
+    def _ui(self, mocker):
+        import clUI
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "0"})
+        ui = clUI.JarvisUI()
+        ui.is_fullscreen = True
+        return ui
+
+    def test_never_reactivates_on_windows_even_when_focus_was_lost(self, qapp, mocker):
+        import clUI
+        mocker.patch.object(clUI.sys, "platform", "win32")
+        ui = self._ui(mocker)
+        mocker.patch.object(ui.text_input, "hasFocus", return_value=False)
+        activate = mocker.patch.object(ui.text_input, "activateWindow")
+        raise_ = mocker.patch.object(ui.text_input, "raise_")
+
+        ui._on_app_state_changed(clUI.Qt.ApplicationState.ApplicationActive)
+
+        activate.assert_not_called()
+        raise_.assert_not_called()
+
+    def test_does_not_reactivate_when_already_focused(self, qapp, mocker):
+        import clUI
+        mocker.patch.object(clUI.sys, "platform", "linux")
+        ui = self._ui(mocker)
+        mocker.patch.object(ui.text_input, "hasFocus", return_value=True)
+        activate = mocker.patch.object(ui.text_input, "activateWindow")
+
+        ui._on_app_state_changed(clUI.Qt.ApplicationState.ApplicationActive)
+
+        activate.assert_not_called()
+
+    def test_reactivates_on_non_windows_when_focus_was_actually_lost(self, qapp, mocker):
+        import clUI
+        mocker.patch.object(clUI.sys, "platform", "linux")
+        ui = self._ui(mocker)
+        mocker.patch.object(ui.text_input, "hasFocus", return_value=False)
+        activate = mocker.patch.object(ui.text_input, "activateWindow")
+
+        ui._on_app_state_changed(clUI.Qt.ApplicationState.ApplicationActive)
+
+        activate.assert_called_once()
+
+
 class TestSaveUiStateNeverClobbersLayoutFromOverlay:
     """Overlay mode force-hides the drawer and every dashboard widget --
     that's a transient view change, not the user closing anything. A save
@@ -274,6 +332,75 @@ class TestDraggableWidgetUpdateScalingPreservesSize:
         finally:
             wrapper.close()
 
+    def test_a_grow_here_is_persisted_to_ui_state_like_a_manual_resize_is(self, qapp, mocker):
+        """Live bug: a size only ever reached automatically here (e.g.
+        switching the notes widget from its list to a single note, whose
+        content needs more room) was purely in-memory -- mouseReleaseEvent
+        saves after a manual drag-resize, but this grow-only path never
+        did, so it was silently lost on the next module restart, reverting
+        to whatever was last manually saved."""
+        import clUI
+        from PyQt6.QtCore import QSize
+        from PyQt6.QtWidgets import QLabel
+        # main_window is just a plain attribute captured once at
+        # construction (see TestSpawnWidgetMainWindowReference above) --
+        # passing a mock as the real Qt `parent` itself isn't valid, so
+        # construct with parent=None and assign main_window afterward.
+        content = QLabel("content")
+        wrapper = clUI.DraggableWidget("widget_test", "Test", content)
+        main_window = mocker.MagicMock()
+        main_window._restoring_ui_state = False
+        wrapper.main_window = main_window
+        try:
+            wrapper.show()
+
+            bigger_hint = QSize(wrapper.width() + 200, wrapper.height() + 200)
+            mocker.patch.object(clUI.DraggableWidget, "sizeHint", return_value=bigger_hint)
+
+            wrapper.update_scaling()
+
+            main_window.save_ui_state.assert_called_once()
+        finally:
+            wrapper.close()
+
+    def test_does_not_save_mid_restore(self, qapp, mocker):
+        import clUI
+        from PyQt6.QtCore import QSize
+        from PyQt6.QtWidgets import QLabel
+        content = QLabel("content")
+        wrapper = clUI.DraggableWidget("widget_test", "Test", content)
+        main_window = mocker.MagicMock()
+        main_window._restoring_ui_state = True
+        wrapper.main_window = main_window
+        try:
+            wrapper.show()
+
+            bigger_hint = QSize(wrapper.width() + 200, wrapper.height() + 200)
+            mocker.patch.object(clUI.DraggableWidget, "sizeHint", return_value=bigger_hint)
+
+            wrapper.update_scaling()
+
+            main_window.save_ui_state.assert_not_called()
+        finally:
+            wrapper.close()
+
+    def test_does_not_save_when_no_actual_resize_happens(self, qapp, mocker):
+        import clUI
+        from PyQt6.QtWidgets import QLabel
+        content = QLabel("content")
+        wrapper = clUI.DraggableWidget("widget_test", "Test", content)
+        main_window = mocker.MagicMock()
+        main_window._restoring_ui_state = False
+        wrapper.main_window = main_window
+        try:
+            wrapper.show()
+
+            wrapper.update_scaling()  # already at its natural size -- no resize needed
+
+            main_window.save_ui_state.assert_not_called()
+        finally:
+            wrapper.close()
+
 
 class TestOverlayIdleWidgetCleanup:
     """set_state('IDLE') closes floating widgets while in overlay mode --
@@ -351,6 +478,10 @@ class TestAudioQuickSwitchPill:
         mocker.patch.object(clUI.AudioQuickSwitchPill, "_enumerate_options", return_value=[current_device])
         mocker.patch("utils.clAudioDevices.get_clean_display_names", return_value={current_device: current_device})
         pill = clUI.AudioQuickSwitchPill(kind, grow_direction=grow_direction)
+        # The initial refresh_label() call is deferred (QTimer.singleShot(0, ...))
+        # so construction never blocks on real device enumeration -- flush it.
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()
         return pill
 
     def test_collapsed_icon_shows_the_svg_icon_not_the_device_name(self, qapp, mocker):
@@ -771,6 +902,53 @@ class TestLoadUiStateDoesNotClobberVisibilityMidRestore:
         assert getattr(ui, "_restoring_ui_state", False) is False
 
 
+class TestLoadUiStateDoesNotShowReminderInOverlaySizedWindow:
+    """Live bug: reminder_widget's saved visibility was restored
+    unconditionally on every load_ui_state() call, including the very
+    first one made in __init__ (restore_widgets=False, deliberately made
+    while the window is still sized/positioned as the tiny overlay box --
+    see the comment at that call site). A reminder saved visible from a
+    previous fullscreen session showed up floating inside the tiny
+    overlay square on every restart, instead of waiting for the real
+    fullscreen restore the same way the draggable widgets already do."""
+
+    @pytest.fixture(autouse=True)
+    def no_real_mqtt_thread(self, mocker):
+        import clUI
+        mocker.patch.object(clUI.MqttThread, "start")
+
+    def test_reminder_stays_hidden_on_the_restore_widgets_false_pass(self, qapp, fake_state_file, mocker):
+        import clUI
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "0"})
+        with open(fake_state_file, "w") as f:
+            json.dump({
+                "is_fullscreen": False, "current_monitor_idx": 0, "screen_size": [1920, 1080],
+                "reminder_widget": {"visible": True},
+                "active_widgets": {},
+            }, f)
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            ui = clUI.JarvisUI()
+
+        assert ui.reminder_widget.isHidden()
+
+    def test_reminder_does_show_once_a_real_restore_runs(self, qapp, fake_state_file, mocker):
+        import clUI
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "0"})
+        with open(fake_state_file, "w") as f:
+            json.dump({
+                "is_fullscreen": False, "current_monitor_idx": 0, "screen_size": [1920, 1080],
+                "reminder_widget": {"visible": True},
+                "active_widgets": {},
+            }, f)
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            ui = clUI.JarvisUI()
+            ui.load_ui_state()  # restore_widgets=True, matching set_ui_mode("set_fullscreen")'s own call
+
+        assert not ui.reminder_widget.isHidden()
+
+
 class TestFullscreenSwitchPreservesLiveWidgetState:
     """set_ui_mode('set_fullscreen') calls load_ui_state() on every manual
     overlay -> fullscreen switch, not just at boot. A widget already alive
@@ -874,6 +1052,34 @@ class TestClosedWidgetStaysClosedAcrossOverlayRoundTrip:
             assert "widget_updates" not in ui.active_widgets
 
 
+class TestFullscreenAlwaysShowsTextInput:
+    """text_input used to only ever get shown as a side effect of
+    _on_app_state_changed reacting to the app going Active -- which just
+    happened to fire right after showFullScreen() activates the window.
+    Gating that handler off on Windows (see TestAppStateChangeDoesNotFightForFocus)
+    silently broke this: with no direct show() call anywhere in
+    set_ui_mode(), the text bar never appeared on Windows at all."""
+
+    @pytest.fixture(autouse=True)
+    def no_real_mqtt_thread(self, mocker):
+        import clUI
+        mocker.patch.object(clUI.MqttThread, "start")
+
+    def test_text_input_is_visible_after_entering_fullscreen(self, qapp, fake_state_file, mocker):
+        import clUI
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "0"})
+        with open(fake_state_file, "w") as f:
+            json.dump({"is_fullscreen": False, "current_monitor_idx": 0, "active_widgets": {}}, f)
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            ui = clUI.JarvisUI()
+            assert ui.text_input.isHidden()
+
+            ui.set_ui_mode("set_fullscreen")
+
+            assert ui.text_input.isVisible()
+
+
 class TestSpawnWidgetMainWindowReference:
     """spawn_widget()'s overlay-mode ('standalone') branch used to construct
     DraggableWidget with parent=None, which also left main_window (captured
@@ -907,6 +1113,54 @@ class TestSpawnWidgetMainWindowReference:
 
         assert wrapper.parent() is ui
         assert wrapper.isWindow() is False
+
+
+class TestSpawnWidgetOneTimeSizeFloor:
+    """Live bug: TodoWidget.sizeHint() used to permanently floor itself at
+    (350, 400) -- but DraggableWidget.update_scaling()'s grow-only resize
+    consults sizeHint() on EVERY status refresh, not just the first one.
+    So a size the user deliberately dragged smaller than the floor (or
+    one ui_state.json had legitimately saved smaller) got silently grown
+    back up to the floor the very next time the todo list refreshed
+    (every task added/completed/deleted), defeating ui_state.json as the
+    single source of truth for a widget's size. The floor now applies
+    only once, here in spawn_widget(), for a widget with no saved size
+    yet -- load_ui_state() always resizes to the real saved value right
+    after this, for any widget already in ui_state.json, so this can
+    never fight a restored or manually-chosen size."""
+
+    @pytest.fixture(autouse=True)
+    def no_real_mqtt_thread(self, mocker):
+        import clUI
+        mocker.patch.object(clUI.MqttThread, "start")
+
+    def test_a_brand_new_todo_widget_gets_floored_to_its_comfortable_minimum(self, qapp, mocker):
+        import clUI
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "0"})
+        mocker.patch.object(clUI.ActionRouter, "dispatch", return_value=True)
+        ui = clUI.JarvisUI()
+        mocker.patch.object(ui, "save_ui_state")
+        ui.is_fullscreen = True
+
+        ui.spawn_widget("widget_todo_list", "To-Do List", clUI.TodoWidget())
+        wrapper = ui.active_widgets["widget_todo_list"]
+
+        assert wrapper.width() >= 350
+        assert wrapper.height() >= 400
+
+    def test_a_widget_with_no_get_standalone_min_size_is_left_at_its_natural_size(self, qapp, mocker):
+        import clUI
+        from PyQt6.QtWidgets import QLabel
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "0"})
+        ui = clUI.JarvisUI()
+        mocker.patch.object(ui, "save_ui_state")
+        ui.is_fullscreen = True
+
+        ui.spawn_widget("widget_plain", "Plain", QLabel("hi"))
+        wrapper = ui.active_widgets["widget_plain"]
+
+        # No floor applied -- just whatever the wrapper's own natural sizeHint is.
+        assert wrapper.size() == wrapper.sizeHint()
 
 
 @pytest.mark.skip(reason="Interactive GUI test")
@@ -1150,3 +1404,473 @@ class TestDraggableWidgetPinWindowChrome:
         parent_arg, flags_arg = calls[0]
         assert parent_arg is main_window
         assert flags_arg == Qt.WindowType.Widget
+
+
+class TestLyricsDisplay:
+    """Karaoke-style lyrics area: hidden unless Spotify is playing AND a
+    lyrics payload matching the exact track media_status currently
+    reports has arrived. The backend sends the FULL synced lyric sheet
+    once per track (not a running current/next pair) -- this widget holds
+    the whole list and picks the current line by index itself, advancing
+    locally on a timer as interpolated position crosses each line's own
+    timestamp, animating the transition. Holding the whole sheet (rather
+    than only ever a current+next pair resolved by a rare backend update)
+    means every subsequent line is already known, no matter how long the
+    next backend update takes -- mirroring how MediaWidget's own progress
+    bar already advances locally between its own infrequent status polls."""
+
+    def _display(self, qapp):
+        import clUI
+        d = clUI.LyricsDisplay()
+        d.resize(600, 120)
+        # self.window() on a parentless widget returns itself -- this
+        # stands in for "the dashboard is in fullscreen mode", which
+        # _refresh_visibility() now requires (see TestLyricsDisplay
+        # OverlayVisibility for the overlay-mode gating itself).
+        d.is_fullscreen = True
+        return d
+
+    def _line(self, t, text):
+        return {"time": t, "text": text}
+
+    def _lines(self):
+        return [
+            self._line(0.0, "First line"),
+            self._line(10.0, "Second line"),
+            self._line(20.0, "Third line"),
+        ]
+
+    def test_hidden_by_default(self, qapp):
+        d = self._display(qapp)
+        assert d.isHidden()
+
+    def test_word_wrap_is_disabled_on_every_row(self, qapp):
+        d = self._display(qapp)
+        assert d.next_lbl.wordWrap() is False
+        assert d.current_lbl.wordWrap() is False
+        assert d.prev_lbl.wordWrap() is False
+
+    def test_current_line_color_is_toned_down_from_full_theme_primary(self, qapp):
+        d = self._display(qapp)
+        assert d.CURRENT_COLOR_RGBA == (255, 170, 0, 230)  # ~90% opacity, not the fully-opaque theme color
+        assert d.CURRENT_COLOR in d.current_lbl.styleSheet()
+
+    def test_stays_hidden_when_not_playing(self, qapp):
+        d = self._display(qapp)
+        d.set_lyrics("Song", "Artist", True, self._lines())
+        d.set_playback("Song", "Artist", False, 5.0, 30.0)
+        assert d.isHidden()
+
+    def test_stays_hidden_when_no_lyrics_found(self, qapp):
+        d = self._display(qapp)
+        d.set_lyrics("Song", "Artist", False, [])
+        d.set_playback("Song", "Artist", True, 5.0, 30.0)
+        assert d.isHidden()
+
+    def test_stays_hidden_when_lyrics_are_for_a_different_track(self, qapp):
+        """Live bug this guards against: a lyrics payload for the
+        previous track arriving just after media_status already reports
+        the new one (or vice versa) must not show mismatched lyrics."""
+        d = self._display(qapp)
+        d.set_lyrics("Old Song", "Artist", True, self._lines())
+        d.set_playback("New Song", "Artist", True, 5.0, 30.0)
+        assert d.isHidden()
+
+    def test_becomes_visible_when_playing_with_matching_lyrics(self, qapp):
+        d = self._display(qapp)
+        d.set_lyrics("Song", "Artist", True, self._lines())
+        d.set_playback("Song", "Artist", True, 5.0, 30.0)
+        assert not d.isHidden()
+
+    def test_stays_hidden_in_overlay_mode_even_with_matching_lyrics(self, qapp):
+        """Live bug: this widget has no window/frame of its own and isn't
+        part of the overlay-mode hide list any other way -- without
+        checking is_fullscreen itself, it could show up floating inside
+        the tiny overlay square whenever a media_status/lyrics update
+        landed while the dashboard was collapsed to overlay."""
+        d = self._display(qapp)
+        d.is_fullscreen = False  # simulates the dashboard being in overlay mode
+
+        d.set_lyrics("Song", "Artist", True, self._lines())
+        d.set_playback("Song", "Artist", True, 5.0, 30.0)
+
+        assert d.isHidden()
+
+    def test_hides_immediately_when_switching_to_overlay_while_shown(self, qapp):
+        d = self._display(qapp)
+        d.set_lyrics("Song", "Artist", True, self._lines())
+        d.set_playback("Song", "Artist", True, 5.0, 30.0)
+        assert not d.isHidden()
+
+        d.is_fullscreen = False
+        d._refresh_visibility()
+
+        assert d.isHidden()
+
+    def test_is_enabled_by_default(self, qapp):
+        d = self._display(qapp)
+        assert d._lyrics_enabled is True
+
+    def test_manually_disabling_hides_it_even_though_it_would_otherwise_show(self, qapp):
+        d = self._display(qapp)
+        d.set_lyrics("Song", "Artist", True, self._lines())
+        d.set_playback("Song", "Artist", True, 5.0, 30.0)
+        assert not d.isHidden()
+
+        d.set_enabled(False)
+
+        assert d.isHidden()
+
+    def test_re_enabling_shows_it_again_if_it_would_otherwise_be_showable(self, qapp):
+        d = self._display(qapp)
+        d.set_lyrics("Song", "Artist", True, self._lines())
+        d.set_playback("Song", "Artist", True, 5.0, 30.0)
+        d.set_enabled(False)
+        assert d.isHidden()
+
+        d.set_enabled(True)
+
+        assert not d.isHidden()
+
+    def test_disabling_before_it_would_ever_show_keeps_it_hidden(self, qapp):
+        d = self._display(qapp)
+        d.set_enabled(False)
+
+        d.set_lyrics("Song", "Artist", True, self._lines())
+        d.set_playback("Song", "Artist", True, 5.0, 30.0)
+
+        assert d.isHidden()
+
+    def test_resolves_current_next_and_previous_by_position(self, qapp):
+        d = self._display(qapp)
+        d.set_lyrics("Song", "Artist", True, self._lines())
+        d.set_playback("Song", "Artist", True, 12.0, 30.0)  # between line 2 (t=10) and line 3 (t=20)
+
+        assert d.current_lbl.text() == "Second line"
+        assert d.next_lbl.text() == "Third line"
+        assert d.prev_lbl.text() == "First line"
+
+    def test_before_the_first_line_shows_no_current_or_previous_line(self, qapp):
+        d = self._display(qapp)
+        d.set_lyrics("Song", "Artist", True, self._lines())
+        d.set_playback("Song", "Artist", True, -1.0, 30.0)
+
+        assert d.current_lbl.text() == ""
+        assert d.prev_lbl.text() == ""
+        assert d.next_lbl.text() == "First line"
+
+    def test_promotes_to_the_next_line_once_position_reaches_its_timestamp(self, qapp, mocker):
+        """The promotion (and the animation it starts) must be triggered
+        locally, off interpolated position, not wait for a fresh backend
+        update -- with only one publish per track, there may not be
+        another one for a long time."""
+        mock_time = mocker.patch("clUI.time.time")
+        mock_time.return_value = 1000.0
+        d = self._display(qapp)
+        d.set_lyrics("Song", "Artist", True, self._lines())
+        d.set_playback("Song", "Artist", True, 8.0, 30.0)  # position=8s, just before line 2 (t=10)
+        assert d._animating is False
+        assert d.current_lbl.text() == "First line"
+
+        mock_time.return_value = 1003.0  # 3 real seconds later -> position ~11s
+        d._tick()
+
+        assert d._animating is True
+        assert d._current_index == 1
+        # The static labels stay on their old text/hidden until the
+        # animation finishes -- the temporary sliding labels carry the
+        # visible transition instead (see _on_anim_finished). prev_lbl is
+        # hidden too: without it, the incoming line's slide into the
+        # previous row would overlap prev_lbl's still-visible, stale text
+        # (both paint with a transparent background).
+        assert d.current_lbl.isHidden()
+        assert d.next_lbl.isHidden()
+        assert d.prev_lbl.isHidden()
+
+    def test_slide_labels_are_not_qlabels(self, qapp, mocker):
+        """Live bug: the temporary sliding labels were real QLabels, whose
+        color AND font-size were both silently overridden by
+        Theme.get_global_stylesheet()'s app-wide "QLabel { color: ...;
+        font-size: ...; }" rule the instant a value was set
+        programmatically afterward (confirmed live for both properties,
+        via QPalette and via QFont.setPixelSize() in turn) -- no matter
+        how the override was attempted, that ancestor rule kept winning
+        the QSS cascade for any property it also claimed. A plain
+        QWidget that paints its own text via QPainter (_AnimatedLyricLabel)
+        has no such rule targeting it at all."""
+        import clUI
+        from PyQt6.QtWidgets import QLabel
+        mock_time = mocker.patch("clUI.time.time")
+        mock_time.return_value = 1000.0
+        d = self._display(qapp)
+        d.set_lyrics("Song", "Artist", True, self._lines())
+        d.set_playback("Song", "Artist", True, 8.0, 30.0)
+        mock_time.return_value = 1003.0
+
+        d._tick()
+
+        assert isinstance(d._slide_up_lbl, clUI._AnimatedLyricLabel)
+        assert not isinstance(d._slide_up_lbl, QLabel)
+        assert d._slide_up_lbl.rgba == d.CURRENT_COLOR_RGBA
+        assert d._slide_down_lbl.rgba == d.DIM_COLOR_RGBA
+        assert d._slide_in_next_lbl.rgba == d.DIM_COLOR_RGBA
+
+    def test_anim_step_updates_the_font_size_progressively_not_just_at_the_end(self, qapp, mocker):
+        """Live bug: font-size looked frozen at the theme's global default
+        (14px -- coincidentally identical to DIM_FONT_PX, which is why it
+        read as "stuck at the small starting size") for the whole
+        transition, only reaching the correct value once
+        _on_anim_finished() swapped in the real static label. Each step
+        must move the size, not just the first/last."""
+        mock_time = mocker.patch("clUI.time.time")
+        mock_time.return_value = 1000.0
+        d = self._display(qapp)
+        d.set_lyrics("Song", "Artist", True, self._lines())
+        d.set_playback("Song", "Artist", True, 8.0, 30.0)
+        mock_time.return_value = 1003.0
+        d._tick()
+        assert d._slide_up_lbl.font_px == d.DIM_FONT_PX  # starting point, before any step
+
+        d._on_anim_step(0.3)
+        size_at_30pct = d._slide_up_lbl.font_px
+
+        d._on_anim_step(0.7)
+        size_at_70pct = d._slide_up_lbl.font_px
+
+        assert d.DIM_FONT_PX < size_at_30pct < size_at_70pct < d.CURRENT_FONT_PX
+
+    def test_finishing_the_animation_reveals_the_correct_final_text(self, qapp, mocker):
+        mock_time = mocker.patch("clUI.time.time")
+        mock_time.return_value = 1000.0
+        d = self._display(qapp)
+        d.set_lyrics("Song", "Artist", True, self._lines())
+        d.set_playback("Song", "Artist", True, 8.0, 30.0)
+        mock_time.return_value = 1003.0
+        d._tick()  # triggers the promotion + animation
+
+        d._on_anim_finished()
+
+        assert d._animating is False
+        assert not d.current_lbl.isHidden()
+        assert not d.next_lbl.isHidden()
+        assert not d.prev_lbl.isHidden()
+        assert d.current_lbl.text() == "Second line"
+        assert d.next_lbl.text() == "Third line"
+        assert d.prev_lbl.text() == "First line"
+
+    def test_promote_creates_a_slide_in_label_for_the_brand_new_next_line(self, qapp, mocker):
+        """Live gap: only the outgoing-current and outgoing-next lines
+        animated -- the brand-new next line (now two ahead of the old
+        current line) just popped into the top row at full size the
+        instant the transition ended. It now enters on the same clock,
+        starting small and below its resting spot."""
+        mock_time = mocker.patch("clUI.time.time")
+        mock_time.return_value = 1000.0
+        d = self._display(qapp)
+        d.set_lyrics("Song", "Artist", True, self._lines())
+        d.set_playback("Song", "Artist", True, 8.0, 30.0)  # index 0, "First line"
+        mock_time.return_value = 1003.0
+
+        d._tick()  # promotes to index 1 ("Second line"); index 2 ("Third line") becomes the new next
+
+        assert d._slide_in_next_lbl is not None
+        assert d._slide_in_next_lbl.text == "Third line"
+        assert d._slide_in_next_lbl.geometry().y() == d.NEXT_ENTRY_START_OFFSET_PX
+        # Font size/weight live on the widget's own plain attributes, not
+        # a stylesheet or QFont lookup -- see _AnimatedLyricLabel.
+        assert d._slide_in_next_lbl.font_px == d.NEXT_ENTRY_START_FONT_PX
+
+    def test_promote_creates_no_slide_in_label_when_there_is_no_further_line(self, qapp, mocker):
+        mock_time = mocker.patch("clUI.time.time")
+        mock_time.return_value = 1000.0
+        d = self._display(qapp)
+        d.set_lyrics("Song", "Artist", True, self._lines())
+        d.set_playback("Song", "Artist", True, 18.0, 30.0)  # index 1, "Second line"
+        mock_time.return_value = 1003.0
+
+        d._tick()  # promotes to index 2 ("Third line"); nothing comes after it
+
+        assert d._slide_in_next_lbl is None
+
+    def test_anim_step_interpolates_the_slide_in_label_toward_its_resting_style(self, qapp, mocker):
+        mock_time = mocker.patch("clUI.time.time")
+        mock_time.return_value = 1000.0
+        d = self._display(qapp)
+        d.set_lyrics("Song", "Artist", True, self._lines())
+        d.set_playback("Song", "Artist", True, 8.0, 30.0)
+        mock_time.return_value = 1003.0
+        d._tick()
+
+        d._on_anim_step(0.5)
+
+        expected_font = int(d.NEXT_ENTRY_START_FONT_PX + (d.DIM_FONT_PX - d.NEXT_ENTRY_START_FONT_PX) * 0.5)
+        expected_y = int(d.NEXT_ENTRY_START_OFFSET_PX * 0.5)
+        assert d._slide_in_next_lbl.geometry().y() == expected_y
+        assert d._slide_in_next_lbl.font_px == expected_font
+
+        d._on_anim_step(1.0)
+
+        assert d._slide_in_next_lbl.geometry().y() == 0
+        assert d._slide_in_next_lbl.font_px == d.DIM_FONT_PX
+
+    def test_finishing_the_animation_cleans_up_the_slide_in_label(self, qapp, mocker):
+        mock_time = mocker.patch("clUI.time.time")
+        mock_time.return_value = 1000.0
+        d = self._display(qapp)
+        d.set_lyrics("Song", "Artist", True, self._lines())
+        d.set_playback("Song", "Artist", True, 8.0, 30.0)
+        mock_time.return_value = 1003.0
+        d._tick()
+
+        d._on_anim_finished()
+
+        assert d._slide_in_next_lbl is None
+
+    def test_a_forward_catch_up_jump_still_animates(self, qapp, mocker):
+        """Live bug: a sparse position correction (SMTC's own timeline
+        snapshot can go stale for several seconds between updates) can
+        jump position far enough to skip past more than one line between
+        two ticks -- landing directly on the far line with no animation
+        made the catch-up look like a flat pop-in instead of the same
+        scroll+enlarge every ordinary +1 advance gets. Any FORWARD jump
+        (however many lines it skips) now animates the same way; only a
+        backward jump or the very first resolution still snaps."""
+        mock_time = mocker.patch("clUI.time.time")
+        mock_time.return_value = 1000.0
+        d = self._display(qapp)
+        d.set_lyrics("Song", "Artist", True, self._lines())
+        d.set_playback("Song", "Artist", True, 1.0, 30.0)  # position=1s -> line 0
+
+        mock_time.return_value = 1000.5
+        d.set_playback("Song", "Artist", True, 22.0, 30.0)  # jumped straight to line 2
+        d._tick()
+
+        assert d._animating is True
+        assert d._current_index == 2
+        # The incoming line already carries the correct (target) text
+        # throughout the animation, not whatever line 1 (the skipped-over
+        # line that was showing as the small "next" preview) had.
+        assert d._slide_up_lbl.text == "Third line"
+
+        d._on_anim_finished()
+
+        assert d._animating is False
+        assert d.current_lbl.text() == "Third line"
+
+    def test_a_backward_jump_snaps_directly_without_animating(self, qapp, mocker):
+        """A real seek backward (or a rewind) has no sensible reverse
+        animation in this revolver design -- it snaps directly."""
+        mock_time = mocker.patch("clUI.time.time")
+        mock_time.return_value = 1000.0
+        d = self._display(qapp)
+        d.set_lyrics("Song", "Artist", True, self._lines())
+        d.set_playback("Song", "Artist", True, 22.0, 30.0)  # position=22s -> line 2
+
+        mock_time.return_value = 1000.5
+        d.set_playback("Song", "Artist", True, 1.0, 30.0)  # seeked back to line 0
+        d._tick()
+
+        assert d._animating is False
+        assert d._current_index == 0
+        assert d.current_lbl.text() == "First line"
+
+    def test_does_not_advance_while_paused(self, qapp, mocker):
+        mock_time = mocker.patch("clUI.time.time")
+        mock_time.return_value = 1000.0
+        d = self._display(qapp)
+        d.set_lyrics("Song", "Artist", True, self._lines())
+        d.set_playback("Song", "Artist", False, 8.0, 30.0)
+        assert d.isHidden()  # not playing -- hidden, but position tracking must still not drift
+
+        mock_time.return_value = 1010.0
+        d.set_playback("Song", "Artist", True, 8.0, 30.0)  # resumed at the same reported position
+        d._tick()
+
+        assert d._animating is False
+        assert d.current_lbl.text() == "First line"
+
+
+
+class TestLyricsDisplayDynamicWidth:
+    """Live bug: word wrap is off (see TestLyricsDisplay), so a line too
+    wide for the box's fixed default width just ran off the edges instead
+    of being visible. The box now grows its width (never shrinking below
+    its original default) to fit whatever the widest of the three current
+    texts actually needs, staying horizontally centered as it grows."""
+
+    def _display(self, qapp):
+        import clUI
+        d = clUI.LyricsDisplay()
+        d.resize(400, 120)
+        d.default_width = 400
+        d.move(100, 500)
+        d.is_fullscreen = True  # self.window() on a parentless widget is itself
+        return d
+
+    def _short_lines(self):
+        return [
+            {"time": 0.0, "text": "Short one"},
+            {"time": 10.0, "text": "Short two"},
+            {"time": 20.0, "text": "Short three"},
+        ]
+
+    def _lines_with_a_long_middle_line(self):
+        return [
+            {"time": 0.0, "text": "Short"},
+            {"time": 10.0, "text": "This is a very long lyric line that will not fit in four hundred pixels"},
+            {"time": 20.0, "text": "Also short"},
+        ]
+
+    def test_short_lines_keep_the_default_width(self, qapp):
+        d = self._display(qapp)
+        d.set_lyrics("Song", "Artist", True, self._short_lines())
+
+        d.set_playback("Song", "Artist", True, 1.0, 30.0)
+
+        assert d.width() == 400
+
+    def test_a_long_current_line_grows_the_widget_wider(self, qapp):
+        d = self._display(qapp)
+        d.set_lyrics("Song", "Artist", True, self._lines_with_a_long_middle_line())
+
+        d.set_playback("Song", "Artist", True, 12.0, 30.0)  # the long line, as current
+
+        assert d.width() > 400
+
+    def test_growth_stays_horizontally_centered(self, qapp):
+        d = self._display(qapp)
+        original_center_x = d.x() + d.width() // 2
+        d.set_lyrics("Song", "Artist", True, self._lines_with_a_long_middle_line())
+
+        d.set_playback("Song", "Artist", True, 12.0, 30.0)
+
+        assert d.width() > 400
+        assert d.x() + d.width() // 2 == original_center_x
+
+    def test_promote_applies_the_resize_for_the_destination_layout(self, qapp, mocker):
+        """_promote() calls _apply_dynamic_width() itself (not just
+        _refresh_texts()), so the transition's own row width is already
+        correct at the moment the animation starts, not just once it
+        finishes."""
+        mock_time = mocker.patch("clUI.time.time")
+        mock_time.return_value = 1000.0
+        d = self._display(qapp)
+        d.set_lyrics("Song", "Artist", True, self._lines_with_a_long_middle_line())
+        d.set_playback("Song", "Artist", True, 1.0, 30.0)  # current="Short"
+        mock_time.return_value = 1011.0  # position ~12s -> promotes into the long line as current
+
+        d._tick()
+
+        assert d._animating is True
+        assert d.width() > 400
+
+    def test_returns_to_the_default_width_once_lines_are_short_again(self, qapp):
+        d = self._display(qapp)
+        d.set_lyrics("Song", "Artist", True, self._lines_with_a_long_middle_line())
+        d.set_playback("Song", "Artist", True, 12.0, 30.0)  # the long line, as current
+        assert d.width() > 400
+
+        d.set_lyrics("Song2", "Artist2", True, self._short_lines())
+        d.set_playback("Song2", "Artist2", True, 1.0, 30.0)
+
+        assert d.width() == 400

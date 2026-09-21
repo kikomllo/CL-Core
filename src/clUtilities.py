@@ -24,12 +24,14 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ALARMS_DIR = os.path.join(BASE_DIR, "..", "data", "alarms")
 REMINDERS_DIR = os.path.join(BASE_DIR, "..", "data", "reminders")
 TODOS_DIR = os.path.join(BASE_DIR, "..", "data", "todos")
+NOTES_DIR = os.path.join(BASE_DIR, "..", "data", "notes")
 EVENTS_DIR = os.path.join(BASE_DIR, "..", "data", "events")
 SCRATCH_DIR = os.path.join(BASE_DIR, "..", "data", "scratch")
 
 os.makedirs(ALARMS_DIR, exist_ok=True)
 os.makedirs(REMINDERS_DIR, exist_ok=True)
 os.makedirs(TODOS_DIR, exist_ok=True)
+os.makedirs(NOTES_DIR, exist_ok=True)
 os.makedirs(EVENTS_DIR, exist_ok=True)
 
 class JarvisUtilities:
@@ -155,6 +157,9 @@ class JarvisUtilities:
                     await client.subscribe("jarvis/sys/todo/create")
                     await client.subscribe("jarvis/sys/todo/control")
                     await client.subscribe("jarvis/sys/todo/request")
+                    await client.subscribe("jarvis/sys/note/create")
+                    await client.subscribe("jarvis/sys/note/control")
+                    await client.subscribe("jarvis/sys/note/request")
                     await client.subscribe("jarvis/sys/calendar/create")
                     await client.subscribe("jarvis/sys/calendar/request")
                     await client.subscribe("jarvis/sys/calendar/control")
@@ -197,12 +202,24 @@ class JarvisUtilities:
                             if action == "delete":
                                 await self.handle_todo_delete(payload.get("id"))
                             elif action == "complete":
-                                await self.handle_todo_complete(payload.get("id"))
+                                await self.handle_todo_complete(payload.get("id"), payload.get("completed", True))
                             elif action == "list":
                                 await self.handle_todo_list()
                         elif topic == "jarvis/sys/todo/request":
                             await self.handle_todo_list()
-                            
+
+                        # NOTES
+                        elif topic == "jarvis/sys/note/create":
+                            await self.handle_note_create(payload)
+                        elif topic == "jarvis/sys/note/control":
+                            action = payload.get("action")
+                            if action == "delete":
+                                await self.handle_note_delete(payload.get("id"))
+                            elif action == "update":
+                                await self.handle_note_update(payload.get("id"), payload.get("title", ""), payload.get("text", ""))
+                        elif topic == "jarvis/sys/note/request":
+                            await self.handle_note_list()
+
                         # CALENDAR
                         elif topic == "jarvis/sys/calendar/create":
                             await self.handle_calendar_create(payload)
@@ -464,11 +481,15 @@ class JarvisUtilities:
         
         with open(os.path.join(TODOS_DIR, f"{todo_id}.json"), "w", encoding="utf-8") as f:
             json.dump(todo_data, f, indent=2)
-            
-        await self.mqtt_client.publish("jarvis/sys/speak", json.dumps({
-            "text": f"Added to your to-do list.",
-            "skip_ducking": True
-        }))
+
+        # UI-typed tasks are already visible on screen the instant they're
+        # added -- a spoken confirmation on top of that only makes sense
+        # for voice-added ones, where it's the only feedback the user gets.
+        if not payload.get("silent", False):
+            await self.mqtt_client.publish("jarvis/sys/speak", json.dumps({
+                "text": f"Added to your to-do list.",
+                "skip_ducking": True
+            }))
         await self.handle_todo_list()
 
     async def handle_todo_delete(self, todo_id):
@@ -478,14 +499,14 @@ class JarvisUtilities:
             os.remove(file_path)
         await self.handle_todo_list()
 
-    async def handle_todo_complete(self, todo_id):
+    async def handle_todo_complete(self, todo_id, completed=True):
         if not todo_id: return
         file_path = os.path.join(TODOS_DIR, f"{todo_id}.json")
         if os.path.exists(file_path):
             try:
                 with open(file_path, "r") as f:
                     data = json.load(f)
-                data["completed"] = True
+                data["completed"] = completed
                 with open(file_path, "w") as f:
                     json.dump(data, f, indent=2)
             except Exception as e:
@@ -507,6 +528,64 @@ class JarvisUtilities:
         await self.mqtt_client.publish("jarvis/sys/todo/status", json.dumps({
             "status": "success",
             "todos": todos
+        }))
+
+    # -------------------------------------------------------------------------
+    # NOTE LOGIC
+    # -------------------------------------------------------------------------
+    async def handle_note_create(self, payload):
+        note_id = str(int(time.time() * 1000))
+        note_data = {
+            "id": note_id,
+            "title": payload.get("title", ""),
+            "text": payload.get("text", ""),
+            "time_created": datetime.now().isoformat(),
+        }
+
+        with open(os.path.join(NOTES_DIR, f"{note_id}.json"), "w", encoding="utf-8") as f:
+            json.dump(note_data, f, indent=2)
+
+        await self.handle_note_list()
+
+    async def handle_note_update(self, note_id, title, text):
+        if not note_id: return
+        file_path = os.path.join(NOTES_DIR, f"{note_id}.json")
+        if os.path.exists(file_path):
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                data["title"] = title
+                data["text"] = text
+                with open(file_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+            except Exception as e:
+                logging.error(f"Failed to update note {note_id}: {e}")
+        await self.handle_note_list()
+
+    async def handle_note_delete(self, note_id):
+        if not note_id: return
+        file_path = os.path.join(NOTES_DIR, f"{note_id}.json")
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        await self.handle_note_list()
+
+    async def handle_note_list(self):
+        notes = []
+        for file in os.listdir(NOTES_DIR):
+            if file.endswith('.json'):
+                try:
+                    with open(os.path.join(NOTES_DIR, file), 'r', encoding='utf-8') as f:
+                        notes.append(json.load(f))
+                except Exception: pass
+
+        # Newest first -- stable across edits, since time_created never
+        # changes, unlike sorting by last-updated (which would make a note
+        # jump around the list while the user is still typing in it).
+        notes.sort(key=lambda x: x.get('time_created', ''), reverse=True)
+
+        await self.mqtt_client.publish("jarvis/sys/note/status", json.dumps({
+            "status": "success",
+            "notes": notes
         }))
 
     # -------------------------------------------------------------------------

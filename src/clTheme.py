@@ -166,6 +166,14 @@ class Theme:
                 QPushButton {{ background: transparent; color: {cls.C_PRIMARY}; font-weight: bold; border: none; font-size: {cls.F_TITLE}; }}
                 QPushButton:hover {{ color: {cls.C_PRIMARY_HOVER}; }}
             """
+        elif component == "IconOnlyButton":
+            # TransparentButton's hover only recolors text, invisible on a
+            # button with just an icon and no label -- this needs its own
+            # background/border feedback instead.
+            return f"""
+                QPushButton {{ background: transparent; border: none; border-radius: 4px; }}
+                QPushButton:hover {{ background-color: rgba(255, 150, 0, 60); border: 1px solid {cls.C_PRIMARY}; }}
+            """
         elif component == "IconPill":
             # A true capsule/stadium needs border-radius == exactly half the
             # widget's real height -- Qt's QSS engine does NOT clamp an
@@ -431,6 +439,15 @@ class Theme:
             }}
             QTabBar::tab:last:hover {{ background-color: rgba(255, 150, 0, 40); }}
             """
+        elif component == "NoteCard":
+            # #NoteCard (an object-name selector), NOT a bare "QFrame { }"
+            # type selector -- QLabel is itself a QFrame subclass in Qt's
+            # class hierarchy, so a type-selector border here cascaded onto
+            # the title/preview QLabels inside the row too, not just the
+            # row itself. An object-name selector matches only the one
+            # widget it's actually set on (see _create_note_row's
+            # setObjectName("NoteCard")).
+            return f"#NoteCard {{ background: transparent; border: 1px solid rgba(255, 170, 0, 60); border-radius: 8px; }}"
         elif component == "TodoCheckbox":
             return f"""
                 QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 4px; border: 1px solid rgba(255, 170, 0, 0.5); background: rgba(35, 18, 5, 0.8); }}

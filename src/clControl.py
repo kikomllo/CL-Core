@@ -129,6 +129,13 @@ class LightManager:
         except Exception as e:
             logging.error(f"Failed to save devices.json: {e}")
         
+    def refresh_lights(self) -> None:
+        """Refreshing the lights widget should also pick up a network
+        change (different Wi-Fi -> different light profile), not just
+        re-poll the on/off state of whatever was loaded at startup."""
+        self.lights = self._load_devices()
+        self.poll_trigger.set()
+
     def _load_color_matrix(self) -> Dict[str, Any]:
         matrix_path = os.path.abspath(os.path.join(self.base_dir, "..", "config", "entities.json"))
         try:
@@ -629,7 +636,7 @@ async def mqtt_service_listener(manager: LightManager) -> None:
                             continue
                             
                         if action == "refresh_lights":
-                            manager.poll_trigger.set()
+                            manager.refresh_lights()
                             continue
                             
                         if action == "save_discovery":

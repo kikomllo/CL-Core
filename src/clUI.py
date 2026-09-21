@@ -3,19 +3,21 @@ import sys
 import json
 import math
 import random
+import time
 import paho.mqtt.client as mqtt
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QGraphicsDropShadowEffect, QStackedLayout
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPointF, QPoint, QSize, QFileSystemWatcher, QPropertyAnimation, QEasingCurve, QRect, pyqtProperty
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPointF, QPoint, QSize, QFileSystemWatcher, QPropertyAnimation, QVariantAnimation, QEasingCurve, QRect, pyqtProperty
 from datetime import datetime
 import paho.mqtt.publish as publish
 from PyQt6.QtGui import QPainter, QColor, QPen, QPainterPath, QRadialGradient, QBrush, QLinearGradient
-from PyQt6.QtGui import QPainter, QColor, QPen, QPainterPath, QRadialGradient, QBrush, QLinearGradient, QFontMetrics
+from PyQt6.QtGui import QPainter, QColor, QPen, QPainterPath, QRadialGradient, QBrush, QLinearGradient, QFontMetrics, QFont
 from utils.clActionRouter import ActionRouter
 
 from ui.clMediaWidget import MediaWidget
 from ui.clLightControlWidget import LightControlWidget
 from ui.clReminderWidget import ReminderWidget
 from ui.clTodoWidget import TodoWidget
+from ui.clNoteWidget import NoteWidget
 from ui.clDashboardDrawer import DashboardDrawer
 from ui.clSettingsWidget import SettingsWidget
 from ui.clUpdateWidget import UpdateWidget
@@ -62,10 +64,13 @@ class MqttThread(QThread):
     state_change_signal = pyqtSignal(str)
     ui_mode_signal = pyqtSignal(str)
     media_status_signal = pyqtSignal(dict)
+    spotify_lyrics_signal = pyqtSignal(dict)
     app_volumes_signal = pyqtSignal(dict)
+    app_output_devices_signal = pyqtSignal(dict)
     light_status_signal = pyqtSignal(dict)
     feedback_signal = pyqtSignal(dict)
     todo_status_signal = pyqtSignal(dict)
+    note_status_signal = pyqtSignal(dict)
     calendar_status_signal = pyqtSignal(dict)
 
     def __init__(self, mode="overlay"):
@@ -125,10 +130,13 @@ class MqttThread(QThread):
         client.subscribe("jarvis/sys/volume")
         client.subscribe("jarvis/sys/state_change")
         client.subscribe("jarvis/sys/media_status")
+        client.subscribe("jarvis/sys/spotify_lyrics")
         client.subscribe("jarvis/sys/app_volumes")
+        client.subscribe("jarvis/sys/app_output_devices")
         client.subscribe("jarvis/sys/light_status")
         client.subscribe("jarvis/feedback")
         client.subscribe("jarvis/sys/todo/status")
+        client.subscribe("jarvis/sys/note/status")
         client.subscribe("jarvis/sys/calendar/status")
         client.publish("jarvis/sys/module_ready", json.dumps({"module": "ui"}), retain=False)
         
@@ -150,13 +158,16 @@ class MqttThread(QThread):
             "jarvis/sys/ui_control": self._handle_ui_control,
             "jarvis/sys/state_change": self._handle_state_change,
             "jarvis/sys/media_status": self._handle_media_status,
+            "jarvis/sys/spotify_lyrics": self._handle_spotify_lyrics,
             "jarvis/sys/app_volumes": self._handle_app_volumes,
+            "jarvis/sys/app_output_devices": self._handle_app_output_devices,
             "jarvis/sys/light_status": self._handle_light_status,
             "jarvis/feedback": self._handle_feedback,
             "jarvis/sys/todo/status": self._handle_todo_status,
+            "jarvis/sys/note/status": self._handle_note_status,
             "jarvis/sys/calendar/status": self._handle_calendar_status,
         }
-        
+
         handler = handlers.get(topic)
         if handler:
             handler(payload)
@@ -164,6 +175,10 @@ class MqttThread(QThread):
     def _handle_todo_status(self, payload):
         if isinstance(payload, dict):
             self.todo_status_signal.emit(payload)
+
+    def _handle_note_status(self, payload):
+        if isinstance(payload, dict):
+            self.note_status_signal.emit(payload)
 
     def _handle_calendar_status(self, payload):
         if isinstance(payload, dict):
@@ -176,9 +191,17 @@ class MqttThread(QThread):
     def _handle_media_status(self, payload):
         self.media_status_signal.emit(payload)
 
+    def _handle_spotify_lyrics(self, payload):
+        if isinstance(payload, dict):
+            self.spotify_lyrics_signal.emit(payload)
+
     def _handle_app_volumes(self, payload):
         if isinstance(payload, dict):
             self.app_volumes_signal.emit(payload)
+
+    def _handle_app_output_devices(self, payload):
+        if isinstance(payload, dict):
+            self.app_output_devices_signal.emit(payload)
 
     def _handle_feedback(self, payload):
         self.feedback_signal.emit(payload)
@@ -270,6 +293,29 @@ class MqttThread(QThread):
                     ConfigLoader().update_json_atomic("core.json", update_cb)
                 except Exception as e:
                     logging.error(f"Failed to persist state_change to core.json: {e}")
+
+def _clear_win32_owner(widget) -> None:
+    """A parentless Qt::Tool window gets an implicit native OWNER on
+    Windows -- the app's currently-active top-level window at creation
+    time -- so tool palettes stay grouped with their main window (raised/
+    activated together). Exactly backwards for an unpinned dashboard
+    widget, whose whole point is staying usable while the main dashboard
+    sits in the background: Windows keeps an owned window above its owner
+    and re-activates the owner whenever the owned window is focused.
+    Clearing GWLP_HWNDPARENT breaks that link."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+    hwnd = int(widget.winId())
+    user32 = ctypes.windll.user32
+    GWLP_HWNDPARENT = -8
+    if sys.maxsize > 2**32:
+        SetWindowLongPtr = user32.SetWindowLongPtrW
+        SetWindowLongPtr.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+        SetWindowLongPtr.restype = ctypes.c_void_p
+        SetWindowLongPtr(hwnd, GWLP_HWNDPARENT, None)
+    else:
+        user32.SetWindowLongW(hwnd, GWLP_HWNDPARENT, 0)
 
 class DraggableWidget(QWidget):
     def __init__(self, widget_id, title, content_widget, closable=True, parent=None):
@@ -371,6 +417,16 @@ class DraggableWidget(QWidget):
         new_h = max(self.height(), hint.height())
         if (new_w, new_h) != (self.width(), self.height()):
             self.resize(new_w, new_h)
+            # Persist this grow, the same way mouseReleaseEvent does after a
+            # manual drag-resize -- otherwise a size only ever reached
+            # automatically here (e.g. switching to a page whose content
+            # needs more room) is purely in-memory and lost the next time
+            # the module restarts, reverting to whatever was last manually
+            # saved. Same mid-restore guard as toggle_pin()'s save call:
+            # saving here while load_ui_state() is still applying a
+            # snapshot would persist an incomplete one.
+            if hasattr(self.main_window, 'save_ui_state') and not getattr(self.main_window, '_restoring_ui_state', False):
+                self.main_window.save_ui_state()
 
     def close_widget(self):
         parent_ui = self.main_window if self.is_unpinned else self.parent()
@@ -421,8 +477,13 @@ class DraggableWidget(QWidget):
             self.resizeUnscaled(current_size.width(), current_size.height())
         else:
             self.resize(current_size)
-            
+
         self.show()
+
+        if self.is_unpinned:
+            # See _clear_win32_owner -- must run after show(), since that's
+            # what actually creates the native window this operates on.
+            _clear_win32_owner(self)
 
         # Skip saving mid-restore: load_ui_state() calls toggle_pin() to sync
         # pin state before it has applied this widget's saved visibility, so
@@ -755,6 +816,487 @@ def load_recolored_svg_icon(path: str, color_hex: str, size: int):
     painter.end()
     return QIcon(pixmap)
 
+from PyQt6.QtCore import QRectF, Qt
+class _AnimatedLyricLabel(QWidget):
+    """A plain QWidget, painted directly via QPainter -- NOT a QLabel.
+
+    The temporary sliding labels driving the lyrics revolver transition
+    (see LyricsDisplay._promote()/_on_anim_step()) need their color and
+    font-size to change every animation frame. A real QLabel can't do
+    this reliably: Theme.get_global_stylesheet()'s app-wide
+    "QLabel { color: ...; font-size: ...; }" rule wins the QSS cascade
+    over whatever's set programmatically via setFont()/a local
+    setStyleSheet() call on the label itself, for any property it also
+    claims -- confirmed live for both color (via QPalette) and font-size
+    (via QFont.setPixelSize()): the label rendered in the theme's default
+    text color, and separately got stuck at the theme's default 14px
+    font size for the whole transition, only reaching the correct
+    value once _on_anim_finished() swapped in the real static label
+    (current_lbl/next_lbl/prev_lbl), which has its own explicit
+    stylesheet with a higher-specificity, widget-local rule. A bare
+    QWidget has no such rule targeting it at all, and drawing text
+    directly here bypasses Qt's style-sheet-aware text rendering path
+    entirely -- this is also cheaper per animation frame than any
+    stylesheet-based approach, since update() just schedules a repaint
+    instead of a full QSS cascade recomputation."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(parent)
+        self.text = text
+        self.rgba = (255, 255, 255, 255)
+        self.target_font_px = 14
+        self.target_weight = 400
+        self.scale_factor = 1.0
+        self.y_offset = 0.0
+        self._base_font = QFont()
+        self._base_font.setFamily("DejaVu Sans Mono")
+
+    def set_style(self, rgba, target_font_px, target_weight, scale_factor, y_offset=0.0):
+        self.rgba = rgba
+        self.target_font_px = target_font_px
+        self.target_weight = target_weight
+        self.scale_factor = float(scale_factor)
+        self.y_offset = float(y_offset)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        
+        # 1. Lock the layout to the static destination font to prevent kerning jitter
+        font = QFont(self._base_font)
+        point_size = self.target_font_px * 72.0 / self.logicalDpiY()
+        font.setPointSizeF(point_size)
+        font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
+        font.setWeight(self.target_weight)
+        
+        painter.setFont(font)
+        painter.setPen(QColor(*self.rgba))
+        
+        # 2. Transform coordinates to the center, apply the sub-pixel Y drift, and scale
+        cx = self.width() / 2.0
+        cy = self.height() / 2.0
+        painter.translate(cx, cy + self.y_offset)
+        painter.scale(self.scale_factor, self.scale_factor)
+        
+        # 3. Draw text perfectly centered around the new (0, 0) origin.
+        # A large rect ensures it's never clipped during scaling.
+        rect_w = self.width() * 2
+        rect_h = self.height() * 2
+        target_rect = QRectF(-rect_w / 2, -rect_h / 2, rect_w, rect_h)
+        
+        painter.drawText(target_rect, int(Qt.AlignmentFlag.AlignCenter), self.text)
+        painter.end()
+
+
+class LyricsDisplay(QWidget):
+    """Always-present (when applicable) karaoke-style lyrics area sitting
+    between the visualizer and the text input bar -- not a DraggableWidget,
+    just a plain child of JarvisUI with no window/frame of its own.
+
+    The backend (clSpotify.py's maybe_publish_lyrics) sends the FULL
+    synced lyric sheet once per track, not a running current/next pair --
+    this widget holds the whole list and picks the current line by index
+    itself. That mirrors how the media widget's own progress bar already
+    works: MediaWidget._tick() advances its position locally every
+    second and only asks for a real refresh near a track's end or after
+    an explicit command, rather than expecting a fresh MQTT update for
+    every second of playback. An index resolved from a rare backend
+    update alone would just as often run out of a pre-fetched "next"
+    line to advance into long before the next update arrives -- holding
+    the whole sheet means every subsequent line is already known, no
+    matter how long the next backend update takes.
+
+    Three rows, top to bottom: next (small, dim), current (big, bold,
+    primary orange), previous (small, dim) -- matching how the revolver
+    animation below moves things: the next line grows and slides up into
+    the current row, the current line shrinks and slides down into the
+    previous row, and a brand-new next line grows in from a smaller font
+    while sliding up into the now-vacant next row, all on the same clock.
+
+    Advancing to the next line is triggered locally, on a timer, once
+    interpolated playback position (the same client-side-advanced
+    position media_status feeds MediaWidget's own progress bar) reaches
+    the next line's own timestamp. Hidden entirely unless Spotify is
+    playing AND a lyrics payload matching the exact track media_status
+    currently reports has arrived."""
+
+    ANIM_DURATION_MS = 650
+    DIM_FONT_PX = 14
+    CURRENT_FONT_PX = 26
+    DIM_WEIGHT = 400
+    CURRENT_WEIGHT = 800
+    # The brand-new next line entering the top row on the same clock as
+    # the other two -- starts this small and this far below its resting
+    # spot, growing/sliding up into place instead of popping in cold.
+    NEXT_ENTRY_START_FONT_PX = 8
+    NEXT_ENTRY_START_OFFSET_PX = 12
+    # Theme.C_PRIMARY at ~90% opacity -- the current line's own toned-down
+    # color, not a change to the shared theme constant used everywhere
+    # else in the app. Kept as both an RGBA tuple (for _AnimatedLyricLabel,
+    # see its set_style()) and the equivalent CSS string (for the static
+    # labels' own stylesheet).
+    CURRENT_COLOR_RGBA = (255, 170, 0, 230)
+    DIM_COLOR_RGBA = (255, 170, 0, 150)  # matches Theme.C_PRIMARY_DIM exactly
+    CURRENT_COLOR = "rgba({}, {}, {}, {})".format(*CURRENT_COLOR_RGBA)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # No layout -- rows are positioned by hand (see _layout_static) so
+        # the animation can freely slide temporary labels between them.
+        self.next_lbl = QLabel("", self)
+        self.current_lbl = QLabel("", self)
+        self.prev_lbl = QLabel("", self)
+        for lbl in (self.next_lbl, self.current_lbl, self.prev_lbl):
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setWordWrap(False)
+        self._apply_static_styles()
+
+        self.hide()
+
+        # Set by JarvisUI.refresh_layout() on every layout pass -- the
+        # width a single, ordinary lyric line was originally sized for,
+        # and the floor _apply_dynamic_width() never shrinks below (only
+        # grows past it for a line too wide to fit at its own font size).
+        self.default_width = 0
+
+        self._lines = []  # [{"time": float, "text": str}, ...]
+        self._current_index = -1  # -1 = before the first line
+        self._lyrics_track = None
+        self._current_track = None
+        self._is_playing = False
+        self._position = 0.0
+        self._position_captured_at = 0.0
+        # Manual override from the "toggle lyrics" button next to the
+        # Spotify player -- independent of whether lyrics would otherwise
+        # be showable (playing, found, track match).
+        self._lyrics_enabled = True
+
+        self._animating = False
+        self._slide_up_lbl = None
+        self._slide_down_lbl = None
+        self._slide_in_next_lbl = None
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(self.ANIM_DURATION_MS)
+        self._anim.setStartValue(0.0)
+        self._anim.setEndValue(1.0)
+        self._anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._anim.valueChanged.connect(self._on_anim_step)
+        self._anim.finished.connect(self._on_anim_finished)
+
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(100)
+
+    def _dim_style(self):
+        return f"color: {Theme.C_PRIMARY_DIM}; font-size: {self.DIM_FONT_PX}px; font-weight: {self.DIM_WEIGHT}; background: transparent;"
+
+    def _current_style(self):
+        return f"color: {self.CURRENT_COLOR}; font-size: {self.CURRENT_FONT_PX}px; font-weight: {self.CURRENT_WEIGHT}; background: transparent;"
+
+    def _apply_static_styles(self):
+        self.next_lbl.setStyleSheet(self._dim_style())
+        self.prev_lbl.setStyleSheet(self._dim_style())
+        self.current_lbl.setStyleSheet(self._current_style())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if not self._animating:
+            self._layout_static()
+
+    def _row_height(self):
+        return self.height() // 3
+
+    def _layout_static(self):
+        w, row_h = self.width(), self._row_height()
+        self.next_lbl.setGeometry(0, 0, w, row_h)
+        self.current_lbl.setGeometry(0, row_h, w, row_h)
+        self.prev_lbl.setGeometry(0, row_h * 2, w, row_h)
+
+    def _needed_row_width(self, current_text, next_text, prev_text):
+        """How wide the box must be for its widest current line to sit on
+        one line without running off the edges -- word wrap is off, so a
+        line longer than the box's own width otherwise just gets clipped."""
+        widest = self.default_width or self.width()
+        margin = UIScaler.get().scale(40)
+        for lbl, text in (
+            (self.current_lbl, current_text),
+            (self.next_lbl, next_text),
+            (self.prev_lbl, prev_text),
+        ):
+            if not text:
+                continue
+            # A QLabel's .font() doesn't reflect its QSS font-size at all
+            # (reports Qt's generic default) until the stylesheet has
+            # actually been applied -- ensurePolished() forces that
+            # without needing the widget to have been shown first.
+            lbl.ensurePolished()
+            fm = QFontMetrics(lbl.font())
+            widest = max(widest, fm.horizontalAdvance(text) + margin)
+        return widest
+
+    def _apply_dynamic_width(self, current_text, next_text, prev_text):
+        new_width = self._needed_row_width(current_text, next_text, prev_text)
+        if new_width == self.width():
+            return
+        # Stays horizontally centered as it grows -- the box is already
+        # centered on screen by JarvisUI.refresh_layout().
+        old_center_x = self.x() + self.width() // 2
+        self.resize(new_width, self.height())
+        self.move(old_center_x - new_width // 2, self.y())
+
+    def set_lyrics(self, title, artist, found, lines):
+        self._lyrics_track = (title, artist)
+        self._lines = lines if found else []
+        self._current_index = -1
+        if not self._animating:
+            self._refresh_texts()
+        self._refresh_visibility()
+
+    def set_playback(self, title, artist, is_playing, position, duration):
+        self._current_track = (title, artist)
+        self._is_playing = is_playing
+        self._position = position
+        self._position_captured_at = time.time()
+        self._refresh_visibility()
+
+    def _line_text(self, index):
+        return self._lines[index]["text"] if 0 <= index < len(self._lines) else ""
+
+    def _index_for_position(self, pos):
+        idx = -1
+        for i, line in enumerate(self._lines):
+            if line["time"] <= pos:
+                idx = i
+            else:
+                break
+        return idx
+
+    def _tick(self):
+        if not self.isVisible() or self._animating or not self._lines:
+            return
+        new_index = self._index_for_position(self._current_position())
+        if new_index == self._current_index:
+            return
+        if self._current_index >= 0 and new_index > self._current_index:
+            # Advanced forward from an already-resolved state -- always
+            # animate the transition into the new line, however many
+            # lines it catches up on at once. A single sparse position
+            # correction (SMTC's own timeline snapshot can go stale for
+            # several seconds between updates -- see clTerminal.py's
+            # _extract_smtc_state) can jump position far enough to skip
+            # past more than one line between two 100ms ticks; snapping
+            # for anything but a clean +1 used to make a catch-up land
+            # with a flat pop-in instead of the same scroll+enlarge every
+            # other advance gets.
+            self._promote(new_index)
+        else:
+            # The very first resolution (nothing meaningful to animate
+            # from), or a backward jump (an actual seek/rewind, or a
+            # track restart) -- there's no sensible reverse animation for
+            # this revolver, so it snaps directly.
+            self._current_index = new_index
+            self._refresh_texts()
+
+    def _current_position(self):
+        if not self._is_playing:
+            return self._position
+        return self._position + (time.time() - self._position_captured_at)
+
+    def set_enabled(self, enabled):
+        if enabled == self._lyrics_enabled:
+            return
+        self._lyrics_enabled = enabled
+        self._refresh_visibility()
+
+    def _refresh_visibility(self):
+        should_show = (
+            self._lyrics_enabled
+            and self._is_playing
+            and bool(self._lines)
+            and self._lyrics_track is not None
+            and self._lyrics_track == self._current_track
+            # This widget has no window/frame of its own and isn't part
+            # of the overlay-mode hide list any other way -- without this,
+            # it could show itself floating inside the tiny overlay square
+            # whenever a media_status/lyrics update landed while overlaid
+            # (the reminder popup had the same gap -- see load_ui_state()).
+            and getattr(self.window(), 'is_fullscreen', False)
+        )
+        if should_show:
+            self.show()
+            if not self._animating:
+                self._layout_static()
+                # Resolve immediately rather than waiting for the next
+                # timer tick (up to 100ms away) -- e.g. right after a
+                # track/position update that just made this visible.
+                self._tick()
+        else:
+            self.hide()
+
+    def _refresh_texts(self):
+        current_text = self._line_text(self._current_index)
+        next_text = self._line_text(self._current_index + 1)
+        prev_text = self._line_text(self._current_index - 1)
+        self._apply_dynamic_width(current_text, next_text, prev_text)
+        self.current_lbl.setText(current_text)
+        self.next_lbl.setText(next_text)
+        self.prev_lbl.setText(prev_text)
+
+    # --- Revolver transition: the current line shrinks and slides down
+    # into the previous row; the next line grows and slides up into the
+    # current row; a brand-new next line grows in from a small font while
+    # sliding up into the vacated next row. Three temporary, freely-
+    # positioned labels carry the animated text -- the permanent rows are
+    # hidden for the duration and swapped back in, already showing the
+    # correct final text, once it finishes (see _on_anim_finished). ---
+    def _promote(self, target_index):
+        old_current_text = self._line_text(self._current_index)
+        # The incoming line uses the TARGET's own text throughout, not
+        # whatever was already sitting in the small "next" preview row --
+        # those're only the same line for a clean +1 advance. For a
+        # multi-line catch-up (see _tick()), the preview row was showing
+        # an intermediate line that's being skipped entirely, and
+        # animating that stale text growing in would land on the wrong
+        # line the instant the transition finished.
+        new_current_text = self._line_text(target_index)
+        self._current_index = target_index
+        new_next_text = self._line_text(self._current_index + 1)
+
+        if not new_current_text:
+            # Nothing resolved to animate to (shouldn't normally happen --
+            # _index_for_position() never returns past the last line) --
+            # just cut over.
+            self._refresh_texts()
+            return
+
+        self._animating = True
+        self.current_lbl.hide()
+        self.next_lbl.hide()
+        # Also hidden, alongside the other two -- without this, the
+        # incoming line's slide into the previous row ends up overlapping
+        # the still-visible, stale old-prev text sitting at that exact
+        # spot (both rows paint with a transparent background, so nothing
+        # else would occlude it).
+        self.prev_lbl.hide()
+
+        # Resize/reposition for the DESTINATION layout before building the
+        # temp labels below -- the transition's row width must already
+        # reflect where the text is heading, not the pre-transition size.
+        self._apply_dynamic_width(current_text=new_current_text, next_text=new_next_text, prev_text=old_current_text)
+
+        w, row_h = self.width(), self._row_height()
+        # _AnimatedLyricLabel, not QLabel -- see its own docstring for why
+        # a real QLabel can't reliably change color/font-size per frame
+        # here (Theme.get_global_stylesheet()'s app-wide QLabel rule wins
+        # the QSS cascade over anything set programmatically afterward).
+        self._slide_down_lbl = _AnimatedLyricLabel(old_current_text, self)
+        self._slide_down_lbl.setGeometry(0, row_h, w, row_h)
+        self._slide_down_lbl.set_style(
+            self.DIM_COLOR_RGBA, 
+            target_font_px=self.DIM_FONT_PX, 
+            target_weight=self.DIM_WEIGHT,
+            scale_factor=self.CURRENT_FONT_PX / self.DIM_FONT_PX
+        )
+        
+        self._slide_up_lbl = _AnimatedLyricLabel(new_current_text, self)
+        self._slide_up_lbl.setGeometry(0, 0, w, row_h)
+        self._slide_up_lbl.set_style(
+            self.CURRENT_COLOR_RGBA, 
+            target_font_px=self.CURRENT_FONT_PX, 
+            target_weight=self.CURRENT_WEIGHT,
+            scale_factor=self.DIM_FONT_PX / self.CURRENT_FONT_PX
+        )
+        
+        self._slide_down_lbl.show()
+        self._slide_up_lbl.show()
+
+        if new_next_text:
+            self._slide_in_next_lbl = _AnimatedLyricLabel(new_next_text, self)
+            self._slide_in_next_lbl.setGeometry(0, self.NEXT_ENTRY_START_OFFSET_PX, w, row_h)
+            self._slide_in_next_lbl.set_style(
+                self.DIM_COLOR_RGBA, 
+                target_font_px=self.DIM_FONT_PX, 
+                target_weight=self.DIM_WEIGHT,
+                scale_factor=self.NEXT_ENTRY_START_FONT_PX / self.DIM_FONT_PX
+            )
+            self._slide_in_next_lbl.show()
+
+        self._anim.stop()
+        self._anim.start()
+
+    def _on_anim_step(self, value):
+        if self._slide_up_lbl is None or self._slide_down_lbl is None:
+            return
+        w, row_h = self.width(), self._row_height()
+
+        # --- Slide Up (Next -> Current) ---
+        raw_y_up = row_h * value
+        int_y_up = int(raw_y_up)
+        
+        current_size_up = self.DIM_FONT_PX + (self.CURRENT_FONT_PX - self.DIM_FONT_PX) * value
+        scale_up = current_size_up / self.CURRENT_FONT_PX
+        
+        self._slide_up_lbl.setGeometry(0, int_y_up, w, row_h)
+        self._slide_up_lbl.set_style(
+            self.CURRENT_COLOR_RGBA, 
+            target_font_px=self.CURRENT_FONT_PX, 
+            target_weight=self.CURRENT_WEIGHT, 
+            scale_factor=scale_up, 
+            y_offset=raw_y_up - int_y_up
+        )
+
+        # --- Slide Down (Current -> Prev) ---
+        raw_y_down = row_h + (row_h * value)
+        int_y_down = int(raw_y_down)
+        
+        current_size_down = self.CURRENT_FONT_PX - (self.CURRENT_FONT_PX - self.DIM_FONT_PX) * value
+        scale_down = current_size_down / self.DIM_FONT_PX
+        
+        self._slide_down_lbl.setGeometry(0, int_y_down, w, row_h)
+        self._slide_down_lbl.set_style(
+            self.DIM_COLOR_RGBA, 
+            target_font_px=self.DIM_FONT_PX, 
+            target_weight=self.DIM_WEIGHT, 
+            scale_factor=scale_down, 
+            y_offset=raw_y_down - int_y_down
+        )
+
+        # --- Slide In Next ---
+        if self._slide_in_next_lbl is not None:
+            raw_y_next = self.NEXT_ENTRY_START_OFFSET_PX * (1 - value)
+            int_y_next = int(raw_y_next)
+            
+            current_size_next = self.NEXT_ENTRY_START_FONT_PX + (self.DIM_FONT_PX - self.NEXT_ENTRY_START_FONT_PX) * value
+            scale_next = current_size_next / self.DIM_FONT_PX
+            
+            self._slide_in_next_lbl.setGeometry(0, int_y_next, w, row_h)
+            self._slide_in_next_lbl.set_style(
+                self.DIM_COLOR_RGBA, 
+                target_font_px=self.DIM_FONT_PX, 
+                target_weight=self.DIM_WEIGHT, 
+                scale_factor=scale_next, 
+                y_offset=raw_y_next - int_y_next
+            )
+
+    def _on_anim_finished(self):
+        if self._slide_up_lbl is not None:
+            self._slide_up_lbl.deleteLater()
+            self._slide_up_lbl = None
+        if self._slide_down_lbl is not None:
+            self._slide_down_lbl.deleteLater()
+            self._slide_down_lbl = None
+        if self._slide_in_next_lbl is not None:
+            self._slide_in_next_lbl.deleteLater()
+            self._slide_in_next_lbl = None
+        self._animating = False
+        self._refresh_texts()
+        self.current_lbl.show()
+        self.next_lbl.show()
+        self.prev_lbl.show()
+        self._layout_static()
+
 
 class IconPill(QWidget):
     """A small circular icon by default; hovering expands it into a pill
@@ -953,7 +1495,13 @@ class AudioQuickSwitchPill(IconPill):
         icon_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "icons")
         icon_path = os.path.join(icon_dir, self.ICON_FILE[kind])
         super().__init__(icon_path, grow_direction, parent)
-        self.refresh_label()
+        # Deferred: the first-ever device enumeration in this process is a
+        # real, unavoidable ~1-9s SDL2 driver-probe cost (see
+        # clAudioDevices.list_output_device_names) -- running it here
+        # synchronously would block JarvisUI's whole constructor, delaying
+        # the window from appearing at all. _label_text() already falls
+        # back to the raw core.json setting until this resolves.
+        QTimer.singleShot(0, self.refresh_label)
 
     def _activate(self):
         self._open_picker()
@@ -1114,7 +1662,12 @@ class JarvisUI(QWidget):
         self.visualizer = JarvisVisualizer(self)
         self.visualizer.setGeometry(0, 0, self.width(), self.height())
         self.visualizer.show()
-        
+
+        # Karaoke-style lyrics, positioned in refresh_layout() between the
+        # visualizer and the text input bar -- hidden by default until
+        # Spotify is confirmed playing with lyrics found (see LyricsDisplay).
+        self.lyrics_display = LyricsDisplay(self)
+
         # Text Input Workaround
         self.text_input = QLineEdit(self)
         
@@ -1154,6 +1707,9 @@ class JarvisUI(QWidget):
         self.btn_todos = WidgetTogglePill("todos.svg", "To-Do List", self._toggle_todos, grow_direction="right", parent=self)
         self.btn_todos.hide()
 
+        self.btn_notes = WidgetTogglePill("notes.svg", "Quick Notes", self._toggle_notes, grow_direction="right", parent=self)
+        self.btn_notes.hide()
+
         self.btn_settings = WidgetTogglePill("settings.svg", "Settings", self._toggle_settings, grow_direction="right", parent=self)
         self.btn_settings.hide()
 
@@ -1165,7 +1721,7 @@ class JarvisUI(QWidget):
 
         self.widget_toggle_pills = [
             self.btn_media, self.btn_lights, self.btn_reminders,
-            self.btn_todos, self.btn_settings, self.btn_updates, self.btn_debug,
+            self.btn_todos, self.btn_notes, self.btn_settings, self.btn_updates, self.btn_debug,
         ]
         # Laid out as one horizontal, center-anchored row (see
         # _reflow_widget_dock) rather than each pill owning a fixed edge --
@@ -1209,10 +1765,13 @@ class JarvisUI(QWidget):
         self.mqtt_thread.state_change_signal.connect(self.update_ecosystem_state)
         self.mqtt_thread.ui_mode_signal.connect(self.set_ui_mode)
         self.mqtt_thread.media_status_signal.connect(self._handle_media_status)
+        self.mqtt_thread.spotify_lyrics_signal.connect(self._handle_spotify_lyrics)
         self.mqtt_thread.app_volumes_signal.connect(self._handle_app_volumes)
+        self.mqtt_thread.app_output_devices_signal.connect(self._handle_app_output_devices)
         self.mqtt_thread.light_status_signal.connect(self._handle_light_status)
         self.mqtt_thread.feedback_signal.connect(self._handle_feedback)
         self.mqtt_thread.todo_status_signal.connect(self._handle_todo_status)
+        self.mqtt_thread.note_status_signal.connect(self._handle_note_status)
         self.mqtt_thread.calendar_status_signal.connect(self._handle_calendar_data)
         self.mqtt_thread.start()
 
@@ -1320,8 +1879,19 @@ class JarvisUI(QWidget):
         speaker_left_edge = pair_left_x + pill_diameter + pill_circle_gap
         self.pill_mic.set_anchor(mic_right_edge, pill_y)
         self.pill_speaker.set_anchor(speaker_left_edge, pill_y)
-        self.pill_mic.refresh_label()
-        self.pill_speaker.refresh_label()
+
+        # Lyrics -- centered, sitting above the audio pills (itself already
+        # above the text bar). Only actually visible while Spotify is
+        # playing with lyrics found for the current track (see
+        # LyricsDisplay); reserving its geometry unconditionally here is
+        # harmless since a hidden widget occupies no visible space.
+        if hasattr(self, 'lyrics_display'):
+            lyrics_width = s(700)
+            lyrics_height = s(110)
+            lyrics_x = win_w // 2 - lyrics_width // 2
+            lyrics_y = pill_y - lyrics_height - s(80)
+            self.lyrics_display.setGeometry(lyrics_x, lyrics_y, lyrics_width, lyrics_height)
+            self.lyrics_display.default_width = lyrics_width
 
         # Calendar button
         self.btn_calendar.setGeometry(win_w - s(30), int(win_h / 2) - s(40), s(30), s(80))
@@ -1418,6 +1988,21 @@ class JarvisUI(QWidget):
             if widget_id not in self.active_widgets:
                 todo_widget = TodoWidget()
                 self.spawn_widget(widget_id, "To-Do List", todo_widget)
+            else:
+                w = self.active_widgets[widget_id]
+                if w.isHidden():
+                    w.show()
+                    w.raise_(); self._enforce_z_order()
+                    self.save_ui_state()
+                else:
+                    self.close_draggable_widget(widget_id)
+
+    def _toggle_notes(self):
+        if getattr(self, 'is_fullscreen', False):
+            widget_id = "widget_notes"
+            if widget_id not in self.active_widgets:
+                note_widget = NoteWidget()
+                self.spawn_widget(widget_id, "Quick Notes", note_widget)
             else:
                 w = self.active_widgets[widget_id]
                 if w.isHidden():
@@ -1537,6 +2122,13 @@ class JarvisUI(QWidget):
         if hasattr(self, 'calendar_drawer'):
             self.calendar_drawer.carousel.todo_widget.update_status(data)
 
+    def _handle_note_status(self, data):
+        widget_id = "widget_notes"
+        if widget_id in self.active_widgets:
+            wrapper = self.active_widgets[widget_id]
+            if isinstance(wrapper.content_widget, NoteWidget):
+                wrapper.content_widget.update_status(data)
+
     def _handle_calendar_data(self, data):
         if hasattr(self, 'calendar_drawer'):
             self.calendar_drawer.calendar.load_events(data)
@@ -1559,6 +2151,23 @@ class JarvisUI(QWidget):
                 wrapper.content_widget.update_status(data)
         if hasattr(self, 'calendar_drawer'):
             self.calendar_drawer.carousel.media_widget.update_status(data)
+        if hasattr(self, 'lyrics_display'):
+            self.lyrics_display.set_playback(
+                data.get("title", "Unknown"),
+                data.get("artist", "Unknown"),
+                data.get("status") == "Playing",
+                data.get("position", 0.0),
+                data.get("duration", 0.0),
+            )
+
+    def _handle_spotify_lyrics(self, data):
+        if hasattr(self, 'lyrics_display'):
+            self.lyrics_display.set_lyrics(
+                data.get("title", "Unknown"),
+                data.get("artist", "Unknown"),
+                bool(data.get("found", False)),
+                data.get("lines", []),
+            )
 
     def _handle_app_volumes(self, data):
         apps = data.get("apps", [])
@@ -1576,6 +2185,16 @@ class JarvisUI(QWidget):
             if calendar_media_widget.app_volume_body.isVisible():
                 calendar_media_widget.update_app_volumes(apps)
 
+    def _handle_app_output_devices(self, data):
+        devices = data.get("devices", [])
+        widget_id = "widget_media_controls"
+        if widget_id in self.active_widgets:
+            wrapper = self.active_widgets[widget_id]
+            if isinstance(wrapper.content_widget, MediaWidget):
+                wrapper.content_widget.update_output_devices(devices)
+        if hasattr(self, 'calendar_drawer'):
+            self.calendar_drawer.carousel.media_widget.update_output_devices(devices)
+
     def _on_app_state_changed(self, state):
         if not getattr(self, 'is_fullscreen', False) or getattr(self, 'text_input', None) is None:
             return
@@ -1585,7 +2204,14 @@ class JarvisUI(QWidget):
             # We must NOT hide the text inputs here, otherwise the user can't use the dashboard if Wayland denies focus.
             # No auto-collapse on focus loss -- closed explicitly via keybinds instead.
             pass
-        else:
+        elif sys.platform != "win32" and not self.text_input.hasFocus():
+            # This whole branch exists for Wayland's focus-stealing
+            # prevention above -- Windows has no such problem, and
+            # reactivating here fights any unpinned widget: the app going
+            # Active the instant an unpinned tool window gets focus made
+            # activateWindow()/raise_() on this (JarvisUI's own child) drag
+            # JarvisUI's whole top-level window forward too, defeating the
+            # entire point of unpinning.
             self.text_input.show()
             self.text_input.activateWindow()
             self.text_input.raise_()
@@ -1734,6 +2360,23 @@ class JarvisUI(QWidget):
         # chrome back onto it, exactly the "title bar came back" bug.
         wrapper = DraggableWidget(widget_id, title, content_widget, closable=closable, parent=self)
 
+        # A brand-new widget with no saved ui_state.json entry yet gets a
+        # one-time comfortable floor here -- some content widgets (e.g.
+        # Todo's QTabWidget with scroll buttons enabled) report a tiny,
+        # content-independent sizeHint that would otherwise leave the
+        # widget stuck unusably small forever, since update_scaling()'s
+        # grow-only resize only ever grows up to whatever sizeHint()
+        # reports. This must be a ONE-TIME spawn-time default, not baked
+        # into sizeHint() itself -- load_ui_state() always calls
+        # w.resize() with the real saved size right after this (even a
+        # deliberately-smaller one), so applying it here never fights a
+        # restored or manually-chosen size, only fills in the gap when
+        # there isn't one yet.
+        if hasattr(content_widget, 'get_standalone_min_size'):
+            min_w, min_h = content_widget.get_standalone_min_size()
+            natural = wrapper.sizeHint()
+            wrapper.resize(max(natural.width(), min_w), max(natural.height(), min_h))
+
         # Position in center of screen by default
         if is_standalone:
             # No Qt parent, so is_unpinned must say so too (drives the drag clamp/pin label).
@@ -1745,14 +2388,14 @@ class JarvisUI(QWidget):
             # (a plain Python attribute, untouched by setParent) still points at self.
             wrapper.setParent(None, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
             wrapper.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-            
+
             screen_geom = self.screen().geometry()
-            cx = screen_geom.x() + (screen_geom.width() - content_widget.sizeHint().width()) // 2
-            cy = screen_geom.y() + (screen_geom.height() - content_widget.sizeHint().height()) // 2
+            cx = screen_geom.x() + (screen_geom.width() - wrapper.width()) // 2
+            cy = screen_geom.y() + (screen_geom.height() - wrapper.height()) // 2
             wrapper.move(cx, cy)
         else:
-            cx = (self.width() - content_widget.sizeHint().width()) // 2
-            cy = (self.height() - content_widget.sizeHint().height()) // 2
+            cx = (self.width() - wrapper.width()) // 2
+            cy = (self.height() - wrapper.height()) // 2
             wrapper.move(cx, cy)
         
         self.active_widgets[widget_id] = wrapper
@@ -1947,18 +2590,39 @@ class JarvisUI(QWidget):
             self.visualizer.lower()
             
             self.refresh_layout(force_monitor_idx=self.current_monitor_idx)
+            if hasattr(self, 'lyrics_display'):
+                # is_fullscreen is already True by this point (set above),
+                # so this can only newly show it here, never hide it --
+                # otherwise it'd stay hidden (from the overlay transition)
+                # until the next sparse media_status/lyrics update, up to
+                # ~10s away, instead of reappearing immediately.
+                self.lyrics_display._refresh_visibility()
             self.btn_calendar.setIcon(Theme.get_icon("chevron_left.svg", 14))
             self.calendar_is_open = False
-            
+
             self.btn_media.show()
             self.btn_lights.show()
             self.btn_reminders.show()
             self.btn_todos.show()
+            self.btn_notes.show()
             self.btn_settings.show()
             self.btn_updates.show()
             self.btn_calendar.show()
             self.pill_mic.show()
             self.pill_speaker.show()
+            # Explicit, not left to _on_app_state_changed's side effect --
+            # that handler is gated off on Windows now (see its own
+            # comment), so this can no longer be the only place text_input
+            # ever gets shown.
+            self.text_input.show()
+            # Device enumeration (pygame/SDL2, PortAudio, pycaw/COM) is
+            # expensive -- refresh_layout() used to call this every single
+            # resize event (including the fullscreen transition itself and
+            # every drag-resize of any widget), which is what made the
+            # whole UI laggy. Only needs to run when the pills actually
+            # become visible or the user picks a new device (see _select()).
+            self.pill_mic.refresh_label()
+            self.pill_speaker.refresh_label()
 
             if ECOSYSTEM_STATE == "debug":
                 self.btn_debug.show()
@@ -2050,6 +2714,7 @@ class JarvisUI(QWidget):
             self.btn_lights.hide()
             self.btn_reminders.hide()
             self.btn_todos.hide()
+            self.btn_notes.hide()
             self.btn_settings.hide()
             self.btn_updates.hide()
             self.btn_debug.hide()
@@ -2066,7 +2731,9 @@ class JarvisUI(QWidget):
                 self.save_ui_state()
             
             self.reminder_widget.hide()
-                
+            if hasattr(self, 'lyrics_display'):
+                self.lyrics_display.hide()
+
             # Hide all dashboard widgets except options prompts
             for wid, w in self.active_widgets.items():
                 if not wid.startswith("list_"):
@@ -2293,14 +2960,21 @@ class JarvisUI(QWidget):
             self.current_monitor_idx = state.get("current_monitor_idx", 0)
                 
             widgets_state = state.get("active_widgets", {})
-            rem_state = state.get("reminder_widget", {})
-            if hasattr(self, 'reminder_widget'):
-                if rem_state.get("visible", False):
-                    self.reminder_widget.show()
-                    self.reminder_widget.raise_(); self._enforce_z_order()
-                else:
-                    self.reminder_widget.hide()
-
+            # 3. Reminder popup -- gated the same way as the draggable
+            # widgets below (restore_widgets=False on the very first boot
+            # call): the window is still sized/positioned as the tiny
+            # overlay box at that point (see the comment where that first
+            # call is made), so showing this here would show a real
+            # notification-sized widget floating inside the tiny overlay
+            # square instead of waiting for the actual fullscreen restore.
+            if restore_widgets:
+                rem_state = state.get("reminder_widget", {})
+                if hasattr(self, 'reminder_widget'):
+                    if rem_state.get("visible", False):
+                        self.reminder_widget.show()
+                        self.reminder_widget.raise_(); self._enforce_z_order()
+                    else:
+                        self.reminder_widget.hide()
 
             # 4. Draggable Floating Widgets (Media, Lights, To-Do)
             if restore_widgets:
@@ -2325,6 +2999,10 @@ class JarvisUI(QWidget):
                         if widget_id not in self.active_widgets:
                             todo_widget = TodoWidget()
                             self.spawn_widget(widget_id, "To-Do List", todo_widget)
+                    elif widget_id == "widget_notes":
+                        if widget_id not in self.active_widgets:
+                            note_widget = NoteWidget()
+                            self.spawn_widget(widget_id, "Quick Notes", note_widget)
                     elif widget_id == "widget_settings":
                         if widget_id not in self.active_widgets:
                             settings_widget = SettingsWidget()

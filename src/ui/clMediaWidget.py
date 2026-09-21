@@ -97,10 +97,27 @@ class MediaWidget(QWidget):
         self.content_layout.setSpacing(s(6))
 
         # Header Badge
-        header_layout = QHBoxLayout()
+        self.header_layout = header_layout = QHBoxLayout()
+        header_layout.setSpacing(s(8))
         self.badge_lbl = QLabel("SPOTIFY PLAYER")
         self.badge_lbl.setStyleSheet(Theme.get_style("BadgeLabel"))
         header_layout.addWidget(self.badge_lbl)
+
+        # Toggles LyricsDisplay (a sibling of this widget, owned by
+        # JarvisUI, not this one) on/off -- self.window() reaches it the
+        # same way showEvent()/_tick() already reach JarvisUI for other
+        # state, since there's no signal wired between the two widgets.
+        # Sits immediately next to the badge, not pushed to the row's far
+        # right -- the stretch goes after it instead.
+        self._lyrics_enabled = True
+        self.lyrics_toggle_btn = QPushButton()
+        self.lyrics_toggle_btn.setFixedSize(s(24), s(24))
+        self.lyrics_toggle_btn.setStyleSheet(Theme.get_style("MediaSmallBtn", radius=s(12)))
+        self.lyrics_toggle_btn.setToolTip("Toggle lyrics")
+        self.lyrics_toggle_btn.clicked.connect(self._toggle_lyrics)
+        self._set_lyrics_toggle_icon()
+        header_layout.addWidget(self.lyrics_toggle_btn)
+
         header_layout.addStretch()
         self.content_layout.addLayout(header_layout)
 
@@ -238,6 +255,10 @@ class MediaWidget(QWidget):
         self.layout.addWidget(self.app_volume_body)
         self.app_volume_rows = {}
         self._app_volume_delta = 0
+        # Cached once per drawer-open (see _toggle_app_volume) rather than
+        # re-fetched per row -- it's the same system-wide device list for
+        # every app, and rarely changes mid-session.
+        self._output_devices = []
 
         self._fader_anim = QVariantAnimation(self)
         self._fader_anim.setDuration(200)
@@ -391,6 +412,7 @@ class MediaWidget(QWidget):
                 if room > 0:
                     wrapper.resize(wrapper.width(), height_before + room)
             self._request_app_volumes()
+            self._request_output_devices()
         else:
             self.app_volume_body.setVisible(False)
             self.updateGeometry()
@@ -425,6 +447,19 @@ class MediaWidget(QWidget):
             self.router.dispatch("terminal.app_volume", action="list_app_volumes")
         except Exception as e:
             logging.error(f"MQTT Publish failed: {e}")
+
+    def _request_output_devices(self):
+        try:
+            self.router.dispatch("terminal.app_volume", action="list_output_devices")
+        except Exception as e:
+            logging.error(f"MQTT Publish failed: {e}")
+
+    def update_output_devices(self, devices):
+        """Caches the system's real playback devices (see clTerminal.py's
+        list_output_devices) for the per-app output-device dropdown --
+        same list for every app row, so it's fetched once per drawer-open
+        rather than per row."""
+        self._output_devices = devices
 
     def update_app_volumes(self, apps):
         """Rebuilds the App Volume drawer's per-app rows from a fresh apps
@@ -481,6 +516,14 @@ class MediaWidget(QWidget):
         info_col.addWidget(name_lbl)
         info_col.addWidget(subtitle_lbl)
 
+        # Opens the per-app output-device picker (see _show_output_device_menu)
+        # -- mirrors ms-settings:apps-volume's own per-app device dropdown.
+        device_btn = HoverIconButton()
+        device_btn.setFixedSize(s(20), s(20))
+        device_btn.setStyleSheet("background: transparent; border: none;")
+        _set_hover_icon(device_btn, "headphones.svg", s(14))
+        device_btn.setIconSize(QSize(s(14), s(14)))
+
         # Same circular design as the main player's prev/next buttons, just
         # sized down to fit the row -- radius must be passed explicitly
         # since it's half of this button's own size, not the main
@@ -503,6 +546,7 @@ class MediaWidget(QWidget):
 
         row_layout.addWidget(icon_lbl)
         row_layout.addLayout(info_col, 1)
+        row_layout.addWidget(device_btn)
         row_layout.addWidget(play_btn)
         row_layout.addWidget(mute_btn)
         row_layout.addWidget(slider)
@@ -527,10 +571,11 @@ class MediaWidget(QWidget):
         slider.sliderReleased.connect(lambda aid=app_id: self._dispatch_app_volume(aid))
         mute_btn.clicked.connect(lambda checked=False, aid=app_id: self._toggle_app_mute_remote(aid))
         play_btn.clicked.connect(lambda checked=False, aid=app_id: self._toggle_app_playback_remote(aid))
+        device_btn.clicked.connect(lambda checked=False, aid=app_id, btn=device_btn: self._show_output_device_menu(aid, btn))
 
         row_data = {
             "widget": row, "icon_lbl": icon_lbl, "name_lbl": name_lbl, "subtitle_lbl": subtitle_lbl,
-            "play_btn": play_btn, "slider": slider, "mute_btn": mute_btn,
+            "play_btn": play_btn, "slider": slider, "mute_btn": mute_btn, "device_btn": device_btn,
             "muted": bool(app.get("muted", False)), "media_player": app.get("media_player"),
             "is_playing": bool(app.get("is_playing", True)),
         }
@@ -592,6 +637,35 @@ class MediaWidget(QWidget):
         _set_hover_icon(row_data["mute_btn"], icon_name, s(14))
         row_data["mute_btn"].setIconSize(QSize(s(14), s(14)))
 
+    def _show_output_device_menu(self, app_id, anchor_btn):
+        from PyQt6.QtWidgets import QMenu
+        from PyQt6.QtGui import QAction
+        from PyQt6.QtCore import QPoint
+
+        menu = QMenu(anchor_btn)
+        menu.setStyleSheet(Theme.get_style("SettingsMenu"))
+
+        default_action = QAction("System Default", menu)
+        default_action.triggered.connect(lambda checked=False, aid=app_id: self._dispatch_app_output_device(aid, ""))
+        menu.addAction(default_action)
+
+        if self._output_devices:
+            menu.addSeparator()
+            for device in self._output_devices:
+                action = QAction(device.get("name", "Unknown device"), menu)
+                action.triggered.connect(
+                    lambda checked=False, aid=app_id, did=device.get("id", ""): self._dispatch_app_output_device(aid, did)
+                )
+                menu.addAction(action)
+
+        menu.exec(anchor_btn.mapToGlobal(QPoint(0, anchor_btn.height())))
+
+    def _dispatch_app_output_device(self, app_id, device_id):
+        try:
+            self.router.dispatch("terminal.app_volume", action="set_app_output_device", target=app_id, device_id=device_id, silent=True)
+        except Exception as e:
+            logging.error(f"MQTT Publish failed: {e}")
+
     def _dispatch_app_volume(self, app_id):
         row_data = self.app_volume_rows.get(app_id)
         if row_data is None:
@@ -615,6 +689,27 @@ class MediaWidget(QWidget):
         super().showEvent(event)
         if getattr(self.window(), 'is_fullscreen', False):
             self.send_cmd("status", silent=True)
+        # Resyncs this instance's own button icon with the real, shared
+        # state on LyricsDisplay -- there are two MediaWidget instances
+        # (this dashboard one and the calendar carousel's own copy), each
+        # with their own local _lyrics_enabled mirror, so toggling one
+        # doesn't otherwise update the other's icon until it's shown again.
+        lyrics_display = getattr(self.window(), 'lyrics_display', None)
+        if lyrics_display is not None:
+            self._lyrics_enabled = lyrics_display._lyrics_enabled
+            self._set_lyrics_toggle_icon()
+
+    def _set_lyrics_toggle_icon(self):
+        color = Theme.C_PRIMARY if self._lyrics_enabled else Theme.C_TEXT_DIM
+        self.lyrics_toggle_btn.setIcon(Theme.get_icon("music.svg", s(14), color))
+        self.lyrics_toggle_btn.setIconSize(QSize(s(14), s(14)))
+
+    def _toggle_lyrics(self):
+        self._lyrics_enabled = not self._lyrics_enabled
+        self._set_lyrics_toggle_icon()
+        lyrics_display = getattr(self.window(), 'lyrics_display', None)
+        if lyrics_display is not None:
+            lyrics_display.set_enabled(self._lyrics_enabled)
 
     def toggle_optimistic(self):
         self.status = "Paused" if self.status == "Playing" else "Playing"

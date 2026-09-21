@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QLineEdit, QPushButton, QCheckBox, QTabWidget, QInputDialog, QStackedWidget, QSizePolicy
 )
 from clUIScaler import UIScaler
-from PyQt6.QtCore import Qt, QPoint, QSize
+from PyQt6.QtCore import Qt, QPoint, QSize, QTimer
 
 def s(val):
     return UIScaler.get().scale(val)
@@ -31,7 +31,7 @@ class TodoWidget(QWidget):
         self.btn_add_list.setFixedSize(24, 24)
         self.btn_add_list.setIcon(Theme.get_icon("add.svg", 16))
         self.btn_add_list.setIconSize(QSize(16, 16))
-        self.btn_add_list.setStyleSheet(Theme.get_style("TransparentButton"))
+        self.btn_add_list.setStyleSheet(Theme.get_style("IconOnlyButton"))
         self.btn_add_list.clicked.connect(self.prompt_new_list)
         self.tabs.setCornerWidget(self.btn_add_list)
 
@@ -101,8 +101,13 @@ class TodoWidget(QWidget):
                     item = scroll.scroll_layout.itemAt(j)
                     if item and item.widget() and item.widget().layout():
                         item.widget().layout().setSpacing(s(8))
-        self.adjustSize()
-        
+        # No self.adjustSize() here -- this widget is a layout-managed
+        # child of DraggableWidget, not a free-floating window.
+        # DraggableWidget.update_scaling() calls this method FIRST, before
+        # computing its own grow-only resize off self.sizeHint() --
+        # snapping this widget to its own sizeHint here would undo that
+        # and fight the wrapper's actual (larger, grow-only) size.
+
     def prompt_new_list(self):
         if not hasattr(self, 'list_dialog') or self.list_dialog is None:
             from PyQt6.QtWidgets import QDialog, QLineEdit, QVBoxLayout, QHBoxLayout, QPushButton, QLabel
@@ -216,21 +221,24 @@ class TodoWidget(QWidget):
                     
         self.tabs.blockSignals(True)
         self.tabs.removeTab(idx)
-        
-        # Select another tab if available
-        if self.tabs.count() > 1:
+
+        # Select another tab if one still exists -- count() was being
+        # compared > 1 here, which treated exactly one remaining real list
+        # as "none left" and mislabeled current_list_name as the "+"
+        # sentinel, so the next task added anywhere silently saved under a
+        # list literally named "+" instead of the list still showing.
+        has_remaining_list = self.tabs.count() > 0
+        if has_remaining_list:
             self.tabs.setCurrentIndex(0)
             self.current_list_name = self.tabs.tabText(0)
-            self.last_valid_index = 0
         else:
-            self.tabs.setCurrentIndex(0) # defaults to '+'
             self.current_list_name = "+"
-            self.last_valid_index = 0
-            
+        self.last_valid_index = 0
         self.tabs.blockSignals(False)
-        
-        # Trigger popup naturally if we fell back to '+'
-        if self.tabs.tabText(self.tabs.currentIndex()) == "+":
+
+        # There's no real "+" tab (see create_tab) -- the sentinel above IS
+        # the actual "no lists left" signal, not a tab to match against.
+        if not has_remaining_list:
             self.prompt_new_list()
             
     def create_tab(self, list_name):
@@ -290,7 +298,10 @@ class TodoWidget(QWidget):
     def submit_task(self):
         task_text = self.task_input.text().strip()
         if task_text:
-            self.router.dispatch("todo.create", task=task_text, list_name=self.current_list_name)
+            # silent=True -- the task is already visible on screen the
+            # instant it's typed, so a spoken confirmation on top of that
+            # would be pointless (that's only useful for voice-added tasks).
+            self.router.dispatch("todo.create", task=task_text, list_name=self.current_list_name, silent=True)
             self.task_input.clear()
         self.bottom_stack.setCurrentWidget(self.add_btn)
 
@@ -306,10 +317,19 @@ class TodoWidget(QWidget):
             grouped_todos[lname].append(t)
             
         self.grouped_todos = grouped_todos
-        
-        # Clear existing tabs completely
+
+        # Clear existing tabs completely. Blocked: adding the first-ever tab
+        # to an empty QTabWidget fires currentChanged(0) synchronously (Qt's
+        # own auto-select-on-first-add behavior), which on_tab_changed()
+        # picks up and uses to overwrite current_list_name -- clobbering
+        # whichever list the user actually had open with whatever list
+        # happens to be first in this refresh, before the "restore the
+        # previous selection" loop below ever runs. Every status refresh
+        # (i.e. every task interaction) was silently bouncing the view back
+        # to that first list as a result.
+        self.tabs.blockSignals(True)
         self.tabs.clear()
-        
+
         for list_name, tasks in grouped_todos.items():
             scroll = self.create_tab(list_name)
             layout = scroll.scroll_layout
@@ -337,39 +357,92 @@ class TodoWidget(QWidget):
                 lbl.setMinimumHeight(24)
                 lbl.setWordWrap(True)
                 lbl.setStyleSheet("padding: 2px 0px;")
-                
+                # Selectable text needs its own left-click handling (drag to
+                # select), so it can't also be the row's "click anywhere to
+                # toggle" hit area.
+                lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                lbl.setCursor(Qt.CursorShape.IBeamCursor)
+
                 is_completed = t.get("completed", False)
                 chk.setChecked(is_completed)
                 if is_completed:
                     lbl.setStyleSheet(lbl.styleSheet() + " color: " + Theme.C_TEXT_DIM + "; text-decoration: line-through;")
-                
+
                 # Align items to top to prevent checkboxes from centering strangely on multi-line text
                 task_layout.addWidget(chk, 0, Qt.AlignmentFlag.AlignTop)
                 task_layout.addWidget(lbl, 1, Qt.AlignmentFlag.AlignTop)
-                
-                # Make the entire row toggle the checkbox
-                task_widget.mouseReleaseEvent = lambda e, c=chk: c.setChecked(not c.isChecked()) if e.button() == Qt.MouseButton.LeftButton else None
+
+                # Left click anywhere on the row (except the selectable label
+                # itself) toggles complete, same as before.
+                task_widget.mouseReleaseEvent = lambda e, c=chk: (
+                    c.setChecked(not c.isChecked()) if e.button() == Qt.MouseButton.LeftButton else None
+                )
+                # Right click deletes, but only for an already-completed
+                # task -- an incomplete one is a no-op (left click covers
+                # marking it complete). Uses Qt's context-menu signal
+                # instead of a RightButton check inside mouseReleaseEvent --
+                # Qt's own context-menu event races that override instead
+                # of going through it.
+                def _right_click_delete(pos, tid=t["id"], completed=is_completed):
+                    if completed:
+                        self.delete_task(tid)
+                task_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                task_widget.customContextMenuRequested.connect(_right_click_delete)
+                lbl.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                lbl.customContextMenuRequested.connect(_right_click_delete)
                 chk.stateChanged.connect(lambda state, tid=t["id"]: self.toggle_task(tid, state))
                 layout.addWidget(task_widget)
                 
             layout.addStretch()
-        
-        # Restore the previously selected tab if possible
+
+        self.tabs.blockSignals(False)
+
+        # Restore the previously selected tab if possible -- unblocked
+        # above so this (and the fallback below) drive on_tab_changed's
+        # own bookkeeping normally, rather than leaving current_list_name
+        # stale relative to whatever tab actually ended up showing.
         for i in range(self.tabs.count()):
             if self.tabs.tabText(i) == self.current_list_name:
                 self.tabs.setCurrentIndex(i)
                 break
+        else:
+            self.on_tab_changed(self.tabs.currentIndex())
+
+        # Deferred resize ensures the parent wrapper picks up the new
+        # layout geometry -- without this, the widget is first shown near-
+        # empty (before the real todo/status reply arrives) and stays
+        # sized for that, squeezing every tab added afterward into scroll
+        # buttons instead of growing to fit them (see clLightControlWidget).
+        # No self.adjustSize() here -- see _force_resize below for why.
+        QTimer.singleShot(50, self._force_resize)
+
+    def _force_resize(self):
+        # No self.adjustSize() here -- this widget is a layout-managed
+        # child of DraggableWidget, not a free-floating window. Calling it
+        # snaps this widget to its own current sizeHint right before the
+        # wrapper measures it in update_scaling(), fighting the wrapper's
+        # actual (larger, grow-only) size.
+        # DraggableWidget.update_scaling() -- NOT adjustSize() -- grows the
+        # wrapper to fit if needed but never shrinks it, so a user's manual
+        # drag-resize (or a size just restored from ui_state.json) survives
+        # every refresh instead of being silently reset to the content's
+        # natural minimum size on every task added, completed, or deleted.
+        parent = self.parentWidget()
+        if parent is not None and hasattr(parent, 'update_scaling'):
+            parent.update_scaling()
 
     def toggle_task(self, todo_id, state):
         is_checked = (state == 2)
         try:
-            if is_checked:
-                self.router.dispatch("todo.complete", id=todo_id)
-            else:
-                self.router.dispatch("todo.delete", id=todo_id)
+            self.router.dispatch("todo.complete", id=todo_id, completed=is_checked)
         except:
             pass
 
+    def delete_task(self, todo_id):
+        try:
+            self.router.dispatch("todo.delete", id=todo_id)
+        except Exception:
+            pass
 
     def get_standalone_min_size(self):
         return 350, 400

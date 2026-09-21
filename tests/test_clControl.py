@@ -1,6 +1,7 @@
 import pytest
 import os
 import sys
+import json
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
@@ -109,6 +110,46 @@ class TestLightManagerResolution:
         # 4. Explicit turn off all lights sets last_target to all
         await manager.control_bulb(off=True, target_name="all lights")
         assert manager.last_target == "all"
+
+class TestRefreshLightsPicksUpNetworkChanges:
+    """The dashboard's lights-widget refresh button dispatches
+    refresh_lights (see mqtt_service_listener), which used to just set
+    poll_trigger -- re-polling the on/off state of whichever lights were
+    loaded at process startup. Switching Wi-Fi networks and hitting
+    refresh still showed the old network's lights, since manager.lights
+    was never reloaded. refresh_lights() must call _load_devices() again
+    so a network change is picked up too."""
+
+    def _write_devices_file(self, tmp_path):
+        devices_file = tmp_path / "devices.json"
+        devices_file.write_text(json.dumps({
+            "networks": {
+                "HomeWiFi": {"lamp": {"ip": "192.168.1.10", "type": "wiz"}},
+                "OfficeWiFi": {"desk_light": {"ip": "192.168.1.20", "type": "wiz"}},
+            }
+        }))
+        return devices_file
+
+    def test_refreshing_after_a_network_change_reloads_the_new_networks_lights(self, manager, mocker, tmp_path):
+        manager.devices_file = str(self._write_devices_file(tmp_path))
+        mocker.patch("clControl.get_current_wifi_ssid", return_value="HomeWiFi")
+        manager.lights = manager._load_devices()
+        assert manager.lights == {"lamp": {"ip": "192.168.1.10", "type": "wiz"}}
+
+        mocker.patch("clControl.get_current_wifi_ssid", return_value="OfficeWiFi")
+        manager.refresh_lights()
+
+        assert manager.lights == {"desk_light": {"ip": "192.168.1.20", "type": "wiz"}}
+        assert manager.current_ssid == "OfficeWiFi"
+
+    def test_refresh_lights_still_wakes_the_polling_loop(self, manager, mocker, tmp_path):
+        manager.devices_file = str(self._write_devices_file(tmp_path))
+        mocker.patch("clControl.get_current_wifi_ssid", return_value="HomeWiFi")
+
+        manager.refresh_lights()
+
+        assert manager.poll_trigger.is_set()
+
 
 class TestControlEdgeCases:
     @pytest.mark.asyncio

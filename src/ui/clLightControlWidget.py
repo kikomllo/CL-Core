@@ -76,7 +76,12 @@ class LightControlWidget(QWidget):
                 row_data["delete_btn"].setFixedSize(26, 26)
         if hasattr(self, 'lights_container'):
             self.lights_container.adjustSize()
-        self.adjustSize()
+        # No self.adjustSize() here -- this widget is a layout-managed
+        # child of DraggableWidget, not a free-floating window.
+        # DraggableWidget.update_scaling() calls this method FIRST, before
+        # computing its own grow-only resize off self.sizeHint() --
+        # snapping this widget to its own sizeHint here would undo that
+        # and fight the wrapper's actual (larger, grow-only) size.
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -103,7 +108,7 @@ class LightControlWidget(QWidget):
             row_data = self.light_rows.pop(target_name)
             row_data["widget"].deleteLater()
             self.lights_container.adjustSize()
-            self.adjustSize()
+            self._force_resize()
 
     def handle_feedback(self, data):
         if data.get("status") == "success" and data.get("action_cmd") == "toggle":
@@ -253,14 +258,20 @@ class LightControlWidget(QWidget):
                 }
             
         self.lights_container.adjustSize()
-        self.adjustSize()
         # Deferred resize ensures the parent wrapper picks up the new layout geometry
         QTimer.singleShot(50, self._force_resize)
 
     def _force_resize(self):
-        self.adjustSize()
-        if self.parentWidget():
-            self.parentWidget().adjustSize()
+        # No self.adjustSize() here -- this widget is a layout-managed
+        # child of DraggableWidget, not a free-floating window.
+        # DraggableWidget.update_scaling() -- NOT adjustSize() -- grows the
+        # wrapper to fit if needed but never shrinks it, so a user's manual
+        # drag-resize (or a size just restored from ui_state.json) survives
+        # every refresh instead of being silently snapped back to the
+        # content's natural minimum size on every light toggle.
+        parent = self.parentWidget()
+        if parent is not None and hasattr(parent, 'update_scaling'):
+            parent.update_scaling()
 
     def get_standalone_min_size(self):
         return 340, 300

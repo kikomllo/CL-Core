@@ -13,6 +13,7 @@ import re
 import webbrowser
 import urllib.parse
 import shutil
+from datetime import datetime, timezone
 from typing import Tuple, Optional, Dict, Any, List
 
 # --- LOGGING SETUP ---
@@ -301,7 +302,7 @@ class TerminalManager:
         except Exception as e:
             return False, f"Browser execution failed: {str(e)}"
 
-    def execute_command(self, action: str, target: Optional[str] = None, level: Optional[int] = None) -> Tuple[bool, str]:
+    def execute_command(self, action: str, target: Optional[str] = None, level: Optional[int] = None, device_id: Optional[str] = None) -> Tuple[bool, str]:
         """Main routing switchboard for the actuator."""
         try:
             if action == "open" and target:
@@ -364,6 +365,15 @@ class TerminalManager:
                 elif CURRENT_OS == "linux":
                     return self._toggle_app_playback_linux(target)
                 return False, f"App playback control not supported on {CURRENT_OS}."
+            elif action == "set_app_output_device" and target is not None:
+                # device_id empty/None means "clear the override, use the
+                # system default" -- a valid, deliberate request, not a
+                # missing argument.
+                if CURRENT_OS == "windows":
+                    return self._set_app_output_device_windows(target, device_id)
+                elif CURRENT_OS == "linux":
+                    return self._set_app_output_device_linux(target, device_id)
+                return False, f"Per-app output device routing not supported on {CURRENT_OS}."
             return False, f"Action '{action}' is not recognized."
         except Exception as e:
             return False, f"OS Execution Error: {str(e)}"
@@ -430,7 +440,14 @@ class TerminalManager:
             # without a match to whatever media session nothing else
             # claimed, but only when it's unambiguous which browser owns it.
             claimed = {a["media_player"] for a in matched}
-            leftover = [v for k, v in media_sessions.items() if k not in claimed]
+            # Spotify already has its own dedicated media control (populated
+            # separately via jarvis/sys/media_status, not this list) -- its
+            # SMTC session must never compete as a "leftover" candidate here.
+            # Without this, a paused Spotify session sitting alongside a
+            # paused browser session makes leftover ambiguous (2 candidates,
+            # neither "Playing") and the browser -- the only real match --
+            # gets dropped entirely instead of paired.
+            leftover = [v for k, v in media_sessions.items() if k not in claimed and "spotify" not in k.lower()]
             unmatched_browsers = [a for a in apps if a not in matched and a["id"].lower() in WINDOWS_BROWSER_PROCESS_NAMES]
             if len(unmatched_browsers) == 1 and leftover:
                 # A browser with several tabs can leave several sessions
@@ -446,6 +463,93 @@ class TerminalManager:
                     app["media_player"] = media.get("player")
                     matched.append(app)
         return matched
+
+    # --- PER-APP OUTPUT DEVICE ROUTING ---
+    def list_output_devices(self) -> List[Dict[str, str]]:
+        """Real playback devices this OS knows about, for the app-volume
+        mixer's per-app output-device dropdown -- {"id", "name"} pairs.
+        Windows' id is a Core Audio render-endpoint id (needed to build the
+        wrapped device id clAppAudioRouting.py's undocumented call
+        expects); Linux's id is a pactl sink name (pactl move-sink-input
+        takes a sink name or index directly, no wrapping needed)."""
+        if CURRENT_OS == "windows":
+            return self._list_output_devices_windows()
+        elif CURRENT_OS == "linux":
+            return self._list_output_devices_linux()
+        return []
+
+    def _list_output_devices_windows(self) -> List[Dict[str, str]]:
+        try:
+            import warnings
+            from pycaw.pycaw import AudioUtilities
+            from pycaw.constants import EDataFlow
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                devices = AudioUtilities.GetAllDevices(data_flow=EDataFlow.eRender.value)
+            return [{"id": d.id, "name": d.FriendlyName} for d in devices if d.id and d.FriendlyName]
+        except ImportError:
+            return []
+        except Exception as e:
+            logging.warning(f"Failed to enumerate output devices: {e}")
+            return []
+
+    def _list_output_devices_linux(self) -> List[Dict[str, str]]:
+        if not shutil.which("pactl"):
+            return []
+        try:
+            output = subprocess.run(["pactl", "list", "sinks"], capture_output=True, text=True, timeout=3).stdout
+        except Exception as e:
+            logging.error(f"Failed to list pactl sinks: {e}")
+            return []
+        devices: List[Dict[str, str]] = []
+        current_name: Optional[str] = None
+        for line in output.splitlines():
+            line = line.strip()
+            if line.startswith("Sink #"):
+                current_name = None
+            elif line.startswith("Name:"):
+                current_name = line.split(":", 1)[1].strip()
+            elif line.startswith("Description:") and current_name:
+                devices.append({"id": current_name, "name": line.split(":", 1)[1].strip()})
+                current_name = None
+        return devices
+
+    def _set_app_output_device_windows(self, target: str, device_id: Optional[str]) -> Tuple[bool, str]:
+        script = os.path.join(self.base_dir, "utils", "clAppAudioRouting.py")
+        try:
+            sessions = self._windows_sessions_for(target)
+            if not sessions:
+                return False, f"App '{target}' not found."
+            pid = sessions[0].Process.pid
+        except ImportError:
+            return False, "Windows app volume control requires the 'pycaw' library (pip install pycaw comtypes)."
+        except Exception as e:
+            return False, f"Failed to resolve process for '{target}': {e}"
+        try:
+            result = subprocess.run(
+                [sys.executable, script, str(pid), device_id or ""],
+                capture_output=True, text=True, timeout=5,
+            )
+        except Exception as e:
+            return False, f"Failed to launch device-routing helper: {e}"
+        output = (result.stdout or result.stderr or "").strip()
+        if result.returncode != 0 or not output.startswith("OK"):
+            return False, output or "Device-routing helper failed with no output."
+        return True, f"{target} output routed to {device_id or 'system default'}."
+
+    def _set_app_output_device_linux(self, target: str, device_id: Optional[str]) -> Tuple[bool, str]:
+        if not shutil.which("pactl"):
+            return False, "pactl not found."
+        sink = device_id
+        if not sink:
+            try:
+                sink = subprocess.run(["pactl", "get-default-sink"], capture_output=True, text=True, timeout=3).stdout.strip()
+            except Exception as e:
+                return False, f"Failed to resolve default sink: {e}"
+            if not sink:
+                return False, "Could not resolve the system default sink."
+        subprocess.Popen(["pactl", "move-sink-input", target, sink])
+        return True, f"{target} output routed to {sink}."
 
     def _get_process_aumid(self, pid: int) -> Optional[str]:
         """The AUMID Windows itself associates with a specific process (via
@@ -803,12 +907,26 @@ async def _extract_smtc_state(session) -> Optional[Dict[str, Any]]:
 
     info = await session.try_get_media_properties_async()
     timeline = session.get_timeline_properties()
+    duration = timeline.end_time.total_seconds()
+    position = timeline.position.total_seconds()
+    if status == "Playing":
+        # SMTC's timeline is a snapshot the source app pushes only when it
+        # calls UpdateTimelineProperties, not continuously -- live
+        # measurement showed this position already 1.5s+ stale by the
+        # time it's read here, which every downstream consumer
+        # (MediaWidget's progress bar, LyricsDisplay's karaoke sync) then
+        # inherits permanently until the next update. Extrapolate forward
+        # by how long it's been since that snapshot, same idea as those
+        # consumers already do between their own less-frequent updates.
+        elapsed = (datetime.now(timezone.utc) - timeline.last_updated_time).total_seconds()
+        if elapsed > 0:
+            position = min(position + elapsed, duration)
     return {
         "title": info.title or "",
         "artist": info.artist or "",
         "status": status,
-        "position": timeline.position.total_seconds(),
-        "duration": timeline.end_time.total_seconds(),
+        "position": position,
+        "duration": duration,
     }
 
 
@@ -974,11 +1092,17 @@ async def mqtt_service_listener(manager: TerminalManager) -> None:
                             await mqtt_client.publish("jarvis/sys/app_volumes", json.dumps({"apps": apps}))
                             continue
 
+                        if action == "list_output_devices":
+                            devices = await asyncio.to_thread(manager.list_output_devices)
+                            await mqtt_client.publish("jarvis/sys/app_output_devices", json.dumps({"devices": devices}))
+                            continue
+
                         success, msg = await asyncio.to_thread(
                             manager.execute_command,
                             action,
                             payload.get("target"),
-                            payload.get("level")
+                            payload.get("level"),
+                            payload.get("device_id")
                         )
 
                         action = payload.get("action")

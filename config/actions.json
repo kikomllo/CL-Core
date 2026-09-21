@@ -100,18 +100,49 @@
       "topic": "jarvis/sys/todo/create",
       "schema": {
         "task": {"type": "string", "required": true},
-        "list_name": {"type": "string", "default": "My To-Do List"}
+        "list_name": {"type": "string", "default": "My To-Do List"},
+        "silent": {"type": "boolean", "default": false}
       }
     },
     "complete": {
       "topic": "jarvis/sys/todo/control",
       "payload": {"action": "complete"},
       "schema": {
-        "id": {"type": "string", "required": true}
+        "id": {"type": "string", "required": true},
+        "completed": {"type": "boolean", "default": true}
       }
     },
     "delete": {
       "topic": "jarvis/sys/todo/control",
+      "payload": {"action": "delete"},
+      "schema": {
+        "id": {"type": "string", "required": true}
+      }
+    }
+  },
+  "note": {
+    "list": {
+      "topic": "jarvis/sys/note/request",
+      "payload": {"action": "list"}
+    },
+    "create": {
+      "topic": "jarvis/sys/note/create",
+      "schema": {
+        "title": {"type": "string", "default": ""},
+        "text": {"type": "string", "default": ""}
+      }
+    },
+    "update": {
+      "topic": "jarvis/sys/note/control",
+      "payload": {"action": "update"},
+      "schema": {
+        "id": {"type": "string", "required": true},
+        "title": {"type": "string", "default": ""},
+        "text": {"type": "string", "required": true}
+      }
+    },
+    "delete": {
+      "topic": "jarvis/sys/note/control",
       "payload": {"action": "delete"},
       "schema": {
         "id": {"type": "string", "required": true}
@@ -153,6 +184,7 @@
         "action": {"type": "string", "required": true},
         "target": {"type": "string"},
         "level": {"type": "integer"},
+        "device_id": {"type": "string"},
         "silent": {"type": "boolean", "default": false}
       }
     }

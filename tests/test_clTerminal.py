@@ -2,6 +2,7 @@ import pytest
 import os
 import sys
 import types
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, AsyncMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
@@ -261,6 +262,162 @@ class TestSetAppVolumeAndMuteLinux:
         assert success is False
 
 
+def _fake_pycaw_device(device_id, friendly_name):
+    d = MagicMock()
+    d.id = device_id
+    d.FriendlyName = friendly_name
+    return d
+
+
+class TestListOutputDevicesWindows:
+    def test_returns_id_and_friendly_name_pairs(self, manager, mocker):
+        mocker.patch("clTerminal.CURRENT_OS", "windows")
+        devices = [
+            _fake_pycaw_device("{render-1}", "Speakers (Realtek)"),
+            _fake_pycaw_device("{render-2}", "Headset (USB)"),
+        ]
+        fake_audio_utilities = MagicMock()
+        fake_audio_utilities.GetAllDevices.return_value = devices
+        fake_pycaw_module = types.ModuleType("pycaw.pycaw")
+        fake_pycaw_module.AudioUtilities = fake_audio_utilities
+        fake_constants_module = types.ModuleType("pycaw.constants")
+        fake_constants_module.EDataFlow = MagicMock(eRender=MagicMock(value=0))
+        mocker.patch.dict(sys.modules, {
+            "pycaw": types.ModuleType("pycaw"), "pycaw.pycaw": fake_pycaw_module,
+            "pycaw.constants": fake_constants_module,
+        })
+
+        result = manager.list_output_devices()
+
+        assert result == [
+            {"id": "{render-1}", "name": "Speakers (Realtek)"},
+            {"id": "{render-2}", "name": "Headset (USB)"},
+        ]
+
+    def test_returns_empty_list_when_pycaw_not_installed(self, manager, mocker):
+        mocker.patch("clTerminal.CURRENT_OS", "windows")
+        mocker.patch.dict(sys.modules, {"pycaw": None, "pycaw.pycaw": None, "pycaw.constants": None})
+
+        assert manager.list_output_devices() == []
+
+
+SAMPLE_PACTL_SINKS_OUTPUT = (
+    "Sink #0\n"
+    "\tState: RUNNING\n"
+    "\tName: alsa_output.pci-0000_00_1f.3.analog-stereo\n"
+    "\tDescription: Built-in Audio Analog Stereo\n"
+    "\n"
+    "Sink #1\n"
+    "\tState: SUSPENDED\n"
+    "\tName: usb_headset.analog-stereo\n"
+    "\tDescription: USB Headset\n"
+)
+
+
+class TestListOutputDevicesLinux:
+    def test_parses_sink_name_and_description(self, manager, mocker):
+        mocker.patch("clTerminal.CURRENT_OS", "linux")
+        mocker.patch("clTerminal.shutil.which", return_value="/usr/bin/pactl")
+        mocker.patch("clTerminal.subprocess.run").return_value.stdout = SAMPLE_PACTL_SINKS_OUTPUT
+
+        result = manager.list_output_devices()
+
+        assert result == [
+            {"id": "alsa_output.pci-0000_00_1f.3.analog-stereo", "name": "Built-in Audio Analog Stereo"},
+            {"id": "usb_headset.analog-stereo", "name": "USB Headset"},
+        ]
+
+    def test_returns_empty_list_when_pactl_missing(self, manager, mocker):
+        mocker.patch("clTerminal.CURRENT_OS", "linux")
+        mocker.patch("clTerminal.shutil.which", return_value=None)
+
+        assert manager.list_output_devices() == []
+
+
+class TestSetAppOutputDeviceWindows:
+    def test_resolves_pid_and_invokes_the_routing_helper(self, manager, mocker):
+        mocker.patch("clTerminal.CURRENT_OS", "windows")
+        session = _fake_windows_session("chrome.exe", pid=4242)
+        _fake_windows_sessions_module(mocker, [session])
+        mock_run = mocker.patch("clTerminal.subprocess.run")
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = "OK\n"
+
+        success, msg = manager.execute_command("set_app_output_device", target="chrome.exe", device_id="{render-1}")
+
+        assert success is True
+        args = mock_run.call_args[0][0]
+        assert args[0] == sys.executable
+        assert args[1].endswith("clAppAudioRouting.py")
+        assert args[2] == "4242"
+        assert args[3] == "{render-1}"
+
+    def test_empty_device_id_is_passed_through_as_a_clear_request(self, manager, mocker):
+        mocker.patch("clTerminal.CURRENT_OS", "windows")
+        session = _fake_windows_session("chrome.exe", pid=4242)
+        _fake_windows_sessions_module(mocker, [session])
+        mock_run = mocker.patch("clTerminal.subprocess.run")
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = "OK\n"
+
+        success, msg = manager.execute_command("set_app_output_device", target="chrome.exe", device_id=None)
+
+        assert success is True
+        assert mock_run.call_args[0][0][3] == ""
+
+    def test_reports_error_when_app_not_found(self, manager, mocker):
+        mocker.patch("clTerminal.CURRENT_OS", "windows")
+        _fake_windows_sessions_module(mocker, [])
+
+        success, msg = manager.execute_command("set_app_output_device", target="ghost.exe", device_id="{render-1}")
+
+        assert success is False
+
+    def test_reports_error_when_helper_script_fails(self, manager, mocker):
+        mocker.patch("clTerminal.CURRENT_OS", "windows")
+        session = _fake_windows_session("chrome.exe", pid=4242)
+        _fake_windows_sessions_module(mocker, [session])
+        mock_run = mocker.patch("clTerminal.subprocess.run")
+        mock_run.return_value.returncode = 1
+        mock_run.return_value.stdout = "ERROR: SetPersistedDefaultAudioEndpoint(role=0) failed: HRESULT 0x80070005\n"
+
+        success, msg = manager.execute_command("set_app_output_device", target="chrome.exe", device_id="{render-1}")
+
+        assert success is False
+        assert "HRESULT" in msg
+
+
+class TestSetAppOutputDeviceLinux:
+    def test_moves_sink_input_to_the_chosen_sink(self, manager, mocker):
+        mocker.patch("clTerminal.CURRENT_OS", "linux")
+        mocker.patch("clTerminal.shutil.which", return_value="/usr/bin/pactl")
+        mock_popen = mocker.patch("clTerminal.subprocess.Popen")
+
+        success, msg = manager.execute_command("set_app_output_device", target="123", device_id="usb_headset.analog-stereo")
+
+        assert success is True
+        mock_popen.assert_called_once_with(["pactl", "move-sink-input", "123", "usb_headset.analog-stereo"])
+
+    def test_empty_device_id_resolves_and_moves_to_the_default_sink(self, manager, mocker):
+        mocker.patch("clTerminal.CURRENT_OS", "linux")
+        mocker.patch("clTerminal.shutil.which", return_value="/usr/bin/pactl")
+        mocker.patch("clTerminal.subprocess.run").return_value.stdout = "alsa_output.default\n"
+        mock_popen = mocker.patch("clTerminal.subprocess.Popen")
+
+        success, msg = manager.execute_command("set_app_output_device", target="123", device_id=None)
+
+        assert success is True
+        mock_popen.assert_called_once_with(["pactl", "move-sink-input", "123", "alsa_output.default"])
+
+    def test_reports_error_when_pactl_missing(self, manager, mocker):
+        mocker.patch("clTerminal.CURRENT_OS", "linux")
+        mocker.patch("clTerminal.shutil.which", return_value=None)
+
+        success, msg = manager.execute_command("set_app_output_device", target="123", device_id="sink")
+
+        assert success is False
+
+
 class TestNormalizeAppKey:
     """The two OS APIs name the same app differently -- pycaw's
     'Spotify.exe' vs. SMTC's AUMID; pactl's 'Spotify' vs. MPRIS's
@@ -443,6 +600,35 @@ class TestListAppVolumesMergesMediaSessions:
         apps = {a["id"]: a for a in manager.list_app_volumes()}
 
         assert apps == {}
+
+    def test_windows_pairs_a_paused_browser_even_alongside_a_paused_spotify_session(self, manager, mocker):
+        """Live bug: pausing YouTube in Firefox made its whole row vanish
+        from the app-volume mixer, even though the media session was still
+        very much alive (a media key could still resume it). Spotify's own
+        paused SMTC session -- unclaimed here because Spotify isn't
+        currently in `apps` at all, and already has its own dedicated media
+        control elsewhere -- was being counted as a second "leftover"
+        candidate alongside Firefox's, making the pairing look ambiguous
+        (2 candidates, neither "Playing") and dropping Firefox entirely.
+        Spotify's session must never compete for this pairing."""
+        mocker.patch("clTerminal.CURRENT_OS", "windows")
+        firefox = _fake_windows_session("firefox.exe", volume=0.44, muted=False, pid=19036)
+        _fake_windows_sessions_module(mocker, [firefox])
+        mocker.patch.object(manager, "_get_process_aumid", return_value=None)
+        mocker.patch.object(manager, "_find_media_session_by_process_name", return_value=None)
+        mocker.patch.object(manager, "_list_windows_media_sessions", return_value={
+            "SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify": {
+                "title": "Midnight City", "artist": "M83", "status": "Paused",
+                "player": "SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify",
+            },
+            "308046B0AF4A39CB": {"title": "Some YouTube Video", "artist": "", "status": "Paused", "player": "308046B0AF4A39CB"},
+        })
+
+        apps = {a["id"]: a for a in manager.list_app_volumes()}
+
+        assert apps["firefox.exe"]["now_playing"] == "Some YouTube Video"
+        assert apps["firefox.exe"]["is_playing"] is False
+        assert apps["firefox.exe"]["media_player"] == "308046B0AF4A39CB"
 
     def test_linux_matched_app_gets_now_playing_and_media_player(self, manager, mocker):
         mocker.patch("clTerminal.CURRENT_OS", "linux")
@@ -675,19 +861,80 @@ class TestWindowsMediaState:
     API calls) -- the Windows equivalent of playerctl below."""
 
     @pytest.mark.asyncio
-    async def test_reads_playing_session(self, fake_winsdk_smtc):
+    async def test_reads_playing_session(self, fake_winsdk_smtc, mocker):
+        now = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        mocker.patch("clTerminal.datetime").now.return_value = now
         session = MagicMock()
         session.get_playback_info.return_value.playback_status = 4  # Playing
         session.try_get_media_properties_async = AsyncMock(return_value=MagicMock(title="Song", artist="Artist"))
         timeline = MagicMock()
         timeline.position.total_seconds.return_value = 12.5
         timeline.end_time.total_seconds.return_value = 200.0
+        timeline.last_updated_time = now  # no elapsed time since the snapshot -- no extrapolation
         session.get_timeline_properties.return_value = timeline
         fake_winsdk_smtc.get_current_session.return_value = session
 
         state = await _get_windows_media_state()
 
         assert state == {"title": "Song", "artist": "Artist", "status": "Playing", "position": 12.5, "duration": 200.0}
+
+    @pytest.mark.asyncio
+    async def test_extrapolates_position_by_time_elapsed_since_the_smtc_snapshot(self, fake_winsdk_smtc, mocker):
+        """Live bug: SMTC only pushes a fresh timeline snapshot when the
+        source app calls UpdateTimelineProperties, not continuously -- live
+        measurement against a real, currently-playing Spotify session
+        showed the raw position already ~1.5s stale by the time it's read
+        here. Every downstream consumer (MediaWidget's progress bar,
+        LyricsDisplay's karaoke sync) then inherited that lag permanently
+        until the next snapshot."""
+        mocker.patch("clTerminal.datetime").now.return_value = datetime(2024, 1, 1, 12, 0, 3, tzinfo=timezone.utc)
+        session = MagicMock()
+        session.get_playback_info.return_value.playback_status = 4  # Playing
+        session.try_get_media_properties_async = AsyncMock(return_value=MagicMock(title="Song", artist="Artist"))
+        timeline = MagicMock()
+        timeline.position.total_seconds.return_value = 12.5
+        timeline.end_time.total_seconds.return_value = 200.0
+        timeline.last_updated_time = datetime(2024, 1, 1, 12, 0, 1, tzinfo=timezone.utc)  # 2s before "now"
+        session.get_timeline_properties.return_value = timeline
+        fake_winsdk_smtc.get_current_session.return_value = session
+
+        state = await _get_windows_media_state()
+
+        assert state["position"] == 14.5
+
+    @pytest.mark.asyncio
+    async def test_does_not_extrapolate_a_paused_session(self, fake_winsdk_smtc, mocker):
+        mocker.patch("clTerminal.datetime").now.return_value = datetime(2024, 1, 1, 12, 0, 3, tzinfo=timezone.utc)
+        session = MagicMock()
+        session.get_playback_info.return_value.playback_status = 5  # Paused
+        session.try_get_media_properties_async = AsyncMock(return_value=MagicMock(title="Song", artist="Artist"))
+        timeline = MagicMock()
+        timeline.position.total_seconds.return_value = 12.5
+        timeline.end_time.total_seconds.return_value = 200.0
+        timeline.last_updated_time = datetime(2024, 1, 1, 12, 0, 1, tzinfo=timezone.utc)  # 2s before "now"
+        session.get_timeline_properties.return_value = timeline
+        fake_winsdk_smtc.get_current_session.return_value = session
+
+        state = await _get_windows_media_state()
+
+        assert state["position"] == 12.5
+
+    @pytest.mark.asyncio
+    async def test_extrapolation_is_clamped_to_the_track_duration(self, fake_winsdk_smtc, mocker):
+        mocker.patch("clTerminal.datetime").now.return_value = datetime(2024, 1, 1, 12, 0, 30, tzinfo=timezone.utc)
+        session = MagicMock()
+        session.get_playback_info.return_value.playback_status = 4  # Playing
+        session.try_get_media_properties_async = AsyncMock(return_value=MagicMock(title="Song", artist="Artist"))
+        timeline = MagicMock()
+        timeline.position.total_seconds.return_value = 195.0
+        timeline.end_time.total_seconds.return_value = 200.0
+        timeline.last_updated_time = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)  # 30s before "now"
+        session.get_timeline_properties.return_value = timeline
+        fake_winsdk_smtc.get_current_session.return_value = session
+
+        state = await _get_windows_media_state()
+
+        assert state["position"] == 200.0
 
     @pytest.mark.asyncio
     async def test_returns_none_when_no_session(self, fake_winsdk_smtc):
@@ -712,7 +959,9 @@ class TestWindowsSpotifyState:
     the real Spotify API just to show track/artist/position."""
 
     @pytest.mark.asyncio
-    async def test_finds_spotify_among_multiple_sessions(self, fake_winsdk_smtc):
+    async def test_finds_spotify_among_multiple_sessions(self, fake_winsdk_smtc, mocker):
+        now = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        mocker.patch("clTerminal.datetime").now.return_value = now
         browser_session = MagicMock()
         browser_session.source_app_user_model_id = "Chrome"
         spotify_session = MagicMock()
@@ -722,6 +971,7 @@ class TestWindowsSpotifyState:
         timeline = MagicMock()
         timeline.position.total_seconds.return_value = 5.0
         timeline.end_time.total_seconds.return_value = 180.0
+        timeline.last_updated_time = now  # no elapsed time since the snapshot -- no extrapolation
         spotify_session.get_timeline_properties.return_value = timeline
         # Spotify isn't the first (or "current") session -- must not just grab session[0].
         fake_winsdk_smtc.get_sessions.return_value = [browser_session, spotify_session]
