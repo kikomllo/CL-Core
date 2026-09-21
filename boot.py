@@ -35,6 +35,39 @@ def _detect_cuda_tag():
             return tag
     return None
 
+def _ensure_linux_system_packages() -> None:
+    """Installs apt packages the ecosystem shells out to but doesn't bundle via
+    requirements.txt (pip can't install system binaries). Missing ones degrade
+    specific features gracefully rather than crashing -- e.g. clTerminal.py's
+    per-app volume mixer just returns an empty list without pactl -- so this
+    is best-effort and never halts boot on failure, unlike the llama-cpp-python
+    build-tools check below."""
+    required = {
+        "pactl": "pulseaudio-utils",  # per-app volume mixer (clTerminal.py's *_linux app-volume functions)
+    }
+    missing_packages = sorted({pkg for binary, pkg in required.items() if not shutil.which(binary)})
+    if not missing_packages:
+        return
+    if not shutil.which("apt-get"):
+        # Non-Debian distro (dnf/pacman/zypper/...) -- same apt-only assumption
+        # as the build-essential/cmake check below, just surfaced instead of silent.
+        print(f"[BOOT] Missing system package(s): {', '.join(missing_packages)} (apt-get not found -- install "
+              f"the equivalent for your distro manually). Some features will be degraded until then.")
+        return
+
+    print(f"[BOOT] Installing missing system package(s) via apt: {', '.join(missing_packages)}...")
+    try:
+        # A stale local package index can point at a build already rotated off
+        # the mirror (common on rolling-release distros like Kali), which
+        # 404s the install outright -- refresh it first.
+        subprocess.run(["sudo", "apt-get", "update"], check=True)
+        subprocess.run(["sudo", "apt-get", "install", "-y"] + missing_packages, check=True)
+        print("[BOOT] System package(s) installed.")
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        print(f"[BOOT] Could not auto-install {', '.join(missing_packages)} ({e}).")
+        print(f"[BOOT] Some features will be degraded until you run: sudo apt install {' '.join(missing_packages)}")
+
+
 def main():
     print("==================================================")
     print("JARVIS ECOSYSTEM BOOTLOADER")
@@ -57,6 +90,10 @@ def main():
             print(f"[BOOT] FATAL: Failed to create virtual environment: {e}")
             sys.exit(1)
             
+    # 1.5. Ensure required Linux system packages (best-effort, non-fatal)
+    if not is_windows:
+        _ensure_linux_system_packages()
+
     # 2. Check for dependencies update
     req_file = "requirements.txt"
     timestamp_file = os.path.join(venv_dir, ".req_timestamp")

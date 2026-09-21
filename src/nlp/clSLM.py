@@ -84,6 +84,14 @@ def ensure_gguf_exists(model_path: str, model_url: str, label: str) -> bool:
         if os.path.exists(model_path):
             os.remove(model_path)  # Clean up corrupted partial downloads
         return False
+    except BaseException:
+        # Interrupted mid-download (Ctrl+C, process kill) -- still a partial
+        # file on disk that would otherwise be mistaken for a complete model
+        # on the next boot's os.path.exists() check.
+        sys.stdout.write("\n")
+        if os.path.exists(model_path):
+            os.remove(model_path)
+        raise
 
 
 class SLMInferenceEngine:

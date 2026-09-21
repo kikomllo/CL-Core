@@ -449,7 +449,18 @@ class DraggableWidget(QWidget):
             # recreation -- doing it as two separate calls (setParent then
             # setWindowFlags) is what left Windows' native title bar/min/max/close
             # chrome in place instead of honoring the frameless Tool flags.
-            self.setParent(None, Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool)
+            #
+            # Qt::Tool differs from a plain Window only in taskbar visibility on
+            # Linux, but on X11 a parentless Qt::Tool always gets WM_TRANSIENT_FOR
+            # set to the app's group leader (qxcbwindow.cpp's isTransient()), which
+            # most window managers treat as "raise the leader too" whenever this
+            # widget gets focus -- dragging the fullscreen dashboard forward and
+            # defeating unpinning. Windows has the same implicit-owner behavior
+            # (see _clear_win32_owner) but that's fixed after the fact via ctypes;
+            # X11 offers no such post-creation escape hatch, so Window sidesteps it
+            # at the cost of an extra taskbar/alt-tab entry.
+            window_type = Qt.WindowType.Tool if sys.platform == "win32" else Qt.WindowType.Window
+            self.setParent(None, Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint | window_type)
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
             if hasattr(self, 'pin_btn'):
                 self.pin_btn.setIcon(Theme.get_icon("pin.svg", 13))
@@ -2657,7 +2668,21 @@ class JarvisUI(QWidget):
                 self.router.dispatch("calendar.read")
 
             logging.debug(f"[DEBUG UI] Calling showFullScreen(). Current focus: {self.hasFocus()}")
-            self.showFullScreen()
+            if sys.platform == "win32":
+                self.showFullScreen()
+            else:
+                # Real EWMH fullscreen (_NET_WM_STATE_FULLSCREEN, what
+                # showFullScreen() sets) puts GNOME/Mutter's window in a
+                # dedicated top-most compositor layer above every other
+                # window on the desktop, including this app's own
+                # WindowStaysOnTopHint unpinned widgets -- Mutter silently
+                # re-asserts that layer (snapping the dashboard back above
+                # a just-clicked widget) the moment focus/stacking gets
+                # re-evaluated. The window above is already frameless and
+                # sized to exactly the target screen's geometry via
+                # move()/resize(), so a plain show() gets the identical
+                # visual result without claiming that special state.
+                self.show()
             
             if is_monitor_swap:
                 # Re-enable paint events, restore visibility, and force a repaint

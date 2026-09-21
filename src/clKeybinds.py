@@ -63,7 +63,14 @@ PTT_KEY_MAP = {
     "KEY_LEFTSHIFT": (keyboard.Key.shift,),
     "KEY_CAPSLOCK": (keyboard.Key.caps_lock,),
     "KEY_SPACE": (keyboard.Key.space,),
-    **{f"KEY_F{i}": (getattr(keyboard.Key, f"f{i}"),) for i in range(13, 25)},
+    # pynput's Linux (X11) backend only defines up to Key.f20, while Windows
+    # goes to f24 -- skip whichever the current backend doesn't have instead
+    # of crashing at import time.
+    **{
+        f"KEY_F{i}": (getattr(keyboard.Key, f"f{i}"),)
+        for i in range(13, 25)
+        if hasattr(keyboard.Key, f"f{i}")
+    },
 }
 
 def is_ptt_key(key, ptt_key_str: str) -> bool:

@@ -1,7 +1,10 @@
 import logging
 from clTheme import Theme
 from utils.clActionRouter import ActionRouter
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSlider, QProgressBar
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSlider, QProgressBar,
+    QStyle, QStyleOptionSlider,
+)
 from PyQt6.QtCore import QTimer, QSize, Qt, QVariantAnimation, QEasingCurve
 from PyQt6.QtGui import QPixmap
 from clUIScaler import UIScaler
@@ -9,6 +12,54 @@ from ui.clMarqueeLabel import MarqueeLabel
 
 def s(val):
     return UIScaler.get().scale(val)
+
+class ClickToPositionSlider(QSlider):
+    """A QSlider whose groove click jumps straight to the clicked point --
+    Qt's default style instead treats a groove click as a page-step nudge,
+    which reads as "tap increases by a percentage" rather than "tap sets the
+    level" for a volume fader.
+
+    Handles press/move/release itself rather than computing the value once
+    and handing off to the base class's mousePressEvent: this widget's QSS
+    (see MediaVolumeSlider/AppVolumeSlider in clTheme.py) deliberately sets
+    the handle to 0px as a fill-gradient fix, and a zero-size handle rect can
+    never pass Qt's own hit-test, so delegating back to super() only ever
+    re-hits the groove and re-triggers the page-step behavior this is meant
+    to replace."""
+
+    def _value_from_pos(self, pos) -> int:
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        groove = self.style().subControlRect(QStyle.ComplexControl.CC_Slider, opt, QStyle.SubControl.SC_SliderGroove, self)
+        if self.orientation() == Qt.Orientation.Horizontal:
+            span = max(1, groove.width() - 1)
+            click_pos = int(pos.x()) - groove.x()
+        else:
+            span = max(1, groove.height() - 1)
+            click_pos = int(pos.y()) - groove.y()
+        return QStyle.sliderValueFromPosition(self.minimum(), self.maximum(), click_pos, span, opt.upsideDown)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.setSliderDown(True)
+            self.setValue(self._value_from_pos(event.position()))
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.MouseButton.LeftButton and self.isSliderDown():
+            self.setValue(self._value_from_pos(event.position()))
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.isSliderDown():
+            self.setSliderDown(False)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
 # Simple Icons (simpleicons.org) SVGs with their official brand color baked
 # in -- matched against the app's display name (cross-platform, unlike
@@ -193,7 +244,7 @@ class MediaWidget(QWidget):
         fader_layout.setContentsMargins(0, 0, 0, 0)
         fader_layout.setSpacing(s(6))
 
-        self.volume_slider = QSlider(Qt.Orientation.Vertical)
+        self.volume_slider = ClickToPositionSlider(Qt.Orientation.Vertical)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(100)
         # Fixed to exactly the room it has at the widget's own minimum size
@@ -532,7 +583,7 @@ class MediaWidget(QWidget):
         play_btn.setFixedSize(s(26), s(26))
         play_btn.setStyleSheet(Theme.get_style("MediaSmallBtn", radius=s(13)))
 
-        slider = QSlider(Qt.Orientation.Horizontal)
+        slider = ClickToPositionSlider(Qt.Orientation.Horizontal)
         slider.setFixedWidth(s(60))
         slider.setRange(0, 100)
         slider.setValue(app.get("volume", 100))
