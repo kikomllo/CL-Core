@@ -207,6 +207,16 @@ def start_native(desc, filename, is_reboot=False):
     # Tells clUI.py whether to restore last-saved mode (reboot/crash-recovery/
     # restart) or always open in overlay (a genuine cold start).
     env["JARVIS_REBOOT"] = "1" if is_reboot else "0"
+    # numpy's BLAS backend (OpenBLAS/MKL) reserves a thread-pool buffer sized
+    # for the detected core count the moment numpy is imported, regardless of
+    # whether anything ever does real multi-threaded linear algebra -- ~380MB
+    # per process here, for modules (clMic/clTTS/clWhisper) that only ever do
+    # simple elementwise math on small 1D arrays. setdefault so an operator
+    # can still override it explicitly if a future module genuinely needs
+    # multi-threaded BLAS.
+    env.setdefault("OPENBLAS_NUM_THREADS", "1")
+    env.setdefault("OMP_NUM_THREADS", "1")
+    env.setdefault("MKL_NUM_THREADS", "1")
 
     proc = subprocess.Popen(
         [sys.executable, filename],

@@ -670,14 +670,14 @@ class JarvisVisualizer(QWidget):
             self.current_opacity = self.target_opacity
 
         self.amplitude += (self.target_amplitude - self.amplitude) * 0.4
-            
+
         if abs(self.current_scale - self.target_scale) > 0.01:
             self.current_scale += (self.target_scale - self.current_scale) * 0.15
         else:
             self.current_scale = self.target_scale
-            
+
         self.time_offset += self.speed
-        
+
         if self.target_opacity > 0 and self.amplitude > 5:
             if random.random() < (self.amplitude / 30.0):
                 self.particles.append({
@@ -688,12 +688,12 @@ class JarvisVisualizer(QWidget):
                     "life": 1.0,
                     "size": random.randint(1, 3)
                 })
-                
+
         for p in self.particles:
             p["x"] += p["speed_x"]
             p["y_offset"] += p["speed_y"]
             p["life"] -= 0.03
-            
+
         self.particles = [p for p in self.particles if p["life"] > 0]
         self.update()
 
@@ -2300,9 +2300,9 @@ class JarvisUI(QWidget):
         self.state = state
         self.visualizer.set_state(state, self.is_fullscreen)
         
-        # Low-Power Idle Mode: Drop to 15 FPS to save CPU, snap to 60 FPS when active
+        # Low-Power Idle Mode: Drop to 8 FPS to save CPU, snap to 60 FPS when active
         if state == "IDLE":
-            self.timer.setInterval(1000 // 15)
+            self.timer.setInterval(1000 // 8)
         else:
             self.timer.setInterval(1000 // 60)
             
