@@ -28,7 +28,8 @@
       "schema": {
         "text": {"type": "string", "required": true},
         "skip_ducking": {"type": "boolean", "default": false},
-        "request_reply": {"type": "boolean", "default": false}
+        "request_reply": {"type": "boolean", "default": false},
+        "claude_session": {"type": "boolean", "default": false}
       }
     },
     "play_audio": {
@@ -280,6 +281,15 @@
       "topic": "jarvis/sys/alarm/ring",
       "schema": {
         "id": {"type": "string", "required": true}
+      }
+    }
+  },
+  "claude": {
+    "ask": {
+      "topic": "jarvis/claude/question",
+      "payload": {"silent": true},
+      "schema": {
+        "text": {"type": "string", "required": true}
       }
     }
   }

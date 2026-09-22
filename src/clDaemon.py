@@ -302,6 +302,17 @@ class CentralDaemon:
 
         return " ".join(words)
 
+    def strip_wake_word(self, text: str) -> Tuple[str, bool]:
+        """Strips a leading 'hey/hi/ok/... jarvis' wake word. [.,!?\\s]+
+        (not \\s+) tolerates Whisper punctuating a speech pause as
+        'Hey, Jarvis.' -- \\s+ alone doesn't span the comma. Returns
+        (stripped_text, wakeword_was_present)."""
+        ww_pattern = r'^(?:(?:hey|hi|ok|a|uh|ha|eh)[.,!?\s]+)?jarvis\b[.,!?]*\s*'
+        is_wakeword_present = bool(re.search(ww_pattern, text, flags=re.IGNORECASE))
+        if is_wakeword_present:
+            text = re.sub(ww_pattern, '', text, flags=re.IGNORECASE).strip()
+        return text, is_wakeword_present
+
     # -------------------------------------------------------------------------
     # HYBRID ROUTING SWITCHBOARD
     # -------------------------------------------------------------------------
@@ -315,6 +326,22 @@ class CentralDaemon:
         """
         sanitized_payload = self.sanitize_transcription(payload_data)
         clean_text = self.nlp.normalize_text(sanitized_payload)
+
+        # 0. Claude Bridge: "ask claude ..." bypasses all normal intent
+        # routing below and goes straight to a dedicated topic for an
+        # active Claude Code session to pick up -- a raw text pass-through,
+        # not a fixed action_id, since there's no action set to classify
+        # into. Reuses the existing action-dispatch path (config/actions.json's
+        # claude.ask entry) rather than publishing directly here.
+        claude_match = re.match(r'^(?:hey |ok |okay )?(?:ask |tell )?claude[,]?\s+(.+)$', clean_text)
+        if claude_match:
+            question = claude_match.group(1).strip()
+            if question:
+                logging.info(f"[DAEMON] Routed to Claude bridge: '{question}'")
+                return [
+                    ({"text": question}, "claude.ask"),
+                    ({"text": "Sending that to Claude.", "request_reply": False}, "system.speak"),
+                ], None
 
         # 1. Global Abort Check
         if self.nlp.is_abort_command(clean_text):
@@ -349,6 +376,11 @@ class CentralDaemon:
         choice_num = int(extracted_digits[0]) if extracted_digits else None
 
         # 3. Interactive Context Routing (Preserved Exactly)
+        if self.active_context["type"] == "claude_reply":
+            self.active_context["type"] = None
+            if self.nlp.is_abort_command(clean_text): return [({"action": "abort"}, "system.abort")], None
+            return [({"text": clean_text}, "claude.ask")], None
+
         if self.active_context["type"] == "spotify_choice" and choice_num is not None:
             self.active_context["type"] = None
             return [({"action": "play_choice", "choice_index": choice_num}, "spotify.control")], None
@@ -587,6 +619,11 @@ class CentralDaemon:
                                 payload = json.loads(payload_data)
                                 if payload.get("request_reply", False):
                                     self.pending_mic_request = True
+                                    # Claude asked the question and wants the mic reopened for
+                                    # its own answer -- the next utterance must go straight back
+                                    # to Claude, not require "ask claude" again to be recognized.
+                                    if payload.get("claude_session", False):
+                                        self.active_context = {"type": "claude_reply", "expires_at": time.time() + 30.0}
                             except json.JSONDecodeError:
                                 pass
 
@@ -701,12 +738,7 @@ class CentralDaemon:
 
                             captured_actions: List[Dict[str, Any]] = []
                             raw_payload = self.sanitize_transcription(text_payload)
-                            
-                            ww_pattern = r'^(?:hey\s+|hi\s+|ok\s+|a\s+|uh\s+|ha\s+|eh\s+)?jarvis\b[.,!?]*\s*'
-                            is_wakeword_present = bool(re.search(ww_pattern, raw_payload, flags=re.IGNORECASE))
-                            if is_wakeword_present:
-                                raw_payload = re.sub(ww_pattern, '', raw_payload, flags=re.IGNORECASE).strip()
-                                    
+                            raw_payload, is_wakeword_present = self.strip_wake_word(raw_payload)
                             clean_text = self.nlp.normalize_text(raw_payload)
                             logging.info(f"[VOICE INPUT] Raw: '{text_payload}' | Extracted: '{raw_payload}' | Normalized: '{clean_text}'")
                             

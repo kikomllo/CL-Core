@@ -149,6 +149,55 @@ class TestDaemonStateTraps:
         assert intents[0][0] == {"action": "save_discovery", "index": 1}
         assert daemon.active_context["type"] is None
 
+    @pytest.mark.asyncio
+    async def test_claude_reply_trap_bypasses_ask_claude_prefix(self, daemon):
+        """Once Claude has asked a question and reopened the mic for its own
+        answer, the reply must go straight back to Claude without needing
+        the 'ask claude' prefix again -- that prefix is only for starting a
+        conversation, not for continuing one already in progress."""
+        daemon.active_context = {"type": "claude_reply", "expires_at": time.time() + 30.0}
+        intents, _ = await daemon.route_voice_command("yes it's working great")
+
+        assert len(intents) == 1
+        assert intents[0][1] == "claude.ask"
+        assert intents[0][0] == {"text": "yes its working great"}
+        assert daemon.active_context["type"] is None
+
+    @pytest.mark.asyncio
+    async def test_claude_reply_trap_still_honors_abort(self, daemon):
+        daemon.active_context = {"type": "claude_reply", "expires_at": time.time() + 30.0}
+        intents, _ = await daemon.route_voice_command("nevermind")
+
+        assert len(intents) == 1
+        assert intents[0][1] == "system.abort"
+        assert daemon.active_context["type"] is None
+
+    @pytest.mark.asyncio
+    async def test_speak_with_claude_session_arms_claude_reply_context(self, daemon, mock_mqtt, message_stream):
+        """The claude_session flag on system.speak is what tells the daemon
+        the upcoming mic-open is for a Claude conversation reply, not a
+        normal followup -- it must set active_context accordingly once
+        request_reply is also true."""
+        mock_mqtt.messages = message_stream([
+            ("jarvis/sys/speak", json.dumps({"text": "Anything else?", "request_reply": True, "claude_session": True})),
+        ])
+
+        await daemon.run()
+
+        assert daemon.active_context["type"] == "claude_reply"
+
+    @pytest.mark.asyncio
+    async def test_speak_without_claude_session_does_not_arm_claude_reply(self, daemon, mock_mqtt, message_stream):
+        """A normal request_reply followup (no claude_session flag) must not
+        accidentally route the user's next utterance to Claude."""
+        mock_mqtt.messages = message_stream([
+            ("jarvis/sys/speak", json.dumps({"text": "Anything else?", "request_reply": True})),
+        ])
+
+        await daemon.run()
+
+        assert daemon.active_context["type"] != "claude_reply"
+
 
 class TestDaemonMQTTIntegration:
     """Tests the decoupled boundaries using pytest-mock async streams."""
@@ -458,6 +507,84 @@ class TestDaemonEdgeCases:
         # Should complete successfully
         await daemon.run()
         assert not daemon.pending_mic_request
+
+
+class TestClaudeBridge:
+    """'ask claude ...' bypasses normal intent routing and goes straight to
+    a dedicated topic for an active Claude Code session to pick up."""
+
+    @pytest.mark.parametrize("clean_text, expected_question", [
+        ("ask claude if this is working", "if this is working"),
+        ("hey claude what time is it", "what time is it"),
+        ("tell claude to check the logs", "to check the logs"),
+        ("claude, are you there", "are you there"),
+        ("okay ask claude what's up", "whats up"),
+    ])
+    @pytest.mark.asyncio
+    async def test_route_voice_command_bridges_to_claude(self, daemon, clean_text, expected_question):
+        intents, ctx = await daemon.route_voice_command(clean_text)
+
+        assert ctx is None
+        assert len(intents) == 2
+        question_payload, question_action = intents[0]
+        assert question_action == "claude.ask"
+        assert question_payload == {"text": expected_question}
+
+        speak_payload, speak_action = intents[1]
+        assert speak_action == "system.speak"
+        assert speak_payload["text"] == "Sending that to Claude."
+        assert speak_payload["request_reply"] is False
+
+    @pytest.mark.asyncio
+    async def test_bare_claude_with_no_question_falls_through(self, daemon):
+        """'claude' alone (empty capture group) must not match -- there's
+        nothing to send, so it should fall through to normal routing
+        instead of bridging an empty question."""
+        intents, _ = await daemon.route_voice_command("claude")
+        assert not any(action_id == "claude.ask" for _, action_id in intents)
+
+    def test_stt_correction_cloud_to_claude(self, daemon):
+        """Whisper commonly mis-hears 'Claude' as 'Cloud' -- the
+        stt_corrections dictionary must fix it before intent matching."""
+        corrected = daemon.sanitize_transcription("ask cloud if this works")
+        assert "claude" in corrected
+        assert "cloud" not in corrected
+
+    @pytest.mark.parametrize("raw_text, expected_stripped, expected_present", [
+        ("Hey, Jarvis. ask claude if this is working", "ask claude if this is working", True),
+        ("hey jarvis ask claude if this is working", "ask claude if this is working", True),
+        ("Jarvis, turn on the lights", "turn on the lights", True),
+        ("turn on the lights", "turn on the lights", False),
+    ])
+    def test_strip_wake_word_tolerates_punctuation(self, daemon, raw_text, expected_stripped, expected_present):
+        """A comma after the greeting ('Hey, Jarvis.') previously left the
+        whole wake word (and everything after it) unstripped, since the
+        old pattern only spanned whitespace, not punctuation."""
+        stripped, was_present = daemon.strip_wake_word(raw_text)
+        assert was_present is expected_present
+        assert stripped.lower() == expected_stripped.lower()
+
+    @pytest.mark.asyncio
+    async def test_end_to_end_voice_bridge_with_comma_and_mishearing(self, daemon, mock_mqtt, message_stream):
+        """Reproduces the exact real-world failing utterance found during
+        live testing: a comma-punctuated wake word plus Whisper hearing
+        'Claude' as 'Cloud'. Both must be corrected and the question must
+        still reach the Claude bridge with a non-spurious confirmation."""
+        mock_mqtt.messages = message_stream([
+            ("jarvis/sensor/voice", json.dumps({"text": "Hey, Jarvis. Ask Cloud if this is working."})),
+        ])
+
+        await daemon.run()
+
+        publish_calls = mock_mqtt.publish.call_args_list
+        claude_calls = [c for c in publish_calls if c[0][0] == "jarvis/claude/question"]
+        assert len(claude_calls) == 1
+        claude_payload = json.loads(claude_calls[0][0][1])
+        assert claude_payload["text"] == "if this is working"
+        assert claude_payload["silent"] is True
+
+        speak_calls = [c for c in publish_calls if c[0][0] == "jarvis/sys/speak"]
+        assert any(json.loads(c[0][1])["text"] == "Sending that to Claude." for c in speak_calls)
 
 
 class TestSttTrainingCapture:

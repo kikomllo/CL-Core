@@ -78,3 +78,29 @@ class TestActionRouterTypeValidation:
         assert topic == "jarvis/sys/debug_control"
         assert payload["flag"] == "wakeword_diagnostics"
         assert payload["enabled"] is True
+
+    def test_speak_claude_session_flag_survives_prepare(self):
+        router = ActionRouter()
+        topic, payload = router.prepare(
+            "system.speak",
+            text="Anything else?",
+            request_reply=True,
+            claude_session=True,
+        )
+        assert topic == "jarvis/sys/speak"
+        assert payload["claude_session"] is True
+
+    def test_claude_ask_payload_is_marked_silent(self):
+        """claude.ask's schema field is also named 'text' -- the same key
+        the codebase otherwise treats as a spoken confirmation phrase. The
+        registry's static 'silent': true must survive into the prepared
+        payload so the daemon's generic dispatch loop doesn't speak the
+        raw question back to the user."""
+        router = ActionRouter()
+        topic, payload = router.prepare(
+            "claude.ask",
+            text="if this is working",
+        )
+        assert topic == "jarvis/claude/question"
+        assert payload["text"] == "if this is working"
+        assert payload["silent"] is True
