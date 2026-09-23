@@ -419,4 +419,13 @@ async def run_tts_service():
             await asyncio.sleep(5)
 
 if __name__ == "__main__":
-    asyncio.run(run_tts_service())
+    import argparse
+    parser = argparse.ArgumentParser(description="JARVIS TTS microservice")
+    parser.add_argument("-t", "--text", help="Generate and speak this text once, then exit (no MQTT needed)")
+    args = parser.parse_args()
+
+    if args.text:
+        manager = TTSManager()
+        asyncio.run(manager.generate_and_play(None, args.text, ignore_silent=True))
+    else:
+        asyncio.run(run_tts_service())

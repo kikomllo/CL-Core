@@ -99,3 +99,8 @@ pycaw==20251023 ; sys_platform == 'win32'
 comtypes ; sys_platform == 'win32'
 winsdk==1.0.0b10 ; sys_platform == 'win32'
 psutil ; sys_platform == 'win32'
+# ConPTY wrapper + terminal emulator for the Windows side of the Claude
+# terminal bridge -- tmux does both jobs natively on Linux, so these are
+# Windows-only.
+pywinpty ; sys_platform == 'win32'
+pyte ; sys_platform == 'win32'

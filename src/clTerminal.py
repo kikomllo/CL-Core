@@ -116,6 +116,14 @@ class TerminalManager:
             return True, "Launched Terminal."
 
         # B. Open Standard App
+        if target_clean == "browser":
+            # Resolves whatever the OS actually has registered as the
+            # default browser instead of a hardcoded executable name
+            # (system.json's "browser" entry is firefox-specific and stale
+            # the moment a user's real default differs).
+            webbrowser.open("about:blank", new=2)
+            return True, "Launched default browser."
+
         if target_clean in self.shortcuts.get("apps", {}):
             app_cmd = self.shortcuts["apps"][target_clean].get(CURRENT_OS)
             if app_cmd:

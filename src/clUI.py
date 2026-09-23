@@ -862,6 +862,12 @@ class _AnimatedLyricLabel(QWidget):
         self._base_font = QFont()
         self._base_font.setFamily("DejaVu Sans Mono")
 
+    @property
+    def font_px(self):
+        """The actual rendered size at this step -- target_font_px is the
+        animation's destination, scale_factor carries how far along it is."""
+        return self.target_font_px * self.scale_factor
+
     def set_style(self, rgba, target_font_px, target_weight, scale_factor, y_offset=0.0):
         self.rgba = rgba
         self.target_font_px = target_font_px
@@ -1435,7 +1441,7 @@ class IconPill(QWidget):
         extra = max(0, w - self.diameter)
         gap = min(self._edge_gap, extra)
         label_w = max(0, extra - gap - self._layout_spacing)
-        if label_w <= 0:
+        if not self._target_expanded and label_w <= 0:
             if not self.label.isHidden():
                 self.label.hide()
                 self.label.stop_scrolling()
@@ -1534,6 +1540,7 @@ class AudioQuickSwitchPill(IconPill):
     for switching without leaving the fullscreen view."""
 
     ICON_FILE = {"input": "mic.svg", "output": "speaker.svg"}
+    TOOLTIP_PREFIX = {"input": "Mic", "output": "Speaker"}
 
     def __init__(self, kind: str, grow_direction: str = "right", parent=None):
         self.kind = kind  # "input" or "output"
@@ -1591,6 +1598,7 @@ class AudioQuickSwitchPill(IconPill):
             display = name
         self._cached_display_name = display
         self._refresh_expanded_width()
+        self.icon_btn.setToolTip(f"{self.TOOLTIP_PREFIX[self.kind]}: {display}")
         if self.label.isVisible():
             self.label.setText(display)
 

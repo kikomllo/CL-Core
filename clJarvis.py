@@ -33,6 +33,15 @@ class TeeLogger:
     def __init__(self, filename):
         os.makedirs(os.path.dirname(filename), exist_ok=True)
         self.terminal = sys.__stdout__
+        # The console's codepage (cp1252 on Windows) can't encode a lot of what
+        # subprocess output actually contains (box-drawing, spinners, etc.) --
+        # an unencodable char here used to raise UnicodeEncodeError and kill
+        # this thread permanently, silently cutting off that subprocess's log
+        # relay for the rest of the run.
+        try:
+            self.terminal.reconfigure(errors="replace")
+        except Exception:
+            pass
         self.log = open(filename, "w", encoding="utf-8")
         self.lock = threading.Lock()
         self.buffers = {}
@@ -98,6 +107,12 @@ NATIVE_SERVICES = [
     ("Updater",   "src/clUpdater.py"),
     ("Tray Icon", "src/clTrayIcon.py"),
 ]
+
+# Claude terminal voice bridge is Windows-only for now (see clClaudeBridge.py
+# docstring) -- the Linux/tmux backend isn't implemented yet, so don't spawn
+# a process that would just log an error and idle on that OS.
+if platform.system() == "Windows":
+    NATIVE_SERVICES.append(("Claude Bridge", "src/clClaudeBridge.py"))
 
 def load_modules_config():
     global NATIVE_SERVICES

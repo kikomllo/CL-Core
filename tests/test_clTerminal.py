@@ -92,11 +92,43 @@ class TestVolumeControlLinux:
 
 
 def _fake_windows_sessions_module(mocker, sessions):
+    """_all_windows_audio_sessions() walks AudioUtilities.GetAllDevices() and
+    each device's own session enumerator (not the old GetAllSessions(),
+    which only saw the default device) -- one fake device's enumerator
+    yields `sessions` directly, and AudioSession/QueryInterface are both
+    passthroughs so the pre-built fake session objects (with .Process,
+    .SimpleAudioVolume, etc. already set) come out unchanged."""
+    fake_ctls = []
+    for session in sessions:
+        ctl = MagicMock()
+        ctl.QueryInterface.return_value = session
+        fake_ctls.append(ctl)
+
+    fake_enumerator = MagicMock()
+    fake_enumerator.GetCount.return_value = len(fake_ctls)
+    fake_enumerator.GetSession.side_effect = lambda i: fake_ctls[i]
+
+    fake_device = MagicMock()
+    fake_device.AudioSessionManager.GetSessionEnumerator.return_value = fake_enumerator
+
     fake_audio_utilities = MagicMock()
     fake_audio_utilities.GetAllSessions.return_value = sessions
+    fake_audio_utilities.GetAllDevices.return_value = [fake_device]
+
     fake_pycaw_module = types.ModuleType("pycaw.pycaw")
     fake_pycaw_module.AudioUtilities = fake_audio_utilities
-    mocker.patch.dict(sys.modules, {"pycaw": types.ModuleType("pycaw"), "pycaw.pycaw": fake_pycaw_module})
+    fake_pycaw_module.AudioSession = lambda ctl2: ctl2
+    fake_pycaw_module.IAudioSessionControl2 = object
+
+    fake_constants_module = types.ModuleType("pycaw.constants")
+    fake_constants_module.EDataFlow = MagicMock(eRender=MagicMock(value=0))
+    fake_constants_module.DEVICE_STATE = MagicMock(ACTIVE=MagicMock(value=1))
+
+    mocker.patch.dict(sys.modules, {
+        "pycaw": types.ModuleType("pycaw"),
+        "pycaw.pycaw": fake_pycaw_module,
+        "pycaw.constants": fake_constants_module,
+    })
     return fake_audio_utilities
 
 
@@ -282,6 +314,7 @@ class TestListOutputDevicesWindows:
         fake_pycaw_module.AudioUtilities = fake_audio_utilities
         fake_constants_module = types.ModuleType("pycaw.constants")
         fake_constants_module.EDataFlow = MagicMock(eRender=MagicMock(value=0))
+        fake_constants_module.DEVICE_STATE = MagicMock(ACTIVE=MagicMock(value=1))
         mocker.patch.dict(sys.modules, {
             "pycaw": types.ModuleType("pycaw"), "pycaw.pycaw": fake_pycaw_module,
             "pycaw.constants": fake_constants_module,

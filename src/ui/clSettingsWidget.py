@@ -426,6 +426,20 @@ class SettingsWidget(QWidget):
         spot_layout.addWidget(self._create_line_edit("SPOTIPY_REDIRECT_URI", "Redirect URI", self.env_loader.get("SPOTIPY_REDIRECT_URI"), False, self._update_env))
         spot_layout.addSpacing(20)
 
+        # --- TAB: CLAUDE ---
+        claude_scroll, claude_layout = self._create_scroll_tab()
+        self.tabs.addTab(claude_scroll, "Claude")
+
+        claude_layout.addWidget(self._create_section_label("Voice Bridge Credentials"))
+        claude_layout.addWidget(self._create_line_edit(
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "OAuth Token (from 'claude setup-token')",
+            self.env_loader.get("CLAUDE_CODE_OAUTH_TOKEN"),
+            True,
+            self._update_env,
+        ))
+        claude_layout.addSpacing(20)
+
         # --- TAB 4: UPDATES ---
         updates_scroll, updates_layout = self._create_scroll_tab()
         self.tabs.addTab(updates_scroll, "Updates")

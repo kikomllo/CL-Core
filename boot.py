@@ -311,9 +311,10 @@ def main():
     # FORCE CLEANUP: Always kill any lingering processes to ensure a clean boot
     print("[BOOT] Sweeping system for any lingering ecosystem processes...")
     ecosystem_scripts = [
-        "clJarvis.py", "clUI.py", "clKeybinds.py", "clUtilities.py", 
-        "clUpdater.py", "clTrayIcon.py", "clWhisper.py", "clDaemon.py", 
-        "clSpotify.py", "clTTS.py", "clControl.py", "clMic.py", "clTerminal.py"
+        "clJarvis.py", "clUI.py", "clKeybinds.py", "clUtilities.py",
+        "clUpdater.py", "clTrayIcon.py", "clWhisper.py", "clDaemon.py",
+        "clSpotify.py", "clTTS.py", "clControl.py", "clMic.py", "clTerminal.py",
+        "clClaudeBridge.py"
     ]
     for script in ecosystem_scripts:
         if is_windows:
