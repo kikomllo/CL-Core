@@ -171,6 +171,30 @@ class TestScreenUpdatePublishing:
 
         scheduled.assert_called_once()
 
+    def test_grid_padding_is_stripped_before_publishing(self, service, mocker):
+        """The screen is a fixed 120x40 grid -- almost all of it trailing
+        spaces and empty bottom rows, which is pure noise on the wire/logs."""
+        service.mqtt_client = MagicMock()
+        service.loop = MagicMock()
+        publish = mocker.patch.object(service, "_publish_screen")
+        mocker.patch("asyncio.run_coroutine_threadsafe")
+        padded = "\n".join(["hello" + " " * 115, " " * 120, "world  " + " " * 113] + [" " * 120] * 37)
+
+        service._on_screen_update(padded)
+
+        publish.assert_called_once_with("hello\n\nworld")
+
+    def test_padding_only_changes_do_not_republish(self, service, mocker):
+        service.mqtt_client = MagicMock()
+        service.loop = MagicMock()
+        mocker.patch.object(service, "_publish_screen")
+        scheduled = mocker.patch("asyncio.run_coroutine_threadsafe")
+
+        service._on_screen_update("frame A" + " " * 50)
+        service._on_screen_update("frame A" + " " * 90 + "\n" + " " * 120)
+
+        scheduled.assert_called_once()
+
     def test_no_publish_attempted_without_a_connected_client(self, service, mocker):
         service.mqtt_client = None
         service.loop = None
@@ -295,16 +319,262 @@ class TestTrustPromptAutoAnswer:
 
     def test_sends_down_arrow_and_enter_on_trust_screen(self):
         bridge = self._bridge()
-        bridge._maybe_answer_trust_prompt("Is this a project you created or one you trust?")
+        bridge._maybe_auto_answer("Is this a project you created or one you trust?")
         bridge.send_keys.assert_called_once_with("\x1bOB\r")
 
-    def test_only_answers_once_per_session(self):
+    def test_same_screen_is_only_answered_once(self):
         bridge = self._bridge()
-        bridge._maybe_answer_trust_prompt("Is this a project you created or one you trust?")
-        bridge._maybe_answer_trust_prompt("Is this a project you created or one you trust?")
+        bridge._maybe_auto_answer("Is this a project you created or one you trust?")
+        bridge._maybe_auto_answer("Is this a project you created or one you trust?")
         bridge.send_keys.assert_called_once()
 
     def test_ignores_unrelated_screens(self):
         bridge = self._bridge()
-        bridge._maybe_answer_trust_prompt("some other screen entirely")
+        bridge._maybe_auto_answer("some other screen entirely")
         bridge.send_keys.assert_not_called()
+
+    @pytest.mark.parametrize("screen", [
+        "Choose the text style that looks best with your terminal",
+        "Select login method:\n 1. Claude account with subscription",
+        "Login successful. Press Enter to continue…",
+    ])
+    def test_plain_first_run_screens_get_enter(self, screen):
+        bridge = self._bridge()
+        bridge._maybe_auto_answer(screen)
+        bridge.send_keys.assert_called_once_with("\r")
+
+    def test_back_to_back_enter_screens_are_each_answered(self):
+        """Login-success and security-notes both say 'Press Enter to continue' --
+        the second is a different screen and must not be mistaken for the first."""
+        bridge = self._bridge()
+        bridge._maybe_auto_answer("Login successful. Press Enter to continue")
+        bridge._maybe_auto_answer("Security notes: ...\nPress Enter to continue")
+        assert bridge.send_keys.call_count == 2
+
+    def test_a_dropped_enter_is_retried_then_gives_up(self):
+        import time
+        bridge = self._bridge()
+        bridge._maybe_auto_answer("Press Enter to continue")
+        for _ in range(5):
+            bridge._retry_dropped_answer(time.time() + 100)
+            bridge._answered_at -= 100
+        assert bridge.send_keys.call_count == bridge.ANSWER_MAX_TRIES
+
+    def test_no_retry_once_the_screen_moved_on(self):
+        import time
+        bridge = self._bridge()
+        bridge._maybe_auto_answer("Press Enter to continue")
+        bridge._last_data_at = time.time() + 1  # new output arrived after the answer
+        bridge._retry_dropped_answer(time.time() + 100)
+        bridge.send_keys.assert_called_once()
+
+    def test_answer_state_clears_when_no_rule_matches(self):
+        bridge = self._bridge()
+        bridge._maybe_auto_answer("Press Enter to continue")
+        bridge._maybe_auto_answer("chat prompt")
+        assert bridge._answered_screen is None
+
+
+class TestSetupMode:
+    """`--setup` drives first-run sign-in to the idle chat prompt; the only human steps
+    are the browser Authorize click and (if the page shows one) pasting a code."""
+
+    def _patch_bridge(self, mocker, ready_after=1, alive=True, screen=""):
+        import clClaudeBridge
+        fake = MagicMock()
+        fake.is_alive.return_value = alive
+        fake.is_ready.side_effect = [False] * ready_after + [True] * 50
+
+        def factory(cwd, on_screen_update):
+            on_screen_update(screen)
+            return fake
+        mocker.patch("utils.clPtyBridge.ClaudePtyBridge", side_effect=factory)
+        mocker.patch("clClaudeBridge.CURRENT_OS", "Windows")
+        mocker.patch("clClaudeBridge.time.sleep")
+        return fake
+
+    def test_returns_true_once_the_chat_prompt_is_reached(self, mocker):
+        from clClaudeBridge import run_setup
+        fake = self._patch_bridge(mocker)
+        assert run_setup() is True
+        fake.start.assert_called_once()
+        fake.stop.assert_called_once()
+
+    def test_fails_if_claude_exits_early(self, mocker):
+        from clClaudeBridge import run_setup
+        fake = self._patch_bridge(mocker, ready_after=99, alive=False)
+        assert run_setup() is False
+        fake.stop.assert_called_once()
+
+    def test_pasted_code_is_typed_into_the_session(self, mocker):
+        from clClaudeBridge import run_setup
+        fake = self._patch_bridge(mocker, ready_after=2, screen="Paste code here if prompted >")
+        mocker.patch("builtins.input", return_value="  abc123  ")
+        assert run_setup() is True
+        fake.write.assert_called_once_with("abc123")
+
+    def test_code_is_only_asked_for_once(self, mocker):
+        from clClaudeBridge import run_setup
+        self._patch_bridge(mocker, ready_after=5, screen="Paste code here if prompted >")
+        ask = mocker.patch("builtins.input", return_value="abc")
+        run_setup()
+        ask.assert_called_once()
+
+    def test_refuses_on_non_windows(self, mocker):
+        from clClaudeBridge import run_setup
+        mocker.patch("clClaudeBridge.CURRENT_OS", "Linux")
+        assert run_setup() is False
+
+
+class TestPromptAndBusyDetection:
+    """The chat input box is a ❯ row between horizontal rules; menus reuse
+    ❯ without the rules and must not read as ready for typed input."""
+
+    RULE = "─" * 20
+
+    def _bridge(self):
+        from utils.clPtyBridge import ClaudePtyBridge
+        return ClaudePtyBridge(cwd=".", on_screen_update=MagicMock())
+
+    def test_input_box_is_detected(self):
+        rows = ["banner", self.RULE, "❯ ", self.RULE, "footer"]
+        assert self._bridge()._prompt_row_visible(rows) is True
+
+    def test_menu_selection_row_is_not_a_prompt(self):
+        rows = ["Is this a project you trust?", "❯ No, exit", "  Yes, I trust this folder"]
+        assert self._bridge()._prompt_row_visible(rows) is False
+
+    def test_busy_flag_follows_the_interrupt_hint(self):
+        bridge = self._bridge()
+        bridge._stream.feed("working... esc to interrupt")
+        bridge._emit_screen()
+        assert bridge._busy is True
+
+    def test_not_ready_while_busy_or_recently_active(self, mocker):
+        import time
+        bridge = self._bridge()
+        bridge._prompt_visible = True
+        bridge._last_data_at = time.time() - 10
+        assert bridge.is_ready() is True
+        bridge._busy = True
+        assert bridge.is_ready() is False
+        bridge._busy = False
+        bridge._last_data_at = time.time()
+        assert bridge.is_ready() is False
+
+
+class TestStallDetection:
+    def _bridge(self, on_stall):
+        from utils.clPtyBridge import ClaudePtyBridge
+        bridge = ClaudePtyBridge(cwd=".", on_screen_update=MagicMock(), on_stall=on_stall)
+        bridge._pty = MagicMock()
+        bridge._running = True
+        return bridge
+
+    def test_silent_busy_session_reports_a_stall_once(self, mocker):
+        import time
+        on_stall = MagicMock()
+        bridge = self._bridge(on_stall)
+        bridge._busy = True
+        bridge._last_data_at = time.time() - 1000
+        bridge._pty.isalive.side_effect = [True, True, False]
+        mocker.patch("select.select", return_value=([], [], []))
+
+        bridge._read_loop()
+
+        on_stall.assert_called_once()
+
+    def test_silent_idle_session_is_not_a_stall(self, mocker):
+        import time
+        on_stall = MagicMock()
+        bridge = self._bridge(on_stall)
+        bridge._busy = False
+        bridge._last_data_at = time.time() - 1000
+        bridge._pty.isalive.side_effect = [True, False]
+        mocker.patch("select.select", return_value=([], [], []))
+
+        bridge._read_loop()
+
+        on_stall.assert_not_called()
+
+
+class TestStallRecovery:
+    @pytest.fixture
+    def recovering_service(self, service, mocker, tmp_path):
+        mocker.patch("clClaudeBridge.REPO_ROOT", str(tmp_path))
+        service.bridge = MagicMock()
+        service._ensure_pty_started = MagicMock(return_value=True)
+        service._wait_until_ready = mocker.AsyncMock()
+        return service
+
+    @pytest.mark.asyncio
+    async def test_restarts_the_session_and_resends_the_last_question(self, recovering_service):
+        svc = recovering_service
+        old_bridge = svc.bridge
+        svc._last_question = "what time is it"
+
+        await svc._recover_from_stall("screen tail")
+
+        old_bridge.stop.assert_called_once()
+        svc._ensure_pty_started.assert_called_once()
+        svc.bridge.write.assert_called_once_with("what time is it")
+
+    @pytest.mark.asyncio
+    async def test_already_answered_question_is_not_resent(self, recovering_service):
+        svc = recovering_service
+        svc._last_question = "what time is it"
+        svc._answered = True
+
+        await svc._recover_from_stall("tail")
+
+        svc._ensure_pty_started.assert_called_once()
+        svc.bridge.write.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_question_is_retried_at_most_once(self, recovering_service):
+        svc = recovering_service
+        svc._last_question = "what time is it"
+
+        await svc._recover_from_stall("tail")
+        svc.bridge.write.reset_mock()
+        await svc._recover_from_stall("tail")
+
+        svc.bridge.write.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_recovery_failure_does_not_crash_the_service(self, recovering_service):
+        svc = recovering_service
+        svc._ensure_pty_started.side_effect = RuntimeError("spawn failed")
+
+        await svc._recover_from_stall("tail")  # should not raise
+
+        assert svc._recovering is False
+
+    @pytest.mark.asyncio
+    async def test_new_session_waits_for_ready_before_injecting(self, service, mock_mqtt, message_stream, mocker):
+        service.bridge = MagicMock()
+        mocker.patch.object(service, "_ensure_pty_started", return_value=True)
+        wait = mocker.patch.object(service, "_wait_until_ready", new=mocker.AsyncMock())
+
+        mock_mqtt.messages = message_stream([("jarvis/claude/question", json.dumps({"text": "hi"}))])
+        await service.run()
+
+        wait.assert_awaited_once()
+        service.bridge.write.assert_called_once_with("hi")
+
+
+class TestStallDump:
+    @pytest.mark.asyncio
+    async def test_screen_goes_to_a_file_not_the_log(self, service, mocker, tmp_path, caplog):
+        mocker.patch("clClaudeBridge.REPO_ROOT", str(tmp_path))
+        service.bridge = MagicMock()
+        service._ensure_pty_started = MagicMock(return_value=False)
+        service._last_question = "what time is it"
+
+        with caplog.at_level("ERROR"):
+            await service._recover_from_stall("line one\nline two")
+
+        dump = (tmp_path / "logs" / "claude_stall.txt").read_text(encoding="utf-8")
+        assert "line one\nline two" in dump
+        assert "line two" not in caplog.text
+        assert "what time is it" in caplog.text

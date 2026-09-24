@@ -328,7 +328,7 @@ def on_message(client, userdata, msg):
         except Exception:
             pass
 
-    if DEBUG_MQTT and topic not in ["jarvis/sys/volume", "jarvis/sys/audio_process", "jarvis/sensor/mic_vol"]:
+    if DEBUG_MQTT and topic not in ["jarvis/sys/volume", "jarvis/sys/audio_process", "jarvis/sensor/mic_vol", "jarvis/claude/screen"]:
         print(f"\r\033[K\033[36m[DEBUG-MQTT] [CH: {topic}] {payload_str}\033[0m")
 
     if topic == "jarvis/sys/manager":
