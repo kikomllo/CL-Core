@@ -26,10 +26,18 @@ class ClaudeSessionBase:
     LOG_PREFIX = "CLAUDE SESSION"
 
     def __init__(self, cwd: str, on_screen_update: Callable[[str], None],
-                 on_stall: Optional[Callable[[str], None]] = None):
+                 on_stall: Optional[Callable[[str], None]] = None,
+                 cols: Optional[int] = None, rows: Optional[int] = None):
         self._cwd = cwd
         self._on_screen_update = on_screen_update
         self._on_stall = on_stall
+        # Instance-level override of the class defaults -- lets a backend
+        # (re)started after a resize come up at the last known size instead
+        # of always starting at 120x40.
+        if cols:
+            self.COLS = cols
+        if rows:
+            self.ROWS = rows
         self._busy = False
         self._prompt_visible = False
         self._stall_reported = False
@@ -45,6 +53,16 @@ class ClaudeSessionBase:
         """At the idle input box (not a menu, not mid-turn) and quiet."""
         return (self._prompt_visible and not self._busy
                 and time.time() - self._last_data_at >= self.READY_QUIET_S)
+
+    def resize(self, cols: int, rows: int):
+        """Live terminal resize, driven by the dashboard widget resizing --
+        real ConPTY/tmux resize plus the local pyte screen, not just a display
+        clamp. Backend-specific work lives in _apply_resize()."""
+        self.COLS, self.ROWS = cols, rows
+        self._apply_resize(cols, rows)
+
+    def _apply_resize(self, cols: int, rows: int):
+        raise NotImplementedError
 
     @staticmethod
     def _prompt_row_visible(rows) -> bool:

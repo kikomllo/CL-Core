@@ -298,6 +298,21 @@
       "schema": {
         "control_key": {"type": "string", "required": true}
       }
+    },
+    "keys": {
+      "topic": "jarvis/claude/question",
+      "payload": {"silent": true},
+      "schema": {
+        "keys": {"type": "string", "required": true}
+      }
+    },
+    "resize": {
+      "topic": "jarvis/claude/question",
+      "payload": {"silent": true},
+      "schema": {
+        "cols": {"type": "integer", "required": true},
+        "rows": {"type": "integer", "required": true}
+      }
     }
   }
 }

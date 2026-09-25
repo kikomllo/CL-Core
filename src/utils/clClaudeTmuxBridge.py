@@ -22,6 +22,10 @@ from typing import Callable, Optional
 
 from utils.clClaudeSession import ClaudeSessionBase
 
+# Linux-only in production (gated by clClaudeBridge.py's _backend_class()), but the unit
+# tests run on any OS with os.open mocked -- os.O_NONBLOCK itself doesn't exist on Windows.
+_O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+
 
 class ClaudeTmuxBridge(ClaudeSessionBase):
     SESSION_NAME = "jarvis-claude"
@@ -31,8 +35,9 @@ class ClaudeTmuxBridge(ClaudeSessionBase):
     LOG_PREFIX = "TMUX BRIDGE"
 
     def __init__(self, cwd: str, on_screen_update: Callable[[str], None],
-                 on_stall: Optional[Callable[[str], None]] = None):
-        super().__init__(cwd, on_screen_update, on_stall)
+                 on_stall: Optional[Callable[[str], None]] = None,
+                 cols: Optional[int] = None, rows: Optional[int] = None):
+        super().__init__(cwd, on_screen_update, on_stall, cols, rows)
         self._fifo_path: Optional[str] = None
         self._reader_thread: Optional[threading.Thread] = None
         self._running = False
@@ -124,7 +129,7 @@ class ClaudeTmuxBridge(ClaudeSessionBase):
 
     def _read_loop(self):
         try:
-            fifo_fd = os.open(self._fifo_path, os.O_RDONLY | os.O_NONBLOCK)
+            fifo_fd = os.open(self._fifo_path, os.O_RDONLY | _O_NONBLOCK)
         except OSError:
             self._running = False
             return
@@ -150,7 +155,7 @@ class ClaudeTmuxBridge(ClaudeSessionBase):
                             break
                         time.sleep(self.POLL_S)
                         try:
-                            fifo_fd = os.open(self._fifo_path, os.O_RDONLY | os.O_NONBLOCK)
+                            fifo_fd = os.open(self._fifo_path, os.O_RDONLY | _O_NONBLOCK)
                         except OSError:
                             break
                 now = time.time()
@@ -172,6 +177,14 @@ class ClaudeTmuxBridge(ClaudeSessionBase):
         """On-demand capture, so switching back to this session from another
         mode shows its current screen immediately instead of waiting for new output."""
         self._emit_screen()
+
+    def _apply_resize(self, cols: int, rows: int):
+        # The session is always detached (no attached client ever forces a
+        # size), so resize-window's explicit -x/-y takes effect directly.
+        subprocess.run(
+            ["tmux", "resize-window", "-t", self.SESSION_NAME, "-x", str(cols), "-y", str(rows)],
+            capture_output=True,
+        )
 
     def _emit_screen(self):
         # -J joins wrapped lines, which also makes the wrapped sign-in URL trivial to extract.

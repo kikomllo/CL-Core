@@ -21,6 +21,7 @@ class TestStartAndAlive:
             _bridge().start()
 
     def test_reuses_existing_session_instead_of_spawning_a_new_one(self, mocker):
+        mocker.patch("shutil.which", return_value="/usr/bin/tmux")
         mocker.patch.object(PlainTerminalBridge, "_has_session", return_value=True)
         mocker.patch.object(PlainTerminalBridge, "_start_pipe_reader")
         run = mocker.patch("subprocess.run")
@@ -103,3 +104,18 @@ class TestStop:
         run.assert_called_once_with(
             ["tmux", "kill-session", "-t", bridge.SESSION_NAME], capture_output=True
         )
+
+
+class TestResize:
+    def test_resize_runs_tmux_resize_window_with_explicit_dimensions(self, mocker):
+        bridge = _bridge()
+        run = mocker.patch("subprocess.run")
+
+        bridge.resize(100, 30)
+
+        run.assert_called_once_with(
+            ["tmux", "resize-window", "-t", bridge.SESSION_NAME, "-x", "100", "-y", "30"],
+            capture_output=True,
+        )
+        assert bridge.COLS == 100
+        assert bridge.ROWS == 30

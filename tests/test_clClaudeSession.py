@@ -19,9 +19,13 @@ class _FakeSession(ClaudeSessionBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.sent_tokens = []
+        self.resize_calls = []
 
     def _send_control_keys(self, token: str):
         self.sent_tokens.append(token)
+
+    def _apply_resize(self, cols: int, rows: int):
+        self.resize_calls.append((cols, rows))
 
     def send_keys(self, raw: str):
         pass
@@ -188,3 +192,26 @@ class TestConfigDirAndContinue:
         env = {"CLAUDE_CODE_CHILD_SESSION": "1", "PATH": "/usr/bin"}
         stripped = ClaudeSessionBase._strip_claude_code_env(env)
         assert stripped == {"PATH": "/usr/bin"}
+
+
+class TestResize:
+    """resize() is the shared entry point the widget's own resize dispatches
+    into (via clClaudeBridge.py); each backend implements _apply_resize()
+    for its own child process/screen-emulator."""
+
+    def test_constructor_cols_rows_override_the_class_defaults(self):
+        session = _FakeSession(cwd=".", on_screen_update=MagicMock(), cols=80, rows=24)
+        assert session.COLS == 80
+        assert session.ROWS == 24
+
+    def test_constructor_without_cols_rows_keeps_class_defaults(self):
+        session = _session()
+        assert session.COLS == ClaudeSessionBase.COLS
+        assert session.ROWS == ClaudeSessionBase.ROWS
+
+    def test_resize_updates_cols_rows_and_calls_apply_resize(self):
+        session = _session()
+        session.resize(100, 30)
+        assert session.COLS == 100
+        assert session.ROWS == 30
+        assert session.resize_calls == [(100, 30)]

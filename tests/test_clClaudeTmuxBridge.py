@@ -142,6 +142,21 @@ class TestAliveAndStop:
         assert bridge._running is False
 
 
+class TestResize:
+    def test_apply_resize_runs_tmux_resize_window_with_explicit_dimensions(self, mocker):
+        bridge = _bridge()
+        run = mocker.patch("subprocess.run")
+
+        bridge.resize(100, 30)
+
+        run.assert_called_once_with(
+            ["tmux", "resize-window", "-t", bridge.SESSION_NAME, "-x", "100", "-y", "30"],
+            capture_output=True,
+        )
+        assert bridge.COLS == 100
+        assert bridge.ROWS == 30
+
+
 class TestReadLoopFifoRace:
     """stop() deletes the FIFO file while killing the session; the reader
     thread's EOF-reopen can race that exact moment. Found via a live smoke

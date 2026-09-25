@@ -59,6 +59,83 @@ class TestBackendSelection:
         fake.start.assert_called_once()
 
 
+class TestTerminalBackendSelection:
+    """_terminal_backend_class() backs the widget's "/terminal" mode --
+    same Windows/Linux split as _backend_class(), no more NotImplementedError
+    on Windows now that WinTerminalBridge (ConPTY) exists."""
+
+    def test_windows_picks_the_win_terminal_backend(self, mocker):
+        from clClaudeBridge import _terminal_backend_class
+        from utils.clWinTerminalBridge import WinTerminalBridge
+        mocker.patch("clClaudeBridge.CURRENT_OS", "Windows")
+        assert _terminal_backend_class() is WinTerminalBridge
+
+    def test_linux_picks_the_plain_terminal_backend(self, mocker):
+        from clClaudeBridge import _terminal_backend_class
+        from utils.clPlainTerminalBridge import PlainTerminalBridge
+        mocker.patch("clClaudeBridge.CURRENT_OS", "Linux")
+        assert _terminal_backend_class() is PlainTerminalBridge
+
+
+class TestResize:
+    """_resize() is the widget-driven live terminal resize -- applied to
+    both backends (not just whichever is currently active), and remembered
+    so a backend (re)started later comes up at the right size instead of
+    the 120x40 default."""
+
+    def test_resize_applies_to_both_alive_backends(self, service):
+        claude_bridge = MagicMock()
+        claude_bridge.is_alive.return_value = True
+        terminal_bridge = MagicMock()
+        terminal_bridge.is_alive.return_value = True
+        service.bridge = claude_bridge
+        service.terminal_bridge = terminal_bridge
+
+        service._resize(100, 30)
+
+        claude_bridge.resize.assert_called_once_with(100, 30)
+        terminal_bridge.resize.assert_called_once_with(100, 30)
+
+    def test_resize_skips_a_dead_or_unset_backend(self, service):
+        claude_bridge = MagicMock()
+        claude_bridge.is_alive.return_value = False
+        service.bridge = claude_bridge
+        service.terminal_bridge = None
+
+        service._resize(100, 30)
+
+        claude_bridge.resize.assert_not_called()
+
+    def test_resize_is_remembered_for_the_next_backend_start(self, service):
+        service._resize(100, 30)
+        assert service._cols == 100
+        assert service._rows == 30
+
+    def test_a_backend_started_after_a_resize_gets_the_new_size(self, service, mocker):
+        from clClaudeBridge import ClaudeSessionBase
+        service._resize(100, 30)
+        backend_cls = MagicMock()
+        mocker.patch("clClaudeBridge._backend_class", return_value=backend_cls)
+
+        service._ensure_pty_started()
+
+        assert backend_cls.call_args.kwargs["cols"] == 100
+        assert backend_cls.call_args.kwargs["rows"] == 30
+
+    def test_resize_error_on_one_backend_does_not_block_the_other(self, service):
+        claude_bridge = MagicMock()
+        claude_bridge.is_alive.return_value = True
+        claude_bridge.resize.side_effect = RuntimeError("boom")
+        terminal_bridge = MagicMock()
+        terminal_bridge.is_alive.return_value = True
+        service.bridge = claude_bridge
+        service.terminal_bridge = terminal_bridge
+
+        service._resize(100, 30)  # must not raise
+
+        terminal_bridge.resize.assert_called_once_with(100, 30)
+
+
 class TestClaudeBridgeRouting:
     """The bridge's job is just relaying jarvis/claude/question into the
     live pty session -- these tests mock the pty layer out entirely so
@@ -118,6 +195,25 @@ class TestClaudeBridgeRouting:
 
         mock_bridge.send_control_key.assert_called_once_with("ESCAPE")
         mock_bridge.send_keys.assert_not_called()
+        mock_bridge.write.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cols_rows_payload_routes_to_resize_not_a_typed_question(
+        self, service, mock_mqtt, message_stream, mocker
+    ):
+        mock_bridge = MagicMock()
+        mock_bridge.is_alive.return_value = True
+        service.bridge = mock_bridge
+        mocker.patch.object(service, "_ensure_pty_started")
+        resize = mocker.patch.object(service, "_resize")
+
+        mock_mqtt.messages = message_stream([
+            ("jarvis/claude/question", json.dumps({"cols": 100, "rows": 30})),
+        ])
+
+        await service.run()
+
+        resize.assert_called_once_with(100, 30)
         mock_bridge.write.assert_not_called()
 
     @pytest.mark.asyncio
@@ -469,6 +565,39 @@ class TestClaudePtySpawnArgs:
         spawn = self._spawn(mocker, tmp_path)
         child_env = spawn.call_args[1]["env"]
         assert "CLAUDE_CODE_CHILD_SESSION" not in child_env
+
+
+class TestClaudePtyResize:
+    """_apply_resize() must resize both the real ConPTY (so the child process
+    itself sees the new size) and the local pyte screen (so future reads
+    parse against the right dimensions)."""
+
+    def _bridge(self):
+        from utils.clPtyBridge import ClaudePtyBridge
+        bridge = ClaudePtyBridge(cwd=".", on_screen_update=MagicMock())
+        bridge._pty = MagicMock()
+        return bridge
+
+    def test_resize_sets_conpty_winsize_and_pyte_screen(self):
+        bridge = self._bridge()
+        bridge._pty.isalive.return_value = True
+
+        bridge.resize(100, 30)
+
+        bridge._pty.setwinsize.assert_called_once_with(30, 100)
+        assert bridge._screen.columns == 100
+        assert bridge._screen.lines == 30
+        assert bridge.COLS == 100
+        assert bridge.ROWS == 30
+
+    def test_resize_skips_conpty_call_when_not_alive(self):
+        bridge = self._bridge()
+        bridge._pty.isalive.return_value = False
+
+        bridge.resize(100, 30)
+
+        bridge._pty.setwinsize.assert_not_called()
+        assert bridge._screen.columns == 100
 
 
 class TestSendKeys:

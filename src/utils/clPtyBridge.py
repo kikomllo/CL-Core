@@ -40,8 +40,9 @@ class ClaudePtyBridge(ClaudeSessionBase):
     }
 
     def __init__(self, cwd: str, on_screen_update: Callable[[str], None],
-                 on_stall: Optional[Callable[[str], None]] = None):
-        super().__init__(cwd, on_screen_update, on_stall)
+                 on_stall: Optional[Callable[[str], None]] = None,
+                 cols: Optional[int] = None, rows: Optional[int] = None):
+        super().__init__(cwd, on_screen_update, on_stall, cols, rows)
         self._screen = pyte.Screen(self.COLS, self.ROWS)
         self._stream = pyte.Stream(self._screen)
         self._pty = None
@@ -148,6 +149,12 @@ class ClaudePtyBridge(ClaudeSessionBase):
         """On-demand capture, so switching back to this session from another
         mode shows its current screen immediately instead of waiting for new output."""
         self._emit_screen()
+
+    def _apply_resize(self, cols: int, rows: int):
+        with self._lock:
+            if self.is_alive():
+                self._pty.setwinsize(rows, cols)
+            self._screen.resize(lines=rows, columns=cols)
 
     def _emit_screen(self):
         self.process_screen("\n".join(self._screen.display))

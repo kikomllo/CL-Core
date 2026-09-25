@@ -175,10 +175,10 @@ Still open, and needs a human to run `--setup` themselves (from their own termin
 - Windows: needs a detached session-host process that owns the ConPTY, with the bridge talking to it over a local socket.
   Do this after Linux works.
 
-## Phase 4: dashboard widget (`ClaudeWidget`) — core done (2026-09-24), key-shortcut chips still open
+## Phase 4: dashboard widget (`ClaudeWidget`) — core done (2026-09-24), terminal-style direct input done (2026-09-25)
 
-Implemented: `src/ui/clClaudeWidget.py` (a `LogViewer`-styled read-only `ZoomTextEdit` mirror + a `QLineEdit`/Send row,
-modeled on `clLogWidget.py`'s viewer and `clTodoWidget.py`'s input+`ActionRouter` pattern), wired into `clUI.py` per
+Implemented: `src/ui/clClaudeWidget.py` (a `LogViewer`-styled `ZoomTextEdit` mirror, modeled on `clLogWidget.py`'s
+viewer), wired into `clUI.py` per
 the original plan exactly: a `claude_screen_signal` on `MqttThread` subscribed to `jarvis/claude/screen`, a
 `WidgetTogglePill` (`claude.svg`, a plain chat-bubble icon) with `_toggle_claude`/widget id `widget_claude`, the
 show/hide lists in `set_fullscreen`/`set_overlay`, and the restore branch in `load_ui_state`. Verified live by running
@@ -197,18 +197,16 @@ terminal with `write()`. `run_setup()`/`--setup` still exists as a terminal-only
 guarded now), but the widget is the primary path going forward.
 
 Still open from the original design notes:
-- Buttons/keys for Esc (interrupt), Shift+Tab, arrows -- publishing `{"keys": ...}` (the mockups sketched these as
-  small chips under the input; not yet wired to real clicks).
+- Esc (interrupt), Shift+Tab, and arrow keys are now handled -- see "Direct terminal input, no input box" below.
 - Permission prompts must be visible and answerable from the widget (today the session runs in auto mode, so this
   hasn't been exercised).
 - Scrollback: the 120x40 grid only shows the current screen. Publish scrollback (tmux `capture-pane -S -`) or keep a
   history in the widget.
 - Widget size is owned by `ui_state.json` (see the `widget-size-source-of-truth` memory); never `adjustSize()` the
   content -- `ClaudeWidget.get_standalone_min_size()` only sets the first-ever default.
-- Slash-command IntelliSense: `QCompleter` on the widget's `QLineEdit`, populated from a hardcoded `SLASH_COMMANDS`
-  list (a reasonable starting set from general knowledge, not verified against the live CLI's exact current list).
-  Since every entry starts with `/`, the popup naturally stays hidden for ordinary questions and appears the moment
-  `/` is typed -- no extra trigger logic needed.
+- Slash-command IntelliSense: `QCompleter`, populated from a hardcoded `SLASH_COMMANDS` list (a reasonable starting
+  set from general knowledge, not verified against the live CLI's exact current list). Since every entry starts
+  with `/`, the popup naturally stays hidden for ordinary questions and appears the moment `/` is typed.
 - Icon: `assets/icons/claude.svg` is a small hand-drawn robot-head glyph (antenna, two eyes, mouth grille via
   `fill-rule="evenodd"` holes), not the official Anthropic mark -- swap in the real asset if/when available.
 
@@ -227,16 +225,143 @@ instead of waiting for the next output change. `_last_claude_screen`/`_last_term
 latest screen even while inactive, so switching back to a backend that's had no new output still republishes
 something accurate rather than nothing.
 
-Linux-only for now, same story as the claude backend's own history: `_terminal_backend_class()` raises
-`NotImplementedError` on Windows (a ConPTY-backed `cmd.exe`/`powershell.exe` equivalent would be the follow-up), and
-`run()`'s `/terminal` handler catches that and reverts to claude mode rather than leaving the service stuck in a mode
-with no working backend.
+Windows backend added 2026-09-25 (`src/utils/clWinTerminalBridge.py`, `WinTerminalBridge`): ConPTY via `pywinpty`
+running `%COMSPEC%` (falls back to `cmd.exe`), rendered through `pyte` -- same pairing `ClaudePtyBridge` already
+uses, just without any of `ClaudeSessionBase`'s onboarding/stall logic (mirrors `PlainTerminalBridge`'s relationship
+to `ClaudeTmuxBridge`). `_terminal_backend_class()` now picks a real backend on both OSes, same split as
+`_backend_class()`; `run()`'s `/terminal` handler still catches any exception and reverts to claude mode (e.g. if
+`pywinpty`/ConPTY genuinely can't spawn), unchanged from before. Unit-tested with `winpty.PtyProcess.spawn` mocked
+(`tests/test_clWinTerminalBridge.py`) -- not yet live-verified against a real ConPTY shell session the way
+`PlainTerminalBridge` was against real tmux (see Phase 1c's verification style); do that before relying on it.
+
+While verifying the Windows test suite for this: found and fixed three pre-existing Windows-only test failures
+introduced by the Linux-side work above, none related to `/terminal` specifically -- `os.O_NONBLOCK` doesn't exist
+on Windows (`ClaudeTmuxBridge._read_loop`'s two direct-call tests hit `AttributeError` evaluating the flag before
+the mocked `os.open` ever ran; fixed with a `_O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)` module constant, since the
+class is Linux-only in production anyway), and one `PlainTerminalBridge` test relied on real `tmux` being on PATH
+(not installed on Windows) instead of mocking `shutil.which`. Full suite: 760 passed, 5 skipped on Windows after
+these fixes. Separately, `tests/test_clMic.py` had been intermittently failing to collect on this machine due to
+unrelated venv corruption (stray `~umpy`/`~lama_cpp`/`~arkupsafe` leftover dirs in `.venv/Lib/site-packages` from an
+interrupted pip install, not caused by this work) -- cleaned up (`rm -rf` the tilde-prefixed dirs, `pip check` clean
+afterward); full suite including that file: 771 passed, 6 skipped.
 
 Verified: `PlainTerminalBridge` smoke-tested live against a real tmux server (`write()` round-tripped through a real
 shell's `echo`, `refresh_screen()` triggers a real on-demand capture, `stop()` really kills the session) -- same
 verification style as `ClaudeTmuxBridge`'s own Phase 1c testing. Full mode-switching logic (both slash commands,
 routing, screen-update suppression by mode, the Windows-fallback path) covered by
 `tests/test_clClaudeBridge.py::TestTerminalModeSwitching`.
+
+### Direct terminal input, no input box (2026-09-25)
+
+Replaced the `QLineEdit` + Send button + Esc/Shift-Tab/arrow button row with direct keyboard input on the screen
+mirror itself -- `ClaudeTerminalView` (`ClaudeWidget`'s `ZoomTextEdit` subclass in `clClaudeWidget.py`). The mirror is
+still `setReadOnly(True)` at the Qt level (blocks the built-in typing/paste QTextEdit would otherwise do), but every
+key press is funneled through `keyPressEvent` instead:
+- Plain characters, Backspace, and paste (Ctrl+V, reading `QApplication.clipboard()`) are echoed locally --
+  appended to/trimmed from a `_pending` string rendered after the last known server screen -- *and* forwarded to
+  the live session via a new `claude.keys` action (`config/actions.json`, same `jarvis/claude/question` topic as
+  `ask`/`control_key`, routed server-side to `send_keys()` on whichever backend is active). Local echo makes typing
+  feel instant despite the round trip; `_pending` is simply dropped the moment a new authoritative screen snapshot
+  arrives (`jarvis/claude/screen` is a full-snapshot payload), since by then everything typed so far has already
+  been sent (each keystroke dispatches synchronously on press, well before any server round trip can complete).
+- Arrows, Escape, and Shift-Tab get no local prediction -- forwarded as `claude.control_key` exactly as before
+  (same tokens, same backend mapping), because their real effect (CLI history recall, "esc to interrupt", a menu)
+  depends on server-side state this view can't guess. Enter forwards `control_key: "ENTER"` and optimistically
+  clears `_pending` immediately rather than waiting for the round trip.
+- This is a heuristic, not a real terminal emulator: it assumes the cursor sits at the end of the current *input
+  row*, true for ordinary typing but not for arrow-key editing mid-line -- which is exactly why arrows are
+  forwarded instead of predicted. A stray screen update landing mid-keystroke (a spinner redraw, say) can cause a
+  brief visual flicker (locally-echoed char disappears then reappears once the server catches up); accepted as a
+  rare, self-healing edge case rather than building full terminal-emulation ordering guarantees for it.
+  **Found live and fixed (2026-09-25):** the input row is not always the last row on screen -- the Claude TUI often
+  has a footer line below it (a mode hint like "accept edits on (shift+tab to cycle)", an update notice), so the
+  first version appended locally-echoed text after that footer instead of on the actual `❯` line. Fixed by
+  `_find_prompt_row()`, reusing `ClaudeSessionBase._prompt_row_visible()`'s exact heuristic (a `❯` row bracketed
+  by horizontal-rule rows above and below) to find the real input row and append there; falls back to the last row
+  when no such bracketed box exists (a bare `/terminal` shell prompt has no framing at all, and *is* the last
+  row). Regression-tested (`TestPromptRowPlacement`) against a reconstructed screen shaped like the one that
+  surfaced the bug.
+- Slash-command IntelliSense survives the redesign: `QCompleter` doesn't require a `QLineEdit` -- `setWidget(self)`
+  anchors it to the `ClaudeTerminalView` instead (the documented Qt "Custom Completer" pattern), positioned via
+  `complete(self.cursorRect())`, filtered off `_pending` whenever it starts with `/` and has no space yet (a space
+  means the user's on to arguments, not the command token). Every key the popup cares about (navigation, accept,
+  dismiss -- Up/Down/PageUp/PageDown/Enter/Escape/Tab/Backtab) is explicitly ignored in `keyPressEvent` while it's
+  visible, so the completer's own handling runs instead of line-submission/control-key logic. Accepting a
+  completion (`activated` signal) sends only the missing suffix, not the whole command, since the prefix was
+  already typed (and already forwarded) character by character.
+- Unit-tested (`tests/test_clClaudeWidget.py`, `ClaudeTerminalView` exercised directly): local echo/backspace/paste,
+  every control-key mapping via real `QKeyEvent`s, popup-open key suppression, and completer suffix logic.
+
+  **Two bugs found live and fixed (2026-09-25), both from unverified assumptions about Qt's own event handling --
+  the tests all passed anyway because they call `keyPressEvent()` directly, bypassing the real Qt event pipeline
+  these bugs lived in:**
+  - *"Shift+Tab does nothing."* `QWidget::event()` intercepts `Key_Backtab`/Shift+Tab for keyboard focus-traversal
+    (`focusNextPrevChild()`) *before* `keyPressEvent()` is ever called, unless the widget opts out -- so the whole
+    `keyPressEvent` override, popup or not, was simply never reached for Shift+Tab; Qt silently moved focus off the
+    terminal view instead. Fixed with `self.setTabChangesFocus(False)` in `__init__` (the standard
+    `QTextEdit`/`QPlainTextEdit` property for exactly this case), regression-tested by asserting
+    `tabChangesFocus() is False`.
+  - *"Pressing Up sometimes recalls CLI history unexpectedly."* The original code assumed QCompleter's
+    `setWidget()`-installed event filter would silently consume Up/Down/PageUp/PageDown (to navigate the popup)
+    before `keyPressEvent` ever saw them, so only Enter/Escape/Tab/Backtab were explicitly ignored while the popup
+    was visible. That assumption was wrong (or at least unreliable) in practice: Up/Down fell through to the
+    control-key dispatch too, so pressing Up while typing a slash command *both* navigated the popup selection
+    *and* sent a real "UP" control key to the live session, recalling actual CLI history at the same time --
+    intermittent because it only happened while the popup happened to be open. Fixed by folding Up/Down/PageUp/
+    PageDown into the same explicit "popup owns this key" list as Enter/Escape/Tab/Backtab, so nothing here relies
+    on an assumed, unverified Qt-internal event-filter ordering.
+
+  Not yet re-verified live after these fixes -- try Shift+Tab and Up/Down-while-the-popup-is-open again before
+  trusting either is fully solved.
+
+**Third bug found live and fixed (2026-09-25): the footer/prompt area was unreachable by scrolling, only fixable
+by zooming out.** `_render()`'s `setTextCursor(cursor)` call (needed so the cursor -- and hence typed characters --
+visually sits on the prompt row) can itself auto-scroll the view to keep that cursor visible. Whenever a footer row
+follows the prompt row (see the earlier prompt-row-placement bug), that auto-scroll left the view pinned around the
+prompt row and never let the true bottom -- footer included -- come into view, no matter how far down you tried to
+scroll; it also fought scrolling *up* to read earlier history, since every render (every keystroke, every screen
+update) re-ran the same cursor-follow scroll. Zooming out worked around it only because a smaller font meant more of
+the fixed-row-count grid fit inside the same pixel-height viewport, sidestepping the broken scroll entirely instead
+of fixing it. Fixed by always ending `_render()` with an explicit, intentional `scrollbar.setValue(...)` call --
+`maximum()` if the view was at the bottom before the render, the exact preserved prior value otherwise -- which
+overrides whatever `setTextCursor()` did regardless of its internal behavior. Regression-tested
+(`TestScrollPositionSurvivesCursorFollow`) with a mocked scrollbar asserting the final `setValue()` call in both
+cases; not yet re-verified live.
+
+### Live terminal grid resize (2026-09-25)
+
+The widget resizing didn't used to change anything about the actual terminal grid -- the backend always ran a fixed
+120x40 session regardless of how big or small the on-screen widget was. Now a widget resize really resizes the
+child terminal (ConPTY `setwinsize`/tmux `resize-window`), like a real terminal window does, not just a display
+clamp on a fixed-size grid.
+
+- `ClaudeSessionBase.COLS`/`ROWS` (120/40) are class-level *defaults*, but every backend now accepts `cols`/`rows`
+  constructor overrides and exposes `resize(cols, rows)`: `ClaudeSessionBase.resize()` is shared (updates
+  `self.COLS`/`ROWS`, delegates to a backend's `_apply_resize()`); `ClaudePtyBridge`/`WinTerminalBridge` resize both
+  the real ConPTY (`PtyProcess.setwinsize(rows, cols)`) and the local `pyte.Screen` (`.resize(lines=, columns=)`,
+  needed so future reads parse against the right dimensions); `ClaudeTmuxBridge`/`PlainTerminalBridge` run `tmux
+  resize-window -t <session> -x <cols> -y <rows>` -- works directly since these sessions are always detached (no
+  attached client ever forces tmux to a different size).
+- Client side: `ClaudeTerminalView.resizeEvent()` (and `zoomIn()`/`zoomOut()`, since a font-size change also changes
+  how many characters fit) starts a 300ms debounce timer rather than dispatching on every pixel of a drag -- a live
+  resize is real backend work (a ConPTY/tmux call), not free. `_grid_size()` converts the widget's current
+  `viewport()` pixel size to a character count via `fontMetrics()` (`horizontalAdvance("0")` for cell width,
+  `height()` for cell height), clamped to a 20x5 minimum so a squashed widget can't ask for a degenerate size.
+  Dispatched via a new `claude.resize` action (`config/actions.json`, same `jarvis/claude/question` topic, `cols`/
+  `rows` schema fields) only when the computed grid actually changed since the last dispatch.
+- Server side: `ClaudeBridgeService._resize()` applies the new size to *both* backends (not just whichever is
+  currently active in `self.mode`) whenever either is alive, so switching `/claude` <-> `/terminal` never finds the
+  other one still at a stale size, and remembers the last requested `(cols, rows)` on the service so a backend
+  (re)started later (first `/terminal` switch, a stall-recovery restart) comes up matching instead of reverting to
+  120x40.
+- The debug log viewer (`LogWidget`/`clLogWidget.py`) was raised in the same request but needs none of this -- it's
+  a plain `QTextEdit` tailing a log file, not a PTY session, and already reflows correctly on resize via ordinary
+  Qt layout (`DraggableWidget`'s `QVBoxLayout` resizes `content_widget` automatically; verified this is the same
+  mechanism `ClaudeWidget` itself relies on, so no separate fix was needed there).
+- Unit-tested across all four backends (`TestResize`/`TestClaudePtyResize` in the respective test files) plus the
+  service-level fan-out/remember-for-next-start logic and the client-side grid math/debounce
+  (`TestGridResize` in `tests/test_clClaudeWidget.py`). Not yet live-verified against a real ConPTY/tmux session --
+  same caveat as the rest of this phase.
 
 ## Phase 5: replacing the VS Code session
 

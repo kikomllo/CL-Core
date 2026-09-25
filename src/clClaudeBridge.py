@@ -10,6 +10,7 @@ import time
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..' if 'src' in __file__ else 'src'))
 from utils.clLogging import setup_logging
 setup_logging('CLAUDE_BRIDGE')
+from utils.clClaudeSession import ClaudeSessionBase
 
 if sys.platform == 'win32':
     # ProactorEventLoop (Windows asyncio default) doesn't support the
@@ -56,14 +57,12 @@ def _backend_class():
 
 
 def _terminal_backend_class():
-    """Backs the widget's "/terminal" mode. Linux-only for now (tmux running a
-    plain shell) -- same Windows/Linux split as _backend_class(), just not yet
-    built for Windows (ConPTY running cmd.exe/powershell.exe would be the
-    equivalent there)."""
-    if CURRENT_OS != "Linux":
-        raise NotImplementedError(
-            "/terminal isn't implemented on this OS yet (tmux-backed, Linux-only for now)."
-        )
+    """Backs the widget's "/terminal" mode. Same Windows/Linux split as
+    _backend_class(): Windows uses ConPTY running cmd.exe (WinTerminalBridge),
+    Linux uses tmux running the user's shell (PlainTerminalBridge)."""
+    if CURRENT_OS == "Windows":
+        from utils.clWinTerminalBridge import WinTerminalBridge
+        return WinTerminalBridge
     from utils.clPlainTerminalBridge import PlainTerminalBridge
     return PlainTerminalBridge
 
@@ -87,6 +86,11 @@ class ClaudeBridgeService:
         self._last_question = None
         self._recovering = False
         self._answered = False
+        # Last size the widget asked for (driven by its own resize), so a
+        # backend (re)started later comes up matching instead of the 120x40
+        # default -- see ClaudeSessionBase.COLS/ROWS.
+        self._cols = ClaudeSessionBase.COLS
+        self._rows = ClaudeSessionBase.ROWS
 
     @staticmethod
     def _trim_screen(screen_text: str) -> str:
@@ -136,7 +140,8 @@ class ClaudeBridgeService:
             return False
         backend_cls = _backend_class()
         self.bridge = backend_cls(
-            cwd=REPO_ROOT, on_screen_update=self._on_claude_screen_update, on_stall=self._on_stall
+            cwd=REPO_ROOT, on_screen_update=self._on_claude_screen_update, on_stall=self._on_stall,
+            cols=self._cols, rows=self._rows,
         )
         if force_fresh:
             self.bridge.stop()
@@ -148,9 +153,25 @@ class ClaudeBridgeService:
         if self.terminal_bridge and self.terminal_bridge.is_alive():
             return False
         backend_cls = _terminal_backend_class()
-        self.terminal_bridge = backend_cls(cwd=REPO_ROOT, on_screen_update=self._on_terminal_screen_update)
+        self.terminal_bridge = backend_cls(
+            cwd=REPO_ROOT, on_screen_update=self._on_terminal_screen_update,
+            cols=self._cols, rows=self._rows,
+        )
         self.terminal_bridge.start()
         return True
+
+    def _resize(self, cols: int, rows: int):
+        """Live resize driven by the widget -- applied to both backends (not
+        just the active one) so neither drifts out of sync with the other
+        while it's in the background, and remembered for whichever backend
+        gets (re)started next."""
+        self._cols, self._rows = cols, rows
+        for bridge in (self.bridge, self.terminal_bridge):
+            if bridge and bridge.is_alive():
+                try:
+                    bridge.resize(cols, rows)
+                except Exception as e:
+                    logging.error(f"[CLAUDE BRIDGE] Resize to {cols}x{rows} failed: {e}")
 
     async def _wait_until_ready(self, timeout: float = 30.0):
         # Input written while the TUI is still starting up gets dropped.
@@ -266,6 +287,11 @@ class ClaudeBridgeService:
                                 payload = json.loads(message.payload.decode())
                             except json.JSONDecodeError:
                                 continue
+                            cols, rows = payload.get("cols"), payload.get("rows")
+                            if cols and rows:
+                                self._resize(int(cols), int(rows))
+                                continue
+
                             keys = payload.get("keys")
                             control_key = payload.get("control_key")
                             text = str(payload.get("text", "")).strip()

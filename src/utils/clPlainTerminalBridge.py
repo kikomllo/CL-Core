@@ -27,9 +27,14 @@ class PlainTerminalBridge:
     DEBOUNCE_S = 0.15  # coalesce streamed output into one screen update
     POLL_S = 0.2
 
-    def __init__(self, cwd: str, on_screen_update: Callable[[str], None]):
+    def __init__(self, cwd: str, on_screen_update: Callable[[str], None],
+                 cols: Optional[int] = None, rows: Optional[int] = None):
         self._cwd = cwd
         self._on_screen_update = on_screen_update
+        if cols:
+            self.COLS = cols
+        if rows:
+            self.ROWS = rows
         self._fifo_path: Optional[str] = None
         self._reader_thread: Optional[threading.Thread] = None
         self._running = False
@@ -86,6 +91,15 @@ class PlainTerminalBridge:
         """On-demand capture, so switching modes shows the current screen
         immediately instead of waiting for the shell to next print something."""
         self._emit_screen()
+
+    def resize(self, cols: int, rows: int):
+        # Always detached (no attached client ever forces a size), so
+        # resize-window's explicit -x/-y takes effect directly.
+        self.COLS, self.ROWS = cols, rows
+        subprocess.run(
+            ["tmux", "resize-window", "-t", self.SESSION_NAME, "-x", str(cols), "-y", str(rows)],
+            capture_output=True,
+        )
 
     def _start_pipe_reader(self):
         fd, self._fifo_path = tempfile.mkstemp(prefix="jarvis_terminal_", suffix=".fifo")
