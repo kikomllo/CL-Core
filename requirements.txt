@@ -104,3 +104,10 @@ psutil ; sys_platform == 'win32'
 # Windows-only.
 pywinpty ; sys_platform == 'win32'
 pyte ; sys_platform == 'win32'
+
+# The Claude terminal bridge (src/clClaudeBridge.py) also needs two things this
+# file can't install, since neither is a pip package: the `claude` CLI itself
+# (an npm global package) on both OSes, and `tmux` on Linux only. boot.py
+# auto-installs both (apt for tmux/npm on Linux, winget for Node/npm on
+# Windows, then `npm install -g @anthropic-ai/claude-code` either way) --
+# see _ensure_linux_system_packages()/_ensure_claude_cli() there.

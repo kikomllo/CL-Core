@@ -4,7 +4,6 @@ import time
 import json
 import os
 import signal
-import platform
 import paho.mqtt.client as mqtt_client
 
 # --- OS SETTINGS & DEBUG FLAG ---
@@ -108,11 +107,7 @@ NATIVE_SERVICES = [
     ("Tray Icon", "src/clTrayIcon.py"),
 ]
 
-# Claude terminal voice bridge is Windows-only for now (see clClaudeBridge.py
-# docstring) -- the Linux/tmux backend isn't implemented yet, so don't spawn
-# a process that would just log an error and idle on that OS.
-if platform.system() == "Windows":
-    NATIVE_SERVICES.append(("Claude Bridge", "src/clClaudeBridge.py"))
+NATIVE_SERVICES.append(("Claude Bridge", "src/clClaudeBridge.py"))
 
 def load_modules_config():
     global NATIVE_SERVICES

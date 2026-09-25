@@ -10,8 +10,8 @@
         ],
         "stt_processing_mode": "parallel",
         "audio_settings": {
-            "input_device": "Microphone (G435 Wireless Gaming Headset)",
-            "output_device": "Headset Earphone (G435 Wireless Gaming Headset)"
+            "input_device": "System Default",
+            "output_device": "System Default"
         },
         "slm_settings": {
             "enabled": true,

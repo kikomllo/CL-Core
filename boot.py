@@ -44,6 +44,8 @@ def _ensure_linux_system_packages() -> None:
     build-tools check below."""
     required = {
         "pactl": "pulseaudio-utils",  # per-app volume mixer (clTerminal.py's *_linux app-volume functions)
+        "tmux": "tmux",  # Claude terminal bridge's Linux backend (src/utils/clClaudeTmuxBridge.py)
+        "npm": "npm",  # installs the `claude` CLI itself -- see _ensure_claude_cli() below
     }
     missing_packages = sorted({pkg for binary, pkg in required.items() if not shutil.which(binary)})
     if not missing_packages:
@@ -68,6 +70,59 @@ def _ensure_linux_system_packages() -> None:
         print(f"[BOOT] Some features will be degraded until you run: sudo apt install {' '.join(missing_packages)}")
 
 
+def _ensure_claude_cli(is_windows: bool) -> None:
+    """Best-effort, non-fatal auto-install for the Claude terminal bridge's one
+    non-apt, non-pip dependency: the `claude` CLI, an npm global package. On
+    Linux, npm itself comes from _ensure_linux_system_packages() above; on
+    Windows there's no apt equivalent, so Node/npm is fetched via winget here
+    (same tool clUpdater.py already uses for app installs/updates) if missing.
+    Either way, a missing/failed install just leaves the bridge module parked
+    with a clear error, same as any other optional feature -- never halts boot."""
+    if shutil.which("claude"):
+        return
+
+    npm = shutil.which("npm")
+    if not npm and is_windows:
+        nodejs_dir = r"C:\Program Files\nodejs"
+        if shutil.which("winget"):
+            print("[BOOT] Node.js/npm not found -- installing via winget (needed for the `claude` CLI)...")
+            try:
+                subprocess.run(
+                    ["winget", "install", "--id", "OpenJS.NodeJS.LTS", "--silent",
+                     "--accept-source-agreements", "--accept-package-agreements"],
+                    check=True,
+                )
+                # winget's PATH update doesn't reach this already-running process --
+                # point at the well-known default install dir directly instead, so
+                # the npm install below can run in this same boot without a restart.
+                if os.path.isdir(nodejs_dir):
+                    os.environ["PATH"] = nodejs_dir + os.pathsep + os.environ.get("PATH", "")
+                    npm = shutil.which("npm")
+            except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                print(f"[BOOT] Could not auto-install Node.js via winget ({e}).")
+        if not npm:
+            print("[BOOT] Node.js/npm not found and could not be auto-installed. Install it manually from "
+                  "https://nodejs.org, then run: npm install -g @anthropic-ai/claude-code")
+            return
+    elif not npm:
+        # Linux without apt-get (non-Debian distro) -- same "surfaced, not silent"
+        # treatment as _ensure_linux_system_packages() gives that case.
+        print("[BOOT] npm not found and could not be auto-installed (no apt-get). Install Node.js/npm "
+              "manually for your distro, then run: npm install -g @anthropic-ai/claude-code")
+        return
+
+    print("[BOOT] Installing the Claude CLI (npm install -g @anthropic-ai/claude-code)...")
+    try:
+        # Windows can't exec a .cmd directly without a shell; shell=True on Windows
+        # joins a list into one command line first (unlike POSIX shell=True, where
+        # only the first item would reach the shell), so this stays correct on both.
+        subprocess.run(["npm", "install", "-g", "@anthropic-ai/claude-code"], check=True, shell=is_windows)
+        print("[BOOT] Claude CLI installed.")
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        print(f"[BOOT] Could not auto-install the Claude CLI ({e}). The bridge module will stay "
+              f"parked until you run: npm install -g @anthropic-ai/claude-code")
+
+
 def main():
     print("==================================================")
     print("JARVIS ECOSYSTEM BOOTLOADER")
@@ -90,9 +145,10 @@ def main():
             print(f"[BOOT] FATAL: Failed to create virtual environment: {e}")
             sys.exit(1)
             
-    # 1.5. Ensure required Linux system packages (best-effort, non-fatal)
+    # 1.5. Ensure required system packages / CLIs (best-effort, non-fatal)
     if not is_windows:
         _ensure_linux_system_packages()
+    _ensure_claude_cli(is_windows)
 
     # 2. Check for dependencies update
     req_file = "requirements.txt"

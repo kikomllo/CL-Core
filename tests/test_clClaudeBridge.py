@@ -32,6 +32,33 @@ def service():
     return ClaudeBridgeService()
 
 
+class TestBackendSelection:
+    """_ensure_pty_started() must pick a real backend on every OS now that
+    the tmux backend exists -- there is no more 'Linux not implemented' guard."""
+
+    def test_windows_picks_the_pty_backend(self, mocker):
+        from clClaudeBridge import _backend_class
+        from utils.clPtyBridge import ClaudePtyBridge
+        mocker.patch("clClaudeBridge.CURRENT_OS", "Windows")
+        assert _backend_class() is ClaudePtyBridge
+
+    def test_linux_picks_the_tmux_backend(self, mocker):
+        from clClaudeBridge import _backend_class
+        from utils.clClaudeTmuxBridge import ClaudeTmuxBridge
+        mocker.patch("clClaudeBridge.CURRENT_OS", "Linux")
+        assert _backend_class() is ClaudeTmuxBridge
+
+    def test_ensure_pty_started_starts_the_linux_backend(self, service, mocker):
+        mocker.patch("clClaudeBridge.CURRENT_OS", "Linux")
+        fake = MagicMock()
+        mocker.patch("utils.clClaudeTmuxBridge.ClaudeTmuxBridge", return_value=fake)
+
+        started = service._ensure_pty_started()
+
+        assert started is True
+        fake.start.assert_called_once()
+
+
 class TestClaudeBridgeRouting:
     """The bridge's job is just relaying jarvis/claude/question into the
     live pty session -- these tests mock the pty layer out entirely so
@@ -135,19 +162,45 @@ class TestClaudeBridgeRouting:
 
 
 class TestMissingCredentials:
-    """Mirrors clSpotify.py's precedent: an unconfigured integration parks
-    itself instead of letting the supervisor resurrect a process that can't
-    do its one job, over and over."""
+    """No saved login is no longer a hard blocker: the dashboard's Claude
+    widget mirrors the trust/theme/login/sign-in screens and relays a pasted
+    code back in, so a not-yet-signed-in bridge still starts up -- it just
+    forces a fresh session first so it never silently reattaches to a stale
+    one left behind by some previous aborted attempt."""
 
     @pytest.mark.asyncio
-    async def test_missing_credentials_file_blocks_instead_of_connecting(self, service, mock_mqtt, mocker):
+    async def test_missing_credentials_does_not_block_connecting(self, service, mock_mqtt, message_stream, mocker):
         mocker.patch("clClaudeBridge.os.path.exists", return_value=False)
+        mocker.patch.object(service, "_ensure_pty_started")
+        mock_mqtt.messages = message_stream([])
 
-        import asyncio
-        with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(service.run(), timeout=0.2)
+        await service.run()
 
-        mock_mqtt.subscribe.assert_not_called()
+        mock_mqtt.subscribe.assert_any_call("jarvis/claude/question")
+
+    @pytest.mark.asyncio
+    async def test_missing_credentials_forces_a_fresh_session_on_first_start(
+        self, service, mock_mqtt, message_stream, mocker
+    ):
+        mocker.patch("clClaudeBridge.os.path.exists", return_value=False)
+        ensure_mock = mocker.patch.object(service, "_ensure_pty_started")
+        mock_mqtt.messages = message_stream([])
+
+        await service.run()
+
+        ensure_mock.assert_called_once_with(force_fresh=True)
+
+    @pytest.mark.asyncio
+    async def test_existing_credentials_do_not_force_a_fresh_session(
+        self, service, mock_mqtt, message_stream, mocker
+    ):
+        mocker.patch("clClaudeBridge.os.path.exists", return_value=True)
+        ensure_mock = mocker.patch.object(service, "_ensure_pty_started")
+        mock_mqtt.messages = message_stream([])
+
+        await service.run()
+
+        ensure_mock.assert_called_once_with(force_fresh=False)
 
 
 class TestScreenUpdatePublishing:
@@ -156,10 +209,10 @@ class TestScreenUpdatePublishing:
 
     def test_duplicate_screen_is_not_republished(self, service):
         service.loop = None
-        service._on_screen_update("frame A")
-        assert service._last_screen == "frame A"
-        service._on_screen_update("frame A")
-        assert service._last_screen == "frame A"
+        service._on_claude_screen_update("frame A")
+        assert service._last_claude_screen == "frame A"
+        service._on_claude_screen_update("frame A")
+        assert service._last_claude_screen == "frame A"
 
     def test_changed_screen_schedules_a_publish(self, service, mocker):
         service.mqtt_client = MagicMock()
@@ -167,7 +220,7 @@ class TestScreenUpdatePublishing:
         mocker.patch.object(service, "_publish_screen")
         scheduled = mocker.patch("asyncio.run_coroutine_threadsafe")
 
-        service._on_screen_update("frame A")
+        service._on_claude_screen_update("frame A")
 
         scheduled.assert_called_once()
 
@@ -180,7 +233,7 @@ class TestScreenUpdatePublishing:
         mocker.patch("asyncio.run_coroutine_threadsafe")
         padded = "\n".join(["hello" + " " * 115, " " * 120, "world  " + " " * 113] + [" " * 120] * 37)
 
-        service._on_screen_update(padded)
+        service._on_claude_screen_update(padded)
 
         publish.assert_called_once_with("hello\n\nworld")
 
@@ -190,8 +243,8 @@ class TestScreenUpdatePublishing:
         mocker.patch.object(service, "_publish_screen")
         scheduled = mocker.patch("asyncio.run_coroutine_threadsafe")
 
-        service._on_screen_update("frame A" + " " * 50)
-        service._on_screen_update("frame A" + " " * 90 + "\n" + " " * 120)
+        service._on_claude_screen_update("frame A" + " " * 50)
+        service._on_claude_screen_update("frame A" + " " * 90 + "\n" + " " * 120)
 
         scheduled.assert_called_once()
 
@@ -200,9 +253,121 @@ class TestScreenUpdatePublishing:
         service.loop = None
         scheduled = mocker.patch("asyncio.run_coroutine_threadsafe")
 
-        service._on_screen_update("frame A")
+        service._on_claude_screen_update("frame A")
 
         scheduled.assert_not_called()
+
+
+class TestTerminalModeSwitching:
+    """The Claude widget's input doubles as a plain shell: '/terminal' and
+    '/claude' switch which backend is active, both for what gets published to
+    jarvis/claude/screen and where subsequent typed input is routed."""
+
+    @pytest.mark.asyncio
+    async def test_slash_terminal_switches_mode_and_refreshes_the_terminal_screen(
+        self, service, mock_mqtt, message_stream, mocker
+    ):
+        mock_bridge = MagicMock()
+        mock_bridge.is_alive.return_value = True
+        service.bridge = mock_bridge
+        mock_terminal = MagicMock()
+        service.terminal_bridge = mock_terminal
+        mocker.patch.object(service, "_ensure_pty_started")
+        mocker.patch.object(service, "_ensure_terminal_started")
+
+        mock_mqtt.messages = message_stream([
+            ("jarvis/claude/question", json.dumps({"text": "/terminal"})),
+        ])
+
+        await service.run()
+
+        assert service.mode == "terminal"
+        service._ensure_terminal_started.assert_called_once()
+        mock_terminal.refresh_screen.assert_called_once()
+        mock_bridge.write.assert_not_called()
+        mock_terminal.write.assert_not_called()  # "/terminal" itself is never typed into any session
+
+    @pytest.mark.asyncio
+    async def test_slash_claude_switches_back_to_claude_mode(self, service, mock_mqtt, message_stream, mocker):
+        mock_bridge = MagicMock()
+        mock_bridge.is_alive.return_value = True
+        service.bridge = mock_bridge
+        service.mode = "terminal"
+        mock_terminal = MagicMock()
+        service.terminal_bridge = mock_terminal
+        mocker.patch.object(service, "_ensure_pty_started", return_value=False)
+
+        mock_mqtt.messages = message_stream([
+            ("jarvis/claude/question", json.dumps({"text": "/claude"})),
+        ])
+
+        await service.run()
+
+        assert service.mode == "claude"
+        mock_bridge.refresh_screen.assert_called_once()
+        mock_terminal.write.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_terminal_mode_routes_typed_text_to_the_terminal_not_claude(
+        self, service, mock_mqtt, message_stream, mocker
+    ):
+        mock_bridge = MagicMock()
+        mock_bridge.is_alive.return_value = True
+        service.bridge = mock_bridge
+        service.mode = "terminal"
+        mock_terminal = MagicMock()
+        service.terminal_bridge = mock_terminal
+        mocker.patch.object(service, "_ensure_terminal_started")
+
+        mock_mqtt.messages = message_stream([
+            ("jarvis/claude/question", json.dumps({"text": "ls -la"})),
+        ])
+
+        await service.run()
+
+        mock_terminal.write.assert_called_once_with("ls -la")
+        mock_bridge.write.assert_not_called()
+
+    def test_claude_screen_updates_are_cached_but_not_published_while_in_terminal_mode(self, service, mocker):
+        service.mode = "terminal"
+        service.mqtt_client = MagicMock()
+        service.loop = MagicMock()
+        scheduled = mocker.patch("asyncio.run_coroutine_threadsafe")
+
+        service._on_claude_screen_update("claude screen text")
+
+        assert service._last_claude_screen == "claude screen text"
+        scheduled.assert_not_called()
+
+    def test_terminal_screen_updates_are_cached_but_not_published_while_in_claude_mode(self, service, mocker):
+        service.mqtt_client = MagicMock()
+        service.loop = MagicMock()
+        scheduled = mocker.patch("asyncio.run_coroutine_threadsafe")
+
+        service._on_terminal_screen_update("$ ls")
+
+        assert service._last_terminal_screen == "$ ls"
+        scheduled.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_terminal_start_failure_falls_back_to_claude_mode(
+        self, service, mock_mqtt, message_stream, mocker
+    ):
+        """E.g. on Windows, where /terminal isn't implemented yet -- must not
+        leave the service stuck in a mode with no working backend."""
+        mock_bridge = MagicMock()
+        mock_bridge.is_alive.return_value = True
+        service.bridge = mock_bridge
+        mocker.patch.object(service, "_ensure_pty_started")
+        mocker.patch.object(service, "_ensure_terminal_started", side_effect=NotImplementedError("no tmux"))
+
+        mock_mqtt.messages = message_stream([
+            ("jarvis/claude/question", json.dumps({"text": "/terminal"})),
+        ])
+
+        await service.run()  # should not raise
+
+        assert service.mode == "claude"
 
 
 class TestClaudeBinaryResolution:
@@ -306,75 +471,6 @@ class TestSendKeys:
         bridge._pty.write.assert_called_once_with("\x1bOB\r")
 
 
-class TestTrustPromptAutoAnswer:
-    """First launch against a fresh config dir asks to trust the workspace
-    via an arrow-key menu defaulting to 'No, exit' -- confirming it needs a
-    down arrow + enter, not typed text, and must only fire once per session."""
-
-    def _bridge(self):
-        from utils.clPtyBridge import ClaudePtyBridge
-        bridge = ClaudePtyBridge(cwd=".", on_screen_update=MagicMock())
-        bridge.send_keys = MagicMock()
-        return bridge
-
-    def test_sends_down_arrow_and_enter_on_trust_screen(self):
-        bridge = self._bridge()
-        bridge._maybe_auto_answer("Is this a project you created or one you trust?")
-        bridge.send_keys.assert_called_once_with("\x1bOB\r")
-
-    def test_same_screen_is_only_answered_once(self):
-        bridge = self._bridge()
-        bridge._maybe_auto_answer("Is this a project you created or one you trust?")
-        bridge._maybe_auto_answer("Is this a project you created or one you trust?")
-        bridge.send_keys.assert_called_once()
-
-    def test_ignores_unrelated_screens(self):
-        bridge = self._bridge()
-        bridge._maybe_auto_answer("some other screen entirely")
-        bridge.send_keys.assert_not_called()
-
-    @pytest.mark.parametrize("screen", [
-        "Choose the text style that looks best with your terminal",
-        "Select login method:\n 1. Claude account with subscription",
-        "Login successful. Press Enter to continue…",
-    ])
-    def test_plain_first_run_screens_get_enter(self, screen):
-        bridge = self._bridge()
-        bridge._maybe_auto_answer(screen)
-        bridge.send_keys.assert_called_once_with("\r")
-
-    def test_back_to_back_enter_screens_are_each_answered(self):
-        """Login-success and security-notes both say 'Press Enter to continue' --
-        the second is a different screen and must not be mistaken for the first."""
-        bridge = self._bridge()
-        bridge._maybe_auto_answer("Login successful. Press Enter to continue")
-        bridge._maybe_auto_answer("Security notes: ...\nPress Enter to continue")
-        assert bridge.send_keys.call_count == 2
-
-    def test_a_dropped_enter_is_retried_then_gives_up(self):
-        import time
-        bridge = self._bridge()
-        bridge._maybe_auto_answer("Press Enter to continue")
-        for _ in range(5):
-            bridge._retry_dropped_answer(time.time() + 100)
-            bridge._answered_at -= 100
-        assert bridge.send_keys.call_count == bridge.ANSWER_MAX_TRIES
-
-    def test_no_retry_once_the_screen_moved_on(self):
-        import time
-        bridge = self._bridge()
-        bridge._maybe_auto_answer("Press Enter to continue")
-        bridge._last_data_at = time.time() + 1  # new output arrived after the answer
-        bridge._retry_dropped_answer(time.time() + 100)
-        bridge.send_keys.assert_called_once()
-
-    def test_answer_state_clears_when_no_rule_matches(self):
-        bridge = self._bridge()
-        bridge._maybe_auto_answer("Press Enter to continue")
-        bridge._maybe_auto_answer("chat prompt")
-        assert bridge._answered_screen is None
-
-
 class TestSetupMode:
     """`--setup` drives first-run sign-in to the idle chat prompt; the only human steps
     are the browser Authorize click and (if the page shows one) pasting a code."""
@@ -398,13 +494,44 @@ class TestSetupMode:
         fake = self._patch_bridge(mocker)
         assert run_setup() is True
         fake.start.assert_called_once()
-        fake.stop.assert_called_once()
+        fake.stop.assert_called_once()  # credentials already exist (autouse fixture) -- only the final cleanup
 
     def test_fails_if_claude_exits_early(self, mocker):
         from clClaudeBridge import run_setup
         fake = self._patch_bridge(mocker, ready_after=99, alive=False)
         assert run_setup() is False
         fake.stop.assert_called_once()
+
+    def test_kills_any_stale_session_before_starting_fresh_when_not_yet_signed_in(self, mocker):
+        """--setup is the first-time onboarding entry point -- while there's no
+        saved login yet, it must not silently reattach to a session a previous
+        ABORTED attempt left running (e.g. one stuck on an expired OAuth
+        prompt), which would never re-trigger the browser/code screen. Found
+        live: a stale tmux session sat unnoticed for over an hour across
+        multiple --setup attempts."""
+        from clClaudeBridge import run_setup
+        mocker.patch("clClaudeBridge.os.path.exists", return_value=False)  # no .credentials.json yet
+        fake = self._patch_bridge(mocker)
+        calls = []
+        fake.stop.side_effect = lambda: calls.append("stop")
+        fake.start.side_effect = lambda: calls.append("start")
+
+        run_setup()
+
+        assert calls[0] == "stop"
+        assert calls[1] == "start"
+
+    def test_does_not_kill_an_existing_session_once_already_signed_in(self, mocker):
+        """Once credentials already exist, a live session may hold real
+        conversation history -- re-running --setup (e.g. by habit, or to
+        troubleshoot) must not nuke it just to force a fresh onboarding flow
+        nothing needs anymore."""
+        from clClaudeBridge import run_setup
+        fake = self._patch_bridge(mocker)  # autouse fixture: credentials appear to exist
+
+        run_setup()
+
+        fake.stop.assert_called_once()  # only the final cleanup, no upfront kill
 
     def test_pasted_code_is_typed_into_the_session(self, mocker):
         from clClaudeBridge import run_setup
@@ -420,50 +547,71 @@ class TestSetupMode:
         run_setup()
         ask.assert_called_once()
 
-    def test_refuses_on_non_windows(self, mocker):
+    def test_picks_the_tmux_backend_on_linux(self, mocker):
+        """run_setup() must not be Windows-only: on Linux it drives the same
+        first-run flow through ClaudeTmuxBridge instead of ClaudePtyBridge."""
         from clClaudeBridge import run_setup
+        fake = MagicMock()
+        fake.is_alive.return_value = True
+        fake.is_ready.side_effect = [False, True]
+
+        def factory(cwd, on_screen_update):
+            return fake
+        mocker.patch("utils.clClaudeTmuxBridge.ClaudeTmuxBridge", side_effect=factory)
         mocker.patch("clClaudeBridge.CURRENT_OS", "Linux")
-        assert run_setup() is False
+        mocker.patch("clClaudeBridge.time.sleep")
+
+        assert run_setup() is True
+        fake.start.assert_called_once()
+
+    def test_no_interactive_stdin_for_the_paste_code_step_fails_cleanly(self, mocker):
+        """Found live: running --setup from a non-interactive context (piped stdin,
+        or launched by an agent's tool) crashed with an unhandled EOFError the
+        instant the CLI asked for a pasted code -- must fail with a clear message
+        and still tear the session down instead of leaving an ugly traceback."""
+        from clClaudeBridge import run_setup
+        fake = MagicMock()
+        fake.is_alive.return_value = True
+        fake.is_ready.side_effect = [False] * 5 + [True] * 50
+
+        def factory(cwd, on_screen_update):
+            on_screen_update("Paste code here if prompted >")
+            return fake
+        mocker.patch("utils.clClaudeTmuxBridge.ClaudeTmuxBridge", side_effect=factory)
+        mocker.patch("clClaudeBridge.CURRENT_OS", "Linux")
+        mocker.patch("clClaudeBridge.time.sleep")
+        mocker.patch("builtins.input", side_effect=EOFError)
+
+        assert run_setup() is False  # should not raise
+        fake.stop.assert_called_once()  # credentials already exist (autouse fixture) -- only the final cleanup
 
 
-class TestPromptAndBusyDetection:
-    """The chat input box is a ❯ row between horizontal rules; menus reuse
-    ❯ without the rules and must not read as ready for typed input."""
-
-    RULE = "─" * 20
+class TestControlKeyEncoding:
+    """Windows encodes AUTO_ANSWERS' backend-neutral tokens as ConPTY escape
+    bytes -- application-cursor-mode down arrow, or a plain carriage return.
+    (Shared token-selection logic itself is covered in test_clClaudeSession.py.)"""
 
     def _bridge(self):
         from utils.clPtyBridge import ClaudePtyBridge
-        return ClaudePtyBridge(cwd=".", on_screen_update=MagicMock())
+        bridge = ClaudePtyBridge(cwd=".", on_screen_update=MagicMock())
+        bridge.send_keys = MagicMock()
+        return bridge
 
-    def test_input_box_is_detected(self):
-        rows = ["banner", self.RULE, "❯ ", self.RULE, "footer"]
-        assert self._bridge()._prompt_row_visible(rows) is True
-
-    def test_menu_selection_row_is_not_a_prompt(self):
-        rows = ["Is this a project you trust?", "❯ No, exit", "  Yes, I trust this folder"]
-        assert self._bridge()._prompt_row_visible(rows) is False
-
-    def test_busy_flag_follows_the_interrupt_hint(self):
+    def test_down_enter_token_becomes_application_cursor_escape(self):
         bridge = self._bridge()
-        bridge._stream.feed("working... esc to interrupt")
-        bridge._emit_screen()
-        assert bridge._busy is True
+        bridge._send_control_keys("DOWN ENTER")
+        bridge.send_keys.assert_called_once_with("\x1bOB\r")
 
-    def test_not_ready_while_busy_or_recently_active(self, mocker):
-        import time
+    def test_enter_token_becomes_plain_carriage_return(self):
         bridge = self._bridge()
-        bridge._prompt_visible = True
-        bridge._last_data_at = time.time() - 10
-        assert bridge.is_ready() is True
-        bridge._busy = True
-        assert bridge.is_ready() is False
-        bridge._busy = False
-        bridge._last_data_at = time.time()
-        assert bridge.is_ready() is False
+        bridge._send_control_keys("ENTER")
+        bridge.send_keys.assert_called_once_with("\r")
 
 
-class TestStallDetection:
+class TestStallDetectionReadLoop:
+    """Shared stall-decision logic is covered in test_clClaudeSession.py; this
+    just confirms the ConPTY read loop actually wires _check_stall into itself."""
+
     def _bridge(self, on_stall):
         from utils.clPtyBridge import ClaudePtyBridge
         bridge = ClaudePtyBridge(cwd=".", on_screen_update=MagicMock(), on_stall=on_stall)

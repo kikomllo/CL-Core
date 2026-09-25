@@ -22,6 +22,7 @@ from ui.clDashboardDrawer import DashboardDrawer
 from ui.clSettingsWidget import SettingsWidget
 from ui.clUpdateWidget import UpdateWidget
 from ui.clLogWidget import LogWidget
+from ui.clClaudeWidget import ClaudeWidget
 from ui.clMarqueeLabel import MarqueeLabel
 
 from clUIScalerInjector import inject_scaler
@@ -72,6 +73,7 @@ class MqttThread(QThread):
     todo_status_signal = pyqtSignal(dict)
     note_status_signal = pyqtSignal(dict)
     calendar_status_signal = pyqtSignal(dict)
+    claude_screen_signal = pyqtSignal(dict)
 
     def __init__(self, mode="overlay"):
         super().__init__()
@@ -138,6 +140,7 @@ class MqttThread(QThread):
         client.subscribe("jarvis/sys/todo/status")
         client.subscribe("jarvis/sys/note/status")
         client.subscribe("jarvis/sys/calendar/status")
+        client.subscribe("jarvis/claude/screen")
         client.publish("jarvis/sys/module_ready", json.dumps({"module": "ui"}), retain=False)
         
     def on_message(self, client, userdata, msg):
@@ -166,11 +169,16 @@ class MqttThread(QThread):
             "jarvis/sys/todo/status": self._handle_todo_status,
             "jarvis/sys/note/status": self._handle_note_status,
             "jarvis/sys/calendar/status": self._handle_calendar_status,
+            "jarvis/claude/screen": self._handle_claude_screen,
         }
 
         handler = handlers.get(topic)
         if handler:
             handler(payload)
+
+    def _handle_claude_screen(self, payload):
+        if isinstance(payload, dict):
+            self.claude_screen_signal.emit(payload)
 
     def _handle_todo_status(self, payload):
         if isinstance(payload, dict):
@@ -1715,7 +1723,12 @@ class JarvisUI(QWidget):
         
         # Dashboard Management
         self.active_widgets = {}
-        
+
+        # jarvis/claude/screen is retained, so this can arrive before the widget is ever
+        # opened (e.g. right at MQTT connect) -- cached here so a freshly spawned/reopened
+        # ClaudeWidget starts populated instead of blank until the next real change.
+        self._last_claude_screen_text = ""
+
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_animation)
         self.timer.start(1000 // 15)
@@ -1783,12 +1796,15 @@ class JarvisUI(QWidget):
         self.btn_updates = WidgetTogglePill("updates.svg", "Updates", self._toggle_updates, grow_direction="right", parent=self)
         self.btn_updates.hide()
 
+        self.btn_claude = WidgetTogglePill("claude.svg", "Claude", self._toggle_claude, grow_direction="right", parent=self)
+        self.btn_claude.hide()
+
         self.btn_debug = WidgetTogglePill("debug.svg", "Debug Logs", self._toggle_debug, grow_direction="right", parent=self)
         self.btn_debug.hide()
 
         self.widget_toggle_pills = [
             self.btn_media, self.btn_lights, self.btn_reminders,
-            self.btn_todos, self.btn_notes, self.btn_settings, self.btn_updates, self.btn_debug,
+            self.btn_todos, self.btn_notes, self.btn_settings, self.btn_updates, self.btn_claude, self.btn_debug,
         ]
         # Laid out as one horizontal, center-anchored row (see
         # _reflow_widget_dock) rather than each pill owning a fixed edge --
@@ -1840,6 +1856,7 @@ class JarvisUI(QWidget):
         self.mqtt_thread.todo_status_signal.connect(self._handle_todo_status)
         self.mqtt_thread.note_status_signal.connect(self._handle_note_status)
         self.mqtt_thread.calendar_status_signal.connect(self._handle_calendar_data)
+        self.mqtt_thread.claude_screen_signal.connect(self._handle_claude_screen)
         self.mqtt_thread.start()
 
         # Only restore fullscreen mode -- and any dashboard widgets that were
@@ -2079,6 +2096,22 @@ class JarvisUI(QWidget):
                 else:
                     self.close_draggable_widget(widget_id)
 
+    def _toggle_claude(self):
+        if getattr(self, 'is_fullscreen', False):
+            widget_id = "widget_claude"
+            if widget_id not in self.active_widgets:
+                claude_widget = ClaudeWidget()
+                claude_widget.update_screen(self._last_claude_screen_text)
+                self.spawn_widget(widget_id, "Claude", claude_widget)
+            else:
+                w = self.active_widgets[widget_id]
+                if w.isHidden():
+                    w.show()
+                    w.raise_(); self._enforce_z_order()
+                    self.save_ui_state()
+                else:
+                    self.close_draggable_widget(widget_id)
+
     def _toggle_settings(self):
         if getattr(self, 'is_fullscreen', False):
             widget_id = "widget_settings"
@@ -2195,6 +2228,14 @@ class JarvisUI(QWidget):
             wrapper = self.active_widgets[widget_id]
             if isinstance(wrapper.content_widget, NoteWidget):
                 wrapper.content_widget.update_status(data)
+
+    def _handle_claude_screen(self, data):
+        self._last_claude_screen_text = data.get("text", "")
+        widget_id = "widget_claude"
+        if widget_id in self.active_widgets:
+            wrapper = self.active_widgets[widget_id]
+            if isinstance(wrapper.content_widget, ClaudeWidget):
+                wrapper.content_widget.update_screen(self._last_claude_screen_text)
 
     def _handle_calendar_data(self, data):
         if hasattr(self, 'calendar_drawer'):
@@ -2674,6 +2715,7 @@ class JarvisUI(QWidget):
             self.btn_notes.show()
             self.btn_settings.show()
             self.btn_updates.show()
+            self.btn_claude.show()
             self.btn_calendar.show()
             self.pill_mic.show()
             self.pill_speaker.show()
@@ -2798,6 +2840,7 @@ class JarvisUI(QWidget):
             self.btn_notes.hide()
             self.btn_settings.hide()
             self.btn_updates.hide()
+            self.btn_claude.hide()
             self.btn_debug.hide()
             self.btn_calendar.hide()
             self.pill_mic.hide()
@@ -3092,6 +3135,11 @@ class JarvisUI(QWidget):
                         if widget_id not in self.active_widgets:
                             update_widget = UpdateWidget()
                             self.spawn_widget(widget_id, "System Updates", update_widget)
+                    elif widget_id == "widget_claude":
+                        if widget_id not in self.active_widgets:
+                            claude_widget = ClaudeWidget()
+                            claude_widget.update_screen(self._last_claude_screen_text)
+                            self.spawn_widget(widget_id, "Claude", claude_widget)
 
                     if widget_id in self.active_widgets:
                         w = self.active_widgets[widget_id]

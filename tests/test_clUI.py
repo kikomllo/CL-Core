@@ -990,6 +990,57 @@ class TestFullscreenSwitchPreservesLiveWidgetState:
         assert not w.isHidden(), "an already-live widget must not be re-hidden by a stale on-disk snapshot"
 
 
+class TestClaudeWidgetShowsCachedScreenOnReopen:
+    """jarvis/claude/screen is retained, so it can arrive before the widget is
+    ever opened (e.g. right at MQTT connect) -- _handle_claude_screen must
+    cache it regardless of whether the widget is currently open, and a freshly
+    spawned/reopened ClaudeWidget must be populated from that cache
+    immediately instead of starting blank until the next real change. Found
+    live: the widget stayed empty across every fullscreen open/close/reopen
+    until new Claude output happened to arrive on its own."""
+
+    @pytest.fixture(autouse=True)
+    def no_real_mqtt_thread(self, mocker):
+        import clUI
+        mocker.patch.object(clUI.MqttThread, "start")
+
+    def test_screen_update_is_cached_even_when_the_widget_is_not_open(self, qapp, fake_state_file, mocker):
+        import clUI
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "0"})
+        with open(fake_state_file, "w") as f:
+            json.dump({"is_fullscreen": False, "current_monitor_idx": 0, "active_widgets": {}}, f)
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            ui = clUI.JarvisUI()
+            assert "widget_claude" not in ui.active_widgets
+
+            ui._handle_claude_screen({"text": "hello from claude"})
+
+        assert ui._last_claude_screen_text == "hello from claude"
+
+    def test_reopening_the_widget_shows_the_cached_screen_immediately(self, qapp, fake_state_file, mocker):
+        import clUI
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "0"})
+        with open(fake_state_file, "w") as f:
+            json.dump({"is_fullscreen": False, "current_monitor_idx": 0, "active_widgets": {}}, f)
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            ui = clUI.JarvisUI()
+            ui.is_fullscreen = True
+            ui._handle_claude_screen({"text": "> is the door locked\n\nYes, it's locked."})
+
+            ui._toggle_claude()  # first open
+            wrapper = ui.active_widgets["widget_claude"]
+            assert wrapper.content_widget.screen_view.toPlainText() == "> is the door locked\n\nYes, it's locked."
+
+            ui._toggle_claude()  # close -- close_draggable_widget really destroys it
+            assert "widget_claude" not in ui.active_widgets
+
+            ui._toggle_claude()  # reopen -- must not be blank
+            wrapper2 = ui.active_widgets["widget_claude"]
+            assert wrapper2.content_widget.screen_view.toPlainText() == "> is the door locked\n\nYes, it's locked."
+
+
 class TestOverlaySwitchHidesDebugButton:
     """set_overlay's hide-list was missing btn_debug -- set_fullscreen shows
     it whenever ECOSYSTEM_STATE is 'debug', but switching back to overlay
