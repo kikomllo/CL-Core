@@ -157,9 +157,10 @@ class TestClaudeBridgeRouting:
         mock_bridge.write.assert_called_once_with("is this working")
 
     @pytest.mark.asyncio
-    async def test_raw_keys_are_sent_via_send_keys_not_write(self, service, mock_mqtt, message_stream, mocker):
+    async def test_raw_keys_are_sent_via_send_raw_keys_not_write(self, service, mock_mqtt, message_stream, mocker):
         """The trust-menu and similar confirm screens need arrow keys, not
-        typed text -- 'keys' payloads must route to send_keys(), not write()."""
+        typed text -- 'keys' payloads must route to send_raw_keys() (each backend
+        types them as real keyboard input), not write()."""
         mock_bridge = MagicMock()
         mock_bridge.is_alive.return_value = True
         service.bridge = mock_bridge
@@ -171,7 +172,7 @@ class TestClaudeBridgeRouting:
 
         await service.run()
 
-        mock_bridge.send_keys.assert_called_once_with("\x1bOB\r")
+        mock_bridge.send_raw_keys.assert_called_once_with("\x1bOB\r")
         mock_bridge.write.assert_not_called()
 
     @pytest.mark.asyncio
@@ -355,6 +356,24 @@ class TestScreenUpdatePublishing:
         service._on_claude_screen_update(padded)
 
         publish.assert_called_once_with("hello\n\nworld")
+
+    def test_cursor_is_published_with_the_screen_and_a_cursor_only_change_republishes(self, service, mocker):
+        service.mqtt_client = MagicMock()
+        service.loop = MagicMock()
+        service.bridge = MagicMock()
+        service.bridge.cursor = (2, 5)
+        publish = mocker.patch.object(service, "_publish_screen")
+        scheduled = mocker.patch("asyncio.run_coroutine_threadsafe")
+
+        service._on_claude_screen_update("frame A")
+        publish.assert_called_once_with("frame A", (2, 5))
+
+        service._on_claude_screen_update("frame A")
+        assert scheduled.call_count == 1  # identical text + cursor is not republished
+
+        service.bridge.cursor = (3, 5)
+        service._on_claude_screen_update("frame A")
+        assert scheduled.call_count == 2
 
     def test_padding_only_changes_do_not_republish(self, service, mocker):
         service.mqtt_client = MagicMock()

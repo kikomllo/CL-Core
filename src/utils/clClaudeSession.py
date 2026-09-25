@@ -193,6 +193,11 @@ class ClaudeSessionBase:
         send it. Backend-specific."""
         raise NotImplementedError
 
+    def send_raw_keys(self, raw: str):
+        """Raw terminal input from the widget's keyboard capture. Backends whose send_keys()
+        takes raw bytes (ConPTY) need nothing more; tmux backends override this."""
+        self.send_keys(raw)
+
     def send_control_key(self, token: str):
         """Public entry point for a widget/UI-driven key press (Esc, Shift+Tab,
         arrow keys) -- goes through the same backend-neutral token mapping as

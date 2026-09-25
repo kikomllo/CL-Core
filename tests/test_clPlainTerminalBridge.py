@@ -119,3 +119,16 @@ class TestResize:
         )
         assert bridge.COLS == 100
         assert bridge.ROWS == 30
+
+
+class TestSendRawKeys:
+    def test_text_with_spaces_is_sent_literally(self, mocker):
+        bridge = _bridge()
+        mocker.patch.object(PlainTerminalBridge, "is_alive", return_value=True)
+        run = mocker.patch("subprocess.run")
+
+        bridge.send_raw_keys("ls -la")
+
+        run.assert_called_once_with(
+            ["tmux", "send-keys", "-t", bridge.SESSION_NAME, "-l", "ls -la"], check=True
+        )

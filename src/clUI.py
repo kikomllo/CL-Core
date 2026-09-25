@@ -1732,6 +1732,7 @@ class JarvisUI(QWidget):
         # opened (e.g. right at MQTT connect) -- cached here so a freshly spawned/reopened
         # ClaudeWidget starts populated instead of blank until the next real change.
         self._last_claude_screen_text = ""
+        self._last_claude_screen_cursor = None
 
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_animation)
@@ -2105,7 +2106,7 @@ class JarvisUI(QWidget):
             widget_id = "widget_claude"
             if widget_id not in self.active_widgets:
                 claude_widget = ClaudeWidget()
-                claude_widget.update_screen(self._last_claude_screen_text)
+                claude_widget.update_screen(self._last_claude_screen_text, self._last_claude_screen_cursor)
                 self.spawn_widget(widget_id, "Claude", claude_widget)
             else:
                 w = self.active_widgets[widget_id]
@@ -2235,11 +2236,12 @@ class JarvisUI(QWidget):
 
     def _handle_claude_screen(self, data):
         self._last_claude_screen_text = data.get("text", "")
+        self._last_claude_screen_cursor = data.get("cursor")
         widget_id = "widget_claude"
         if widget_id in self.active_widgets:
             wrapper = self.active_widgets[widget_id]
             if isinstance(wrapper.content_widget, ClaudeWidget):
-                wrapper.content_widget.update_screen(self._last_claude_screen_text)
+                wrapper.content_widget.update_screen(self._last_claude_screen_text, self._last_claude_screen_cursor)
 
     def _handle_calendar_data(self, data):
         if hasattr(self, 'calendar_drawer'):
@@ -3159,7 +3161,7 @@ class JarvisUI(QWidget):
                     elif widget_id == "widget_claude":
                         if widget_id not in self.active_widgets:
                             claude_widget = ClaudeWidget()
-                            claude_widget.update_screen(self._last_claude_screen_text)
+                            claude_widget.update_screen(self._last_claude_screen_text, self._last_claude_screen_cursor)
                             self.spawn_widget(widget_id, "Claude", claude_widget)
 
                     if widget_id in self.active_widgets:

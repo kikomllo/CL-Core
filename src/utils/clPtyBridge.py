@@ -36,6 +36,11 @@ class ClaudePtyBridge(ClaudeSessionBase):
         "ESCAPE": "\x1b",
         "SHIFT_TAB": "\x1b[Z",
         "UP": "\x1bOA",
+        "LEFT": "\x1bOD",
+        "RIGHT": "\x1bOC",
+        "HOME": "\x1bOH",
+        "END": "\x1bOF",
+        "DELETE": "\x1b[3~",
         "DOWN": "\x1bOB",
     }
 
@@ -157,6 +162,7 @@ class ClaudePtyBridge(ClaudeSessionBase):
             self._screen.resize(lines=rows, columns=cols)
 
     def _emit_screen(self):
+        self.cursor = (self._screen.cursor.x, self._screen.cursor.y)
         self.process_screen("\n".join(self._screen.display))
 
     def stop(self):

@@ -224,10 +224,237 @@ class TestLocalEcho:
         assert view._pending == "a"
         on_keys.assert_called_once_with("\x7f")
 
-    def test_backspace_on_empty_pending_is_a_no_op(self, qapp):
+    def test_backspace_on_empty_pending_still_erases_text_already_in_the_cli(self, qapp):
         view, on_keys, _ = _view(qapp)
         view._backspace()
+        assert view._pending == ""
+        on_keys.assert_called_once_with("\x7f")
+
+    def test_ctrl_c_without_a_selection_sends_the_interrupt_byte(self, qapp):
+        view, on_keys, _ = _view(qapp)
+        view._insert("x")
+        on_keys.reset_mock()
+
+        view.keyPressEvent(make_key_event(Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier, "\x03"))
+
+        on_keys.assert_called_once_with("\x03")
+        assert view._pending == ""
+
+    def test_ctrl_c_with_a_selection_copies_instead_of_interrupting(self, qapp):
+        view, on_keys, _ = _view(qapp)
+        view.set_server_screen("hello")
+        view.selectAll()
+
+        view.keyPressEvent(make_key_event(Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier, "\x03"))
+
         on_keys.assert_not_called()
+
+    def test_other_ctrl_letters_are_forwarded_but_ctrl_z_is_not(self, qapp):
+        view, on_keys, _ = _view(qapp)
+
+        view.keyPressEvent(make_key_event(Qt.Key.Key_U, Qt.KeyboardModifier.ControlModifier, "\x15"))
+        on_keys.assert_called_once_with("\x15")
+        on_keys.reset_mock()
+
+        view.keyPressEvent(make_key_event(Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier, "\x1a"))
+        on_keys.assert_not_called()
+
+    def test_backspace_erases_server_text_in_the_mirror_and_typing_continues_at_the_cursor(self, qapp):
+        view, on_keys, _ = _view(qapp)
+        view.set_server_screen("─────\n\u276f commit this\n─────")
+
+        for _ in range(4):
+            view._backspace()
+        assert view.toPlainText().split("\n")[1] == "\u276f commit "
+
+        view._insert("x")
+        assert view.toPlainText().split("\n")[1] == "\u276f commit x"
+
+    def test_backspace_never_erases_into_the_prompt_marker(self, qapp):
+        view, _, _ = _view(qapp)
+        view.set_server_screen("─────\n\u276f ab\n─────")
+
+        for _ in range(10):
+            view._backspace()
+
+        assert view.toPlainText().split("\n")[1] == "\u276f "
+
+    def test_ctrl_u_clears_the_whole_editable_line_in_the_mirror(self, qapp):
+        view, _, _ = _view(qapp)
+        view.set_server_screen("─────\n\u276f some long text\n─────")
+
+        view.keyPressEvent(make_key_event(Qt.Key.Key_U, Qt.KeyboardModifier.ControlModifier, "\x15"))
+
+        assert view.toPlainText().split("\n")[1] == "\u276f "
+
+    def test_a_snapshot_that_diverges_from_the_prediction_is_adopted(self, qapp):
+        view, _, _ = _view(qapp)
+        view.set_server_screen("─────\n\u276f abc\n─────")
+        view._backspace()
+
+        view.set_server_screen("─────\n\u276f abcd\n─────")  # neither the old nor the predicted state
+
+        assert view.toPlainText().split("\n")[1] == "\u276f abcd"
+        assert view._ops == []
+
+    def test_local_text_never_starts_inside_the_prompt_padding(self, qapp):
+        # The backend trims the trailing space of an empty "❯ " prompt, so the row arrives as "❯".
+        view, _, _ = _view(qapp)
+        view.set_server_screen("─────\n\u276f\n─────")
+
+        view._insert("a")
+
+        assert view.toPlainText().split("\n")[1] == "\u276f a"
+
+    def test_local_edits_are_dropped_if_no_snapshot_confirms_them(self, qapp):
+        view, _, _ = _view(qapp)
+        view.set_server_screen("─────\n\u276f\n─────")
+        view._insert("a")
+
+        view._drop_local_edits()  # what the reconcile timer fires
+
+        assert view.toPlainText().split("\n")[1] == "\u276f "
+
+    def test_cursor_follows_the_backend_when_idle_and_the_predicted_line_when_typing(self, qapp):
+        view, _, _ = _view(qapp)
+        view.set_server_screen("─────\n\u276f abc\n─────", cursor=[5, 1])
+        assert view._cursor_cell() == (1, 5)
+
+        view._insert("d")
+
+        assert view._cursor_cell() == (1, len("\u276f abcd"))
+
+    def test_typing_a_space_keeps_it_even_though_the_server_row_is_trimmed(self, qapp):
+        view, _, _ = _view(qapp)
+        # Real CLI line is "\u276f hello " (cursor after the space) but the published row is trimmed.
+        view.set_server_screen("─────\n\u276f hello\n─────", cursor=[8, 1])
+
+        view._insert("w")
+
+        assert view.toPlainText().split("\n")[1] == "\u276f hello w"
+
+    def test_backspace_after_a_trimmed_trailing_space_erases_that_space_first(self, qapp):
+        view, _, _ = _view(qapp)
+        view.set_server_screen("─────\n\u276f hello\n─────", cursor=[8, 1])
+
+        view._backspace()
+
+        assert view.toPlainText().split("\n")[1] == "\u276f hello"
+
+    def test_navigation_keys_are_forwarded_as_control_keys(self, qapp):
+        for key, token in ((Qt.Key.Key_Left, "LEFT"), (Qt.Key.Key_Right, "RIGHT"),
+                           (Qt.Key.Key_Home, "HOME"), (Qt.Key.Key_End, "END"), (Qt.Key.Key_Delete, "DELETE")):
+            view, _, on_control_key = _view(qapp)
+            view.keyPressEvent(make_key_event(key))
+            on_control_key.assert_called_once_with(token)
+
+    def test_no_local_prediction_while_the_cli_cursor_is_mid_line(self, qapp):
+        # Real state seen live: "\u276f testing" with the cursor parked at column 2 (after Ctrl+A).
+        view, on_keys, _ = _view(qapp)
+        view.set_server_screen("─────\n\u276f testing\n─────", cursor=[2, 1])
+
+        view._backspace()
+        view._insert("x")
+
+        assert view._pending == "" and view._erased == 0
+        assert [c.args[0] for c in on_keys.call_args_list] == ["\x7f", "x"]
+
+    def test_prediction_stops_after_a_cursor_moving_key_until_the_next_snapshot(self, qapp):
+        view, on_keys, _ = _view(qapp)
+        view.set_server_screen("─────\n\u276f abc\n─────", cursor=[5, 1])
+        view.keyPressEvent(make_key_event(Qt.Key.Key_Home))
+
+        view._insert("x")
+        assert view._pending == ""
+
+        view.set_server_screen("─────\n\u276f xabc\n─────", cursor=[3, 1])
+        assert view._uncertain is False
+
+    def test_a_stale_snapshot_keeps_the_prediction_until_the_cli_catches_up(self, qapp):
+        view, _, _ = _view(qapp)
+        view.set_server_screen("─────\n\u276f abcd\n─────")
+        view._backspace()
+        view._backspace()
+
+        view.set_server_screen("─────\n\u276f abcd\n─────")  # CLI hasn't processed either yet
+        assert view.toPlainText().split("\n")[1] == "\u276f ab"
+
+        view.set_server_screen("─────\n\u276f abc\n─────")  # processed the first only
+        assert view.toPlainText().split("\n")[1] == "\u276f ab"
+
+        view.set_server_screen("─────\n\u276f ab\n─────")  # caught up
+        assert view.toPlainText().split("\n")[1] == "\u276f ab"
+        assert view._ops == []
+
+    def test_typing_through_lagging_snapshots_does_not_flicker(self, qapp):
+        view, _, _ = _view(qapp)
+        view.set_server_screen("─────\n\u276f\n─────", cursor=[2, 1])
+        for ch in "hey":
+            view._insert(ch)
+
+        view.set_server_screen("─────\n\u276f h\n─────", cursor=[3, 1])
+        assert view.toPlainText().split("\n")[1] == "\u276f hey"
+
+        view.set_server_screen("─────\n\u276f hey\n─────", cursor=[5, 1])
+        assert view.toPlainText().split("\n")[1] == "\u276f hey"
+        assert view._ops == []
+
+    def test_ctrl_a_selects_the_line_without_moving_the_cli_cursor(self, qapp):
+        view, on_keys, _ = _view(qapp)
+        view.set_server_screen("─────\n\u276f hello\n─────", cursor=[7, 1])
+
+        view.keyPressEvent(make_key_event(Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier, "\x01"))
+
+        on_keys.assert_not_called()
+        assert view._selected is True
+        assert len(view.extraSelections()) == 1
+
+    def test_backspace_on_a_selected_line_clears_it_everywhere(self, qapp):
+        view, on_keys, _ = _view(qapp)
+        view.set_server_screen("─────\n\u276f hello\n─────", cursor=[7, 1])
+        view.keyPressEvent(make_key_event(Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier, "\x01"))
+
+        view.keyPressEvent(make_key_event(Qt.Key.Key_Backspace))
+
+        assert view.toPlainText().split("\n")[1] == "\u276f "
+        on_keys.assert_called_once_with("\x05\x15")
+        assert view._selected is False
+
+    def test_typing_over_a_selected_line_replaces_it(self, qapp):
+        view, on_keys, _ = _view(qapp)
+        view.set_server_screen("─────\n\u276f hello\n─────", cursor=[7, 1])
+        view.keyPressEvent(make_key_event(Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier, "\x01"))
+
+        view.keyPressEvent(make_key_event(Qt.Key.Key_X, Qt.KeyboardModifier.NoModifier, "x"))
+
+        assert view.toPlainText().split("\n")[1] == "\u276f x"
+        assert [c.args[0] for c in on_keys.call_args_list] == ["\x05\x15", "x"]
+
+    def test_ctrl_c_on_a_selected_line_copies_it_instead_of_interrupting(self, qapp):
+        from PyQt6.QtWidgets import QApplication
+        view, on_keys, _ = _view(qapp)
+        view.set_server_screen("─────\n\u276f hello\n─────", cursor=[7, 1])
+        view.keyPressEvent(make_key_event(Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier, "\x01"))
+
+        view.keyPressEvent(make_key_event(Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier, "\x03"))
+
+        on_keys.assert_not_called()
+        assert QApplication.clipboard().text() == "hello"
+
+    def test_moving_the_cursor_deselects_the_line(self, qapp):
+        view, _, on_control_key = _view(qapp)
+        view.set_server_screen("─────\n\u276f hello\n─────", cursor=[7, 1])
+        view.keyPressEvent(make_key_event(Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier, "\x01"))
+
+        view.keyPressEvent(make_key_event(Qt.Key.Key_Left))
+
+        assert view._selected is False
+        on_control_key.assert_called_once_with("LEFT")
+
+    def test_view_refuses_focus_traversal_so_tab_keys_reach_key_press_event(self, qapp):
+        view, _, _ = _view(qapp)
+        assert view.focusNextPrevChild(True) is False
+        assert view.focusNextPrevChild(False) is False
 
     def test_new_server_screen_drops_the_local_overlay(self, qapp):
         view, on_keys, _ = _view(qapp)

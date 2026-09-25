@@ -113,20 +113,32 @@ class ClaudeBridgeService:
         if self.mode == "terminal":
             self._publish_if_active(screen_text)
 
-    def _publish_if_active(self, screen_text: str):
-        if screen_text == self._last_published_screen:
-            return
-        self._last_published_screen = screen_text
-        if self.loop and self.mqtt_client:
-            asyncio.run_coroutine_threadsafe(self._publish_screen(screen_text), self.loop)
+    def _active_cursor(self):
+        backend = self.bridge if self.mode == "claude" else self.terminal_bridge
+        cursor = getattr(backend, "cursor", None)
+        if isinstance(cursor, (tuple, list)) and len(cursor) == 2 and all(isinstance(v, int) for v in cursor):
+            return (cursor[0], cursor[1])
+        return None
 
-    async def _publish_screen(self, screen_text: str):
+    def _publish_if_active(self, screen_text: str):
+        cursor = self._active_cursor()
+        if (screen_text, cursor) == self._last_published_screen:
+            return
+        self._last_published_screen = (screen_text, cursor)
+        if self.loop and self.mqtt_client:
+            coro = self._publish_screen(screen_text, cursor) if cursor else self._publish_screen(screen_text)
+            asyncio.run_coroutine_threadsafe(coro, self.loop)
+
+    async def _publish_screen(self, screen_text: str, cursor=None):
+        payload = {"text": screen_text}
+        if cursor:
+            payload["cursor"] = list(cursor)
         try:
             # Retained so a widget (or anything else) that subscribes after
             # the last change still sees the current screen immediately,
             # instead of a blank view until the next update happens to fire.
             await self.mqtt_client.publish(
-                "jarvis/claude/screen", json.dumps({"text": screen_text}, ensure_ascii=False), retain=True
+                "jarvis/claude/screen", json.dumps(payload, ensure_ascii=False), retain=True
             )
         except Exception as e:
             logging.error(f"[CLAUDE BRIDGE] Failed to publish screen update: {e}")
@@ -336,7 +348,7 @@ class ClaudeBridgeService:
                                     active_bridge.send_control_key(control_key)
                                     logging.info(f"[CLAUDE BRIDGE] Sent control key: {control_key!r}")
                                 elif keys:
-                                    active_bridge.send_keys(keys)
+                                    active_bridge.send_raw_keys(keys)
                                     logging.info(f"[CLAUDE BRIDGE] Sent raw keys: {keys!r}")
                                 else:
                                     if self.mode == "claude":

@@ -27,6 +27,58 @@ from utils.clClaudeSession import ClaudeSessionBase
 _O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 
 
+_RAW_KEY_NAMES = {"\x7f": "BSpace", "\b": "BSpace", "\t": "Tab", "\r": "Enter", "\n": "Enter", "\x1b": "Escape"}
+
+
+def send_raw_to_tmux(session: str, raw: str):
+    """Types raw terminal input (what a real keyboard produces) into a tmux session: plain
+    text goes literally via -l, control characters become their tmux key names."""
+    literal = []
+
+    def flush():
+        if literal:
+            subprocess.run(["tmux", "send-keys", "-t", session, "-l", "".join(literal)], check=True)
+            literal.clear()
+
+    for ch in raw.replace("\r\n", "\n"):
+        name = _RAW_KEY_NAMES.get(ch)
+        if name is None and "\x01" <= ch <= "\x1a":
+            name = "C-" + chr(ord(ch) + 96)
+        if name:
+            flush()
+            subprocess.run(["tmux", "send-keys", "-t", session, name], check=True)
+        else:
+            literal.append(ch)
+    flush()
+
+
+def read_tmux_cursor(session: str):
+    """Cursor as (col, row) in the same joined-line space capture-pane -J produces, or None.
+    Wrapped lines make pane rows differ from joined rows, so the row is recounted from a joined
+    capture up to the cursor; the column is offset by the wraps when the line is wider than the pane."""
+    try:
+        info = subprocess.run(
+            ["tmux", "display", "-p", "-t", session, "#{cursor_x} #{cursor_y} #{window_width}"],
+            capture_output=True, text=True,
+        )
+        cx, cy, cols = (int(v) for v in info.stdout.split())
+        joined = subprocess.run(
+            ["tmux", "capture-pane", "-p", "-J", "-t", session, "-S", "0", "-E", str(cy)],
+            capture_output=True, text=True,
+        ).stdout
+    except (OSError, ValueError):
+        return None
+    rows = joined.split("\n")
+    if rows and rows[-1] == "":
+        rows.pop()
+    if not rows:
+        return None
+    last = rows[-1].rstrip()
+    if cols > 0 and len(last) > cols:
+        cx += cols * ((len(last) - 1) // cols)
+    return (cx, len(rows) - 1)
+
+
 class ClaudeTmuxBridge(ClaudeSessionBase):
     SESSION_NAME = "jarvis-claude"
     BINARY_NAME = "claude"
@@ -108,9 +160,14 @@ class ClaudeTmuxBridge(ClaudeSessionBase):
             raise RuntimeError("tmux session is not alive")
         subprocess.run(["tmux", "send-keys", "-t", self.SESSION_NAME] + keys.split(), check=True)
 
+    def send_raw_keys(self, raw: str):
+        if not self.is_alive():
+            raise RuntimeError("tmux session is not alive")
+        send_raw_to_tmux(self.SESSION_NAME, raw)
+
     # tmux's own key name for Shift+Tab doesn't follow the plain title-case
     # pattern every other token happens to resolve to (e.g. "down enter" -> "Down Enter").
-    _CONTROL_KEY_OVERRIDES = {"SHIFT_TAB": "BTab"}
+    _CONTROL_KEY_OVERRIDES = {"SHIFT_TAB": "BTab", "DELETE": "DC"}
 
     def _send_control_keys(self, token: str):
         self.send_keys(self._CONTROL_KEY_OVERRIDES.get(token, token.title()))
@@ -193,6 +250,7 @@ class ClaudeTmuxBridge(ClaudeSessionBase):
             capture_output=True, text=True,
         )
         if result.returncode == 0:
+            self.cursor = read_tmux_cursor(self.SESSION_NAME)
             self.process_screen(result.stdout.rstrip("\n"))
 
     def stop(self):

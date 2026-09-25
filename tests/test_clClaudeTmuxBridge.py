@@ -6,7 +6,7 @@ import sys
 from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
-from utils.clClaudeTmuxBridge import ClaudeTmuxBridge
+from utils.clClaudeTmuxBridge import ClaudeTmuxBridge, read_tmux_cursor
 
 
 def _bridge(cwd="."):
@@ -110,6 +110,15 @@ class TestWriteAndSendKeys:
         bridge._send_control_keys("DOWN ENTER")
 
         send_keys.assert_called_once_with("Down Enter")
+
+    def test_delete_token_uses_tmux_dc_name(self, mocker):
+        bridge = _bridge()
+        send_keys = mocker.patch.object(bridge, "send_keys")
+
+        bridge._send_control_keys("DELETE")
+        bridge._send_control_keys("LEFT")
+
+        assert [c.args[0] for c in send_keys.call_args_list] == ["DC", "Left"]
 
     def test_shift_tab_token_uses_tmux_btab_override(self, mocker):
         """Plain title-casing would produce 'Shift_Tab', which tmux doesn't
@@ -215,5 +224,75 @@ class TestScreenCapture:
 
         bridge._emit_screen()
 
-        args = run.call_args[0][0]
+        args = run.call_args_list[0][0][0]
         assert args[:4] == ["tmux", "capture-pane", "-p", "-J"]
+
+
+class TestSendRawKeys:
+    """The widget forwards real keyboard input (spaces, tabs, backspace, pasted
+    text). tmux's key-name send_keys() would drop whitespace and read words like
+    'Up' as keys, so raw input goes through literal (-l) sends instead."""
+
+    def _sent(self, run):
+        return [c[0][0][4:] for c in run.call_args_list]
+
+    def test_plain_text_including_spaces_is_sent_literally(self, mocker):
+        bridge = _bridge()
+        mocker.patch.object(ClaudeTmuxBridge, "is_alive", return_value=True)
+        run = mocker.patch("subprocess.run")
+
+        bridge.send_raw_keys("echo a Up")
+
+        assert self._sent(run) == [["-l", "echo a Up"]]
+
+    def test_control_characters_become_tmux_key_names(self, mocker):
+        bridge = _bridge()
+        mocker.patch.object(ClaudeTmuxBridge, "is_alive", return_value=True)
+        run = mocker.patch("subprocess.run")
+
+        bridge.send_raw_keys("ab\x7f\tc\r\nd")
+
+        assert self._sent(run) == [["-l", "ab"], ["BSpace"], ["Tab"], ["-l", "c"], ["Enter"], ["-l", "d"]]
+
+    def test_raises_if_session_not_alive(self, mocker):
+        import pytest
+        bridge = _bridge()
+        mocker.patch.object(ClaudeTmuxBridge, "is_alive", return_value=False)
+        with pytest.raises(RuntimeError, match="not alive"):
+            bridge.send_raw_keys("x")
+
+    def test_ctrl_letter_bytes_become_tmux_ctrl_key_names(self, mocker):
+        bridge = _bridge()
+        mocker.patch.object(ClaudeTmuxBridge, "is_alive", return_value=True)
+        run = mocker.patch("subprocess.run")
+
+        bridge.send_raw_keys("\x03\x15")
+
+        assert self._sent(run) == [["C-c"], ["C-u"]]
+
+
+class TestReadTmuxCursor:
+    """The widget draws the real CLI cursor, so it needs the cursor in the same joined-line
+    coordinates the published screen text uses."""
+
+    @staticmethod
+    def _run(mocker, display_out, joined_out):
+        outs = iter([display_out, joined_out])
+        return mocker.patch("subprocess.run", side_effect=lambda *a, **k: MagicMock(returncode=0, stdout=next(outs)))
+
+    def test_plain_cursor_is_reported_as_col_row(self, mocker):
+        self._run(mocker, "2 3 120\n", "a\nb\nc\n\u276f\n")
+        assert read_tmux_cursor("s") == (2, 3)
+
+    def test_blank_cursor_row_still_counts_as_a_row(self, mocker):
+        self._run(mocker, "0 2 120\n", "a\n\n\n")
+        assert read_tmux_cursor("s") == (0, 2)
+
+    def test_wrapped_line_offsets_the_column_and_uses_joined_rows(self, mocker):
+        long = "x" * 130
+        self._run(mocker, "10 5 100\n", "a\n" + long + "\n")
+        assert read_tmux_cursor("s") == (10 + 100, 1)
+
+    def test_unparseable_output_gives_none(self, mocker):
+        self._run(mocker, "", "")
+        assert read_tmux_cursor("s") is None

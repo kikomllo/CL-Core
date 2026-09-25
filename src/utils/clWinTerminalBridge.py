@@ -80,6 +80,9 @@ class WinTerminalBridge:
                 raise RuntimeError("terminal session is not alive")
             self._pty.write(raw)
 
+    def send_raw_keys(self, raw: str):
+        self.send_keys(raw)
+
     # Maps the widget's backend-neutral control-key tokens (shared with
     # ClaudeSessionBase's subclasses) onto raw ConPTY escape bytes. "ESCAPE" becomes
     # Ctrl-C here, same as PlainTerminalBridge's own mapping -- a shell has no TUI to
@@ -88,6 +91,11 @@ class WinTerminalBridge:
         "ESCAPE": "\x03",
         "SHIFT_TAB": "\x1b[Z",
         "UP": "\x1bOA",
+        "LEFT": "\x1bOD",
+        "RIGHT": "\x1bOC",
+        "HOME": "\x1bOH",
+        "END": "\x1bOF",
+        "DELETE": "\x1b[3~",
         "DOWN": "\x1bOB",
         "ENTER": "\r",
     }
@@ -134,6 +142,7 @@ class WinTerminalBridge:
         self._running = False
 
     def _emit_screen(self):
+        self.cursor = (self._screen.cursor.x, self._screen.cursor.y)
         try:
             self._on_screen_update("\n".join(self._screen.display))
         except Exception as e:

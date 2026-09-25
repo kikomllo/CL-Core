@@ -19,6 +19,8 @@ import threading
 import time
 from typing import Callable, Optional
 
+from utils.clClaudeTmuxBridge import read_tmux_cursor, send_raw_to_tmux
+
 
 class PlainTerminalBridge:
     SESSION_NAME = "jarvis-terminal"
@@ -76,12 +78,18 @@ class PlainTerminalBridge:
             raise RuntimeError("terminal session is not alive")
         subprocess.run(["tmux", "send-keys", "-t", self.SESSION_NAME] + keys.split(), check=True)
 
+    def send_raw_keys(self, raw: str):
+        if not self.is_alive():
+            raise RuntimeError("terminal session is not alive")
+        send_raw_to_tmux(self.SESSION_NAME, raw)
+
     # Maps the widget's backend-neutral control-key tokens (shared with ClaudeSessionBase's
     # subclasses) onto a plain shell's own conventions -- "ESCAPE" becomes Ctrl-C here, since
     # a shell has no TUI to escape out of but does have a running command to interrupt.
     _CONTROL_KEY_MAP = {
         "ESCAPE": "C-c",
         "SHIFT_TAB": "BTab",
+        "DELETE": "DC",
     }
 
     def send_control_key(self, token: str):
@@ -161,6 +169,7 @@ class PlainTerminalBridge:
             capture_output=True, text=True,
         )
         if result.returncode == 0:
+            self.cursor = read_tmux_cursor(self.SESSION_NAME)
             try:
                 self._on_screen_update(result.stdout.rstrip("\n"))
             except Exception as e:

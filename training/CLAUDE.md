@@ -1,0 +1,21 @@
+# training/ context
+
+Loaded automatically when working under `training/`. See the root `CLAUDE.md` for everything else.
+
+## SLM fine-tuning pipeline
+
+Everything training-related — dataset generators, Kaggle/Colab notebook scripts, benchmark tooling, and the generated `.jsonl` datasets themselves — lives under `training/` (`training/tools/`, `training/data/`), deliberately separated from the runtime ecosystem so it reads as its own self-contained sub-project. `config/intents.json` and `config/grammars/intent_schema.gbnf` stay in `config/` regardless, since both are also consumed at runtime (`nlp/clIntentEngine.py`, `nlp/clSLM.py`) — only `training/tools/gen_dataset.py` writes to the latter. A dedicated `training/.venv` (or `.venv-train` before it's relocated) holds the heavy training-only dependencies (`torch`, `unsloth`, `bitsandbytes`, `trl`, `peft`, `accelerate`) — kept out of the main ecosystem venv entirely, since runtime inference only ever needs `llama-cpp-python`, not a training stack.
+
+There are two separate models: the **action model** (Qwen2.5-0.5B-Instruct, grammar-constrained, classifies intent into `action_id`/args) and the **reply model** (SmolLM2-360M-Instruct, no grammar, phrases a spoken JARVIS-voiced confirmation for an already-decided action). A change to `config/intents.json` — a new intent, a changed template — generally needs both models regenerated and retrained together, since the action model's grammar and the reply model's phrase bank both key off the same intent set.
+
+1. `python training/tools/gen_dataset.py` — regenerates **both** `training/data/synthetic_lora_dataset.jsonl` and `config/grammars/intent_schema.gbnf` (the action model's inputs) from `config/intents.json` in one pass. These two outputs must stay in lockstep, so the `.gbnf` file is auto-generated and headed "do not hand-edit" — its `action_id`/`action` enums are derived directly from `intents.json`. Change intents, then re-run this script; never hand-edit the grammar.
+2. `python training/tools/gen_reply_dataset.py` — regenerates `training/data/reply_lora_dataset.jsonl` (the reply model's input) from `config/intents.json` plus its own hand-written `PHRASE_BANK`/`SLOTTED_PHRASES`/`FOLLOWUP_PHRASES` in the script. A new intent needs a `PHRASE_BANK` entry here to get a spoken confirmation at all; without one it's silently skipped. `training/tools/listen_reply_samples.py` plays samples from this dataset aloud (matching the live TTS voice exactly) to judge phrasing/tone before committing to a retrain.
+3. Training — either copy cells into a Kaggle (or Colab) notebook, or run locally against a CUDA GPU using `training/.venv`:
+   - `training/tools/kaggle_train_all.py` — trains **both** models in one run (action model, then frees GPU memory, then reply model); the normal path when both datasets changed together. On Kaggle/Colab, needs both `.jsonl` files added as notebook inputs; run locally, it finds them under `training/data/` automatically.
+   - `training/tools/kaggle_train.py` / `training/tools/kaggle_reply_train.py` — the same two phases as standalone scripts, for retraining just one model.
+4. `python training/tools/benchmark_slm.py` — runs `training/data/benchmark_suite.json` against the action model's GGUF under `config/grammars/intent_schema.gbnf` (grammar-constrained decoding via `llama-cpp-python`) and reports per-category pass rates. Run this before promoting a new GGUF into `config/core.json`'s `slm_settings.model_path` (the reply model has no equivalent pass/fail benchmark — judge it by ear via `listen_reply_samples.py` instead, and point `reply_slm_settings.model_path` at it once trained).
+
+## Model config
+
+- The live daemon's SLM model path is `config/core.json` → `settings.slm_settings.model_path`, independent of the hardcoded `MODEL_PATH` in `training/tools/benchmark_slm.py` — keep both pointed at the same GGUF when swapping in a newly trained model.
+- Both `slm_settings` and `reply_slm_settings` in `core.json` also carry a `model_url` — if `model_path` isn't present under `models/` at boot, `nlp/clSLM.py`'s `ensure_gguf_exists()` downloads it from there (e.g. a Hugging Face `resolve/main/...` link). Neither GGUF is a stock model, so there's no hardcoded fallback URL; an empty `model_url` with a missing file just disables that engine with a clear log message instead of crashing.
