@@ -86,6 +86,8 @@ class ClaudeWidget(QWidget):
         self.screen_view.setStyleSheet(Theme.get_style("LogViewer"))
         layout.addWidget(self.screen_view, stretch=1)
 
+        layout.addLayout(self._build_control_key_row())
+
         input_row = QHBoxLayout()
         input_row.setSpacing(6)
 
@@ -104,6 +106,35 @@ class ClaudeWidget(QWidget):
         input_row.addWidget(self.send_btn)
 
         layout.addLayout(input_row)
+
+    # (label, backend-neutral token) -- see ClaudeSessionBase.send_control_key(). These are the
+    # keys the /terminal mode has no other way to send at all (no interrupt capability otherwise)
+    # and the ones a menu (trust prompt, permission prompt) needs that plain typing can't produce.
+    CONTROL_KEYS = [
+        ("Esc", "ESCAPE"),
+        ("Shift+Tab", "SHIFT_TAB"),
+        ("↑", "UP"),
+        ("↓", "DOWN"),
+        ("Enter", "ENTER"),
+    ]
+
+    def _build_control_key_row(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        for label, token in self.CONTROL_KEYS:
+            btn = QPushButton(label)
+            btn.setFixedHeight(26)
+            btn.setStyleSheet(Theme.get_style("SecondaryButton"))
+            btn.clicked.connect(lambda checked=False, t=token: self._send_control_key(t))
+            row.addWidget(btn)
+        row.addStretch(1)
+        return row
+
+    def _send_control_key(self, token: str):
+        try:
+            self.router.dispatch("claude.control_key", control_key=token)
+        except Exception:
+            pass
 
     def submit_message(self):
         text = self.input.text().strip()

@@ -33,6 +33,10 @@ class ClaudePtyBridge(ClaudeSessionBase):
     _CONTROL_KEY_MAP = {
         "DOWN ENTER": "\x1bOB\r",
         "ENTER": "\r",
+        "ESCAPE": "\x1b",
+        "SHIFT_TAB": "\x1b[Z",
+        "UP": "\x1bOA",
+        "DOWN": "\x1bOB",
     }
 
     def __init__(self, cwd: str, on_screen_update: Callable[[str], None],

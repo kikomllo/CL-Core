@@ -135,6 +135,17 @@ class TestTrustPromptAutoAnswer:
         assert session._answered_screen is None
 
 
+class TestSendControlKey:
+    """send_control_key() is the public entry point a widget uses to press
+    Esc/Shift+Tab/arrows -- it must go through the same backend-specific
+    _send_control_keys() translation as the internal auto-answers."""
+
+    def test_delegates_to_backend_specific_translation(self):
+        session = _session()
+        session.send_control_key("ESCAPE")
+        assert session.sent_tokens == ["ESCAPE"]
+
+
 class TestStallDetection:
     def test_silent_busy_session_reports_a_stall_once(self):
         on_stall = MagicMock()

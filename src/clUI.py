@@ -1723,6 +1723,10 @@ class JarvisUI(QWidget):
         
         # Dashboard Management
         self.active_widgets = {}
+        # Closing a widget (close_draggable_widget) destroys it outright, so its position
+        # drops out of active_widgets and ui_state.json with it -- this keeps last position/size
+        # for the rest of the running session, so reopening doesn't re-center every time.
+        self._closed_widget_geometry = {}
 
         # jarvis/claude/screen is retained, so this can arrive before the widget is ever
         # opened (e.g. right at MQTT connect) -- cached here so a freshly spawned/reopened
@@ -2485,6 +2489,14 @@ class JarvisUI(QWidget):
             natural = wrapper.sizeHint()
             wrapper.resize(max(natural.width(), min_w), max(natural.height(), min_h))
 
+        # A widget closed earlier this session (close_draggable_widget) remembers where it
+        # was -- reopening it should land back there, not re-center, since ui_state.json
+        # itself no longer has anything for it to restore from once it's been closed.
+        remembered = self._closed_widget_geometry.get(widget_id)
+        if remembered:
+            rw, rh = remembered["size"]
+            wrapper.resize(rw, rh)
+
         # Position in center of screen by default
         if is_standalone:
             # No Qt parent, so is_unpinned must say so too (drives the drag clamp/pin label).
@@ -2497,14 +2509,20 @@ class JarvisUI(QWidget):
             wrapper.setParent(None, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
             wrapper.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
-            screen_geom = self.screen().geometry()
-            cx = screen_geom.x() + (screen_geom.width() - wrapper.width()) // 2
-            cy = screen_geom.y() + (screen_geom.height() - wrapper.height()) // 2
-            wrapper.move(cx, cy)
+            if remembered:
+                wrapper.move(*remembered["pos"])
+            else:
+                screen_geom = self.screen().geometry()
+                cx = screen_geom.x() + (screen_geom.width() - wrapper.width()) // 2
+                cy = screen_geom.y() + (screen_geom.height() - wrapper.height()) // 2
+                wrapper.move(cx, cy)
         else:
-            cx = (self.width() - wrapper.width()) // 2
-            cy = (self.height() - wrapper.height()) // 2
-            wrapper.move(cx, cy)
+            if remembered:
+                wrapper.move(*remembered["pos"])
+            else:
+                cx = (self.width() - wrapper.width()) // 2
+                cy = (self.height() - wrapper.height()) // 2
+                wrapper.move(cx, cy)
         
         self.active_widgets[widget_id] = wrapper
         if not getattr(self, '_restoring_ui_state', False):
@@ -2539,6 +2557,9 @@ class JarvisUI(QWidget):
             # (merely hidden) meant it silently came back the next time the
             # user returned to fullscreen.
             w = self.active_widgets.pop(widget_id)
+            self._closed_widget_geometry[widget_id] = {
+                "pos": [w.x(), w.y()], "size": [w.width(), w.height()]
+            }
             w.hide()
             w.deleteLater()
             self.save_ui_state()

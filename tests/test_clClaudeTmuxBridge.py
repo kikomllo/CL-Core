@@ -111,6 +111,16 @@ class TestWriteAndSendKeys:
 
         send_keys.assert_called_once_with("Down Enter")
 
+    def test_shift_tab_token_uses_tmux_btab_override(self, mocker):
+        """Plain title-casing would produce 'Shift_Tab', which tmux doesn't
+        recognize -- tmux's own name for the key is 'BTab'."""
+        bridge = _bridge()
+        send_keys = mocker.patch.object(bridge, "send_keys")
+
+        bridge._send_control_keys("SHIFT_TAB")
+
+        send_keys.assert_called_once_with("BTab")
+
 
 class TestAliveAndStop:
     def test_is_alive_reflects_has_session(self, mocker):

@@ -1041,6 +1041,66 @@ class TestClaudeWidgetShowsCachedScreenOnReopen:
             assert wrapper2.content_widget.screen_view.toPlainText() == "> is the door locked\n\nYes, it's locked."
 
 
+class TestClosedWidgetRemembersItsPositionForTheRestOfTheSession:
+    """close_draggable_widget destroys the wrapper outright, so its position
+    drops out of both active_widgets and the next ui_state.json save -- found
+    live via the Claude widget always re-centering on reopen. Fixed by
+    stashing geometry in _closed_widget_geometry before destroying it, and
+    having spawn_widget prefer that over centering when present. Applies to
+    every closable widget (Settings, Updates, Debug, Claude), not just Claude."""
+
+    @pytest.fixture(autouse=True)
+    def no_real_mqtt_thread(self, mocker):
+        import clUI
+        mocker.patch.object(clUI.MqttThread, "start")
+
+    def test_reopening_a_closed_widget_restores_its_last_position_and_size(self, qapp, fake_state_file, mocker):
+        import clUI
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "0"})
+        with open(fake_state_file, "w") as f:
+            json.dump({"is_fullscreen": False, "current_monitor_idx": 0, "active_widgets": {}}, f)
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            ui = clUI.JarvisUI()
+            ui.is_fullscreen = True
+
+            ui._toggle_settings()  # first open -- centered
+            wrapper = ui.active_widgets["widget_settings"]
+            wrapper.move(321, 654)
+            wrapper.resize(400, 300)
+
+            ui._toggle_settings()  # close -- destroys it
+            assert "widget_settings" not in ui.active_widgets
+
+            ui._toggle_settings()  # reopen -- must land back where it was, not re-center
+            wrapper2 = ui.active_widgets["widget_settings"]
+            assert (wrapper2.x(), wrapper2.y()) == (321, 654)
+            assert (wrapper2.width(), wrapper2.height()) == (400, 300)
+
+    def test_a_never_closed_widget_is_unaffected_by_other_widgets_remembered_geometry(
+        self, qapp, fake_state_file, mocker
+    ):
+        """Guards against the remembered-geometry lookup accidentally applying to the
+        wrong widget or firing when nothing was ever closed."""
+        import clUI
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "0"})
+        with open(fake_state_file, "w") as f:
+            json.dump({"is_fullscreen": False, "current_monitor_idx": 0, "active_widgets": {}}, f)
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            ui = clUI.JarvisUI()
+            ui.is_fullscreen = True
+
+            ui._toggle_updates()
+            ui.active_widgets["widget_updates"].move(999, 888)
+            ui._toggle_updates()  # close -- only widget_updates should be remembered
+
+            ui._toggle_settings()
+
+        assert "widget_settings" not in ui._closed_widget_geometry
+        assert ui._closed_widget_geometry["widget_updates"]["pos"] == [999, 888]
+
+
 class TestOverlaySwitchHidesDebugButton:
     """set_overlay's hide-list was missing btn_debug -- set_fullscreen shows
     it whenever ECOSYSTEM_STATE is 'debug', but switching back to overlay

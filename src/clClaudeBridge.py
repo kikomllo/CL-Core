@@ -267,8 +267,9 @@ class ClaudeBridgeService:
                             except json.JSONDecodeError:
                                 continue
                             keys = payload.get("keys")
+                            control_key = payload.get("control_key")
                             text = str(payload.get("text", "")).strip()
-                            if not keys and not text:
+                            if not keys and not control_key and not text:
                                 continue
 
                             # "/terminal" and "/claude" are local mode switches, handled here rather
@@ -305,7 +306,10 @@ class ClaudeBridgeService:
                                         await self._wait_until_ready()
                                     active_bridge = self.bridge
 
-                                if keys:
+                                if control_key:
+                                    active_bridge.send_control_key(control_key)
+                                    logging.info(f"[CLAUDE BRIDGE] Sent control key: {control_key!r}")
+                                elif keys:
                                     active_bridge.send_keys(keys)
                                     logging.info(f"[CLAUDE BRIDGE] Sent raw keys: {keys!r}")
                                 else:

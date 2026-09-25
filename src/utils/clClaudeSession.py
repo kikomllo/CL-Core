@@ -170,9 +170,16 @@ class ClaudeSessionBase:
             logging.error(f"[{self.LOG_PREFIX}] Failed to answer '{marker}': {e}")
 
     def _send_control_keys(self, token: str):
-        """Translate a backend-neutral AUTO_ANSWERS token ('DOWN ENTER', 'ENTER')
-        into this backend's own key encoding and send it. Backend-specific."""
+        """Translate a backend-neutral token ('DOWN ENTER', 'ENTER', 'ESCAPE',
+        'SHIFT_TAB', 'UP', 'DOWN') into this backend's own key encoding and
+        send it. Backend-specific."""
         raise NotImplementedError
+
+    def send_control_key(self, token: str):
+        """Public entry point for a widget/UI-driven key press (Esc, Shift+Tab,
+        arrow keys) -- goes through the same backend-neutral token mapping as
+        the internal AUTO_ANSWERS handling."""
+        self._send_control_keys(token)
 
     def _retry_dropped_answer(self, now: float):
         # An Enter sent while the TUI was still redrawing can be dropped: same screen, no new output.

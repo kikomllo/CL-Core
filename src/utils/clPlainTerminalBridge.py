@@ -71,6 +71,17 @@ class PlainTerminalBridge:
             raise RuntimeError("terminal session is not alive")
         subprocess.run(["tmux", "send-keys", "-t", self.SESSION_NAME] + keys.split(), check=True)
 
+    # Maps the widget's backend-neutral control-key tokens (shared with ClaudeSessionBase's
+    # subclasses) onto a plain shell's own conventions -- "ESCAPE" becomes Ctrl-C here, since
+    # a shell has no TUI to escape out of but does have a running command to interrupt.
+    _CONTROL_KEY_MAP = {
+        "ESCAPE": "C-c",
+        "SHIFT_TAB": "BTab",
+    }
+
+    def send_control_key(self, token: str):
+        self.send_keys(self._CONTROL_KEY_MAP.get(token, token.title()))
+
     def refresh_screen(self):
         """On-demand capture, so switching modes shows the current screen
         immediately instead of waiting for the shell to next print something."""

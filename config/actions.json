@@ -291,6 +291,13 @@
       "schema": {
         "text": {"type": "string", "required": true}
       }
+    },
+    "control_key": {
+      "topic": "jarvis/claude/question",
+      "payload": {"silent": true},
+      "schema": {
+        "control_key": {"type": "string", "required": true}
+      }
     }
   }
 }

@@ -64,6 +64,7 @@ class TrayApp:
     def on_connect(self, client, userdata, flags, reason_code, properties):
         if reason_code == 0:
             logging.info("Connected to MQTT Broker.")
+            client.publish("jarvis/sys/module_ready", json.dumps({"module": "tray icon"}), qos=1)
         else:
             logging.warning(f"Failed to connect to MQTT Broker. Code: {reason_code}")
 

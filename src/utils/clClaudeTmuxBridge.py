@@ -103,8 +103,12 @@ class ClaudeTmuxBridge(ClaudeSessionBase):
             raise RuntimeError("tmux session is not alive")
         subprocess.run(["tmux", "send-keys", "-t", self.SESSION_NAME] + keys.split(), check=True)
 
+    # tmux's own key name for Shift+Tab doesn't follow the plain title-case
+    # pattern every other token happens to resolve to (e.g. "down enter" -> "Down Enter").
+    _CONTROL_KEY_OVERRIDES = {"SHIFT_TAB": "BTab"}
+
     def _send_control_keys(self, token: str):
-        self.send_keys(token.title())
+        self.send_keys(self._CONTROL_KEY_OVERRIDES.get(token, token.title()))
 
     def _start_pipe_reader(self):
         fd, self._fifo_path = tempfile.mkstemp(prefix="jarvis_claude_", suffix=".fifo")

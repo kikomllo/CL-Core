@@ -98,6 +98,29 @@ class TestClaudeBridgeRouting:
         mock_bridge.write.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_control_key_is_sent_via_send_control_key_not_send_keys(
+        self, service, mock_mqtt, message_stream, mocker
+    ):
+        """The widget's control-key chips (Esc, Shift+Tab, arrows) send a
+        backend-neutral 'control_key' token, distinct from the raw-passthrough
+        'keys' field -- it must route through send_control_key() so each
+        backend can translate it to its own encoding."""
+        mock_bridge = MagicMock()
+        mock_bridge.is_alive.return_value = True
+        service.bridge = mock_bridge
+        mocker.patch.object(service, "_ensure_pty_started")
+
+        mock_mqtt.messages = message_stream([
+            ("jarvis/claude/question", json.dumps({"control_key": "ESCAPE"})),
+        ])
+
+        await service.run()
+
+        mock_bridge.send_control_key.assert_called_once_with("ESCAPE")
+        mock_bridge.send_keys.assert_not_called()
+        mock_bridge.write.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_empty_text_is_ignored(self, service, mock_mqtt, message_stream, mocker):
         mock_bridge = MagicMock()
         mock_bridge.is_alive.return_value = True
