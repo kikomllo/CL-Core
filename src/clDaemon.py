@@ -830,6 +830,7 @@ class CentralDaemon:
                                                     "intent_rename_light", "intent_remove_light", "intent_set_default_light"
                                                 ))
                                                 or action_id in ("alarm.create", "reminder.create", "calendar.create")
+                                                or action_id.startswith("monitor.")
                                             )
 
                                             # 3. Handle Legacy ActionRouter Text

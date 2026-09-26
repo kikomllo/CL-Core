@@ -52,16 +52,19 @@ def send_raw_to_tmux(session: str, raw: str):
     flush()
 
 
-def read_tmux_cursor(session: str):
-    """Cursor as (col, row) in the same joined-line space capture-pane -J produces, or None.
-    Wrapped lines make pane rows differ from joined rows, so the row is recounted from a joined
-    capture up to the cursor; the column is offset by the wraps when the line is wider than the pane."""
+def read_tmux_cursor(session: str, joined_mode: bool = True):
+    """Cursor as (col, row), or None. joined_mode=False is the pane's own cursor position (for a
+    capture without -J); otherwise it's in the joined-line space capture-pane -J produces: wrapped
+    lines make pane rows differ from joined rows, so the row is recounted from a joined capture up
+    to the cursor and the column is offset by the wraps when the line is wider than the pane."""
     try:
         info = subprocess.run(
             ["tmux", "display", "-p", "-t", session, "#{cursor_x} #{cursor_y} #{window_width}"],
             capture_output=True, text=True,
         )
         cx, cy, cols = (int(v) for v in info.stdout.split())
+        if not joined_mode:
+            return (cx, cy)
         joined = subprocess.run(
             ["tmux", "capture-pane", "-p", "-J", "-t", session, "-S", "0", "-E", str(cy)],
             capture_output=True, text=True,
@@ -77,6 +80,22 @@ def read_tmux_cursor(session: str):
     if cols > 0 and len(last) > cols:
         cx += cols * ((len(last) - 1) // cols)
     return (cx, len(rows) - 1)
+
+
+_SHELLS = {"bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh", "csh", "ash"}
+
+
+def tmux_at_shell(session: str) -> bool:
+    """True when the pane's foreground process is a shell, i.e. it's waiting at its prompt rather
+    than running a program (vim, sudo's password prompt, a long command...)."""
+    try:
+        out = subprocess.run(
+            ["tmux", "display", "-p", "-t", session, "#{pane_current_command}"],
+            capture_output=True, text=True,
+        ).stdout.strip().lstrip("-")
+    except OSError:
+        return False
+    return out in _SHELLS
 
 
 class ClaudeTmuxBridge(ClaudeSessionBase):
@@ -167,7 +186,10 @@ class ClaudeTmuxBridge(ClaudeSessionBase):
 
     # tmux's own key name for Shift+Tab doesn't follow the plain title-case
     # pattern every other token happens to resolve to (e.g. "down enter" -> "Down Enter").
-    _CONTROL_KEY_OVERRIDES = {"SHIFT_TAB": "BTab", "DELETE": "DC"}
+    _CONTROL_KEY_OVERRIDES = {
+        "SHIFT_TAB": "BTab", "DELETE": "DC", "PAGEUP": "PPage", "PAGEDOWN": "NPage",
+        "CTRL_LEFT": "C-Left", "CTRL_RIGHT": "C-Right",
+    }
 
     def _send_control_keys(self, token: str):
         self.send_keys(self._CONTROL_KEY_OVERRIDES.get(token, token.title()))

@@ -314,5 +314,23 @@
         "rows": {"type": "integer", "required": true}
       }
     }
+  },
+  "monitor": {
+    "pair": {
+      "topic": "jarvis/monitor/control",
+      "payload": {"action": "pair_start"}
+    },
+    "cancel": {
+      "topic": "jarvis/monitor/control",
+      "payload": {"action": "pair_cancel"}
+    },
+    "unpair": {
+      "topic": "jarvis/monitor/control",
+      "payload": {"action": "unpair"}
+    },
+    "status": {
+      "topic": "jarvis/monitor/control",
+      "payload": {"action": "status"}
+    }
   }
 }

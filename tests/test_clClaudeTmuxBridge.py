@@ -6,7 +6,7 @@ import sys
 from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
-from utils.clClaudeTmuxBridge import ClaudeTmuxBridge, read_tmux_cursor
+from utils.clClaudeTmuxBridge import ClaudeTmuxBridge, read_tmux_cursor, tmux_at_shell
 
 
 def _bridge(cwd="."):
@@ -296,3 +296,44 @@ class TestReadTmuxCursor:
     def test_unparseable_output_gives_none(self, mocker):
         self._run(mocker, "", "")
         assert read_tmux_cursor("s") is None
+
+
+class TestUnjoinedCursorAndNavTokens:
+    def test_unjoined_mode_returns_the_panes_own_cursor_without_a_second_capture(self, mocker):
+        run = mocker.patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="6 1 100\n"))
+        assert read_tmux_cursor("s", joined_mode=False) == (6, 1)
+        assert run.call_count == 1
+
+    def test_page_and_ctrl_arrow_tokens_use_tmux_key_names(self, mocker):
+        bridge = _bridge()
+        send_keys = mocker.patch.object(bridge, "send_keys")
+        for token in ("PAGEUP", "PAGEDOWN", "CTRL_LEFT", "CTRL_RIGHT"):
+            bridge._send_control_keys(token)
+        assert [c.args[0] for c in send_keys.call_args_list] == ["PPage", "NPage", "C-Left", "C-Right"]
+
+
+class TestTmuxAtShell:
+    """Idle = the pane's foreground process is the shell itself, so the widget knows a prompt is
+    waiting (and not a program such as sudo's password prompt or vim)."""
+
+    @staticmethod
+    def _cmd(mocker, name):
+        return mocker.patch("subprocess.run", return_value=MagicMock(returncode=0, stdout=name + "\n"))
+
+    def test_shells_are_idle(self, mocker):
+        for name in ("zsh", "bash", "fish", "sh"):
+            self._cmd(mocker, name)
+            assert tmux_at_shell("s") is True
+
+    def test_login_shell_dash_prefix_is_still_a_shell(self, mocker):
+        self._cmd(mocker, "-zsh")
+        assert tmux_at_shell("s") is True
+
+    def test_programs_are_not_idle(self, mocker):
+        for name in ("vim", "sudo", "python3", "sleep", "ssh"):
+            self._cmd(mocker, name)
+            assert tmux_at_shell("s") is False
+
+    def test_missing_tmux_is_not_idle(self, mocker):
+        mocker.patch("subprocess.run", side_effect=OSError)
+        assert tmux_at_shell("s") is False

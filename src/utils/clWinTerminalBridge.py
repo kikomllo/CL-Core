@@ -23,6 +23,7 @@ import pyte
 
 
 class WinTerminalBridge:
+    READLINE_EDITING = False  # cmd.exe has no Ctrl+E / Ctrl+U line editing to lean on
     COLS = 120
     ROWS = 40
     DEBOUNCE_S = 0.15  # coalesce streamed output into one screen update
@@ -96,6 +97,10 @@ class WinTerminalBridge:
         "HOME": "\x1bOH",
         "END": "\x1bOF",
         "DELETE": "\x1b[3~",
+        "PAGEUP": "\x1b[5~",
+        "PAGEDOWN": "\x1b[6~",
+        "CTRL_LEFT": "\x1b[1;5D",
+        "CTRL_RIGHT": "\x1b[1;5C",
         "DOWN": "\x1bOB",
         "ENTER": "\r",
     }

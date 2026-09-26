@@ -19,11 +19,13 @@ import threading
 import time
 from typing import Callable, Optional
 
-from utils.clClaudeTmuxBridge import read_tmux_cursor, send_raw_to_tmux
+from utils.clClaudeTmuxBridge import read_tmux_cursor, send_raw_to_tmux, tmux_at_shell
 
 
 class PlainTerminalBridge:
     SESSION_NAME = "jarvis-terminal"
+    idle = False  # foreground process is the shell (refreshed with every screen capture)
+    READLINE_EDITING = True  # the shell honours Ctrl+E / Ctrl+U, so the widget may overwrite its line
     COLS = 120
     ROWS = 40
     DEBOUNCE_S = 0.15  # coalesce streamed output into one screen update
@@ -90,6 +92,10 @@ class PlainTerminalBridge:
         "ESCAPE": "C-c",
         "SHIFT_TAB": "BTab",
         "DELETE": "DC",
+        "PAGEUP": "PPage",
+        "PAGEDOWN": "NPage",
+        "CTRL_LEFT": "C-Left",
+        "CTRL_RIGHT": "C-Right",
     }
 
     def send_control_key(self, token: str):
@@ -164,12 +170,15 @@ class PlainTerminalBridge:
         self._running = False
 
     def _emit_screen(self):
+        # -e keeps colours/attributes (the widget renders them, e.g. a shell's grey autosuggestion)
+        # and no -J keeps wrapped lines as the pane shows them, like a real terminal.
         result = subprocess.run(
-            ["tmux", "capture-pane", "-p", "-J", "-t", self.SESSION_NAME],
+            ["tmux", "capture-pane", "-p", "-e", "-t", self.SESSION_NAME],
             capture_output=True, text=True,
         )
         if result.returncode == 0:
-            self.cursor = read_tmux_cursor(self.SESSION_NAME)
+            self.cursor = read_tmux_cursor(self.SESSION_NAME, joined_mode=False)
+            self.idle = tmux_at_shell(self.SESSION_NAME)
             try:
                 self._on_screen_update(result.stdout.rstrip("\n"))
             except Exception as e:

@@ -30,6 +30,7 @@ Detailed notes live in separate files so they're only loaded when relevant:
 | `clDaemon.py`, intent routing, follow-ups, `ActionRouter`/`actions.json`, config loading, actuators, Redis state | `docs/context/daemon-routing.md` |
 | OS-specific code: volume/media/eco mode, alarms, WiFi SSID, PTT keys, Spotify wakeup, process sweeps, Windows two-process note | `docs/context/cross-platform.md` |
 | `clUI.py`, `src/ui/*Widget.py`, window flags, widget geometry | `docs/context/ui.md` |
+| Presence monitor: `clMonitor.py`, `utils/clBeacon.py`, beacon pairing, the Settings Presence tab | `docs/context/monitor.md` |
 | Claude bridge: backends, config dir, `--continue`, requirements | `docs/context/claude-bridge-core.md` |
 | Claude bridge: first-run auto-answers, speech, stall watchdog, sign-in/`--setup` | `docs/context/claude-bridge-session.md` |
 | Claude widget, `/terminal` ⇄ `/claude`, terminal resize | `docs/context/claude-bridge-widget.md` |
@@ -49,7 +50,7 @@ Detailed notes live in separate files so they're only loaded when relevant:
 The bridge plan and status is in `docs/claude_bridge_plan.md`.
 
 **Standing instruction for any Claude Code session working in this repo**: when the JARVIS ecosystem is running live, speak a short, one-sentence summary of what you did or what's needed next at the end of every turn by publishing to `jarvis/sys/speak`, unconditionally — not only when reached through the voice bridge. The one exception: if your system prompt says the host application already reads your answers aloud (the bridged voice session), do not run this; the bridge speaks every final answer itself and would double it:
-  ```
+  ```q
   python3 -c "import paho.mqtt.publish as publish, json; publish.single('jarvis/sys/speak', json.dumps({'text': '...', 'ignore_silent': True}), hostname='localhost')"
   ```
 

@@ -1,8 +1,11 @@
 import re
+import time
 from clTheme import Theme
 from utils.clActionRouter import ActionRouter
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QPainter, QColor, QStandardItemModel, QStandardItem, QTextCursor, QKeySequence
+from PyQt6.QtGui import (
+    QPainter, QColor, QStandardItemModel, QStandardItem, QTextCursor, QKeySequence, QTextCharFormat
+)
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTextEdit, QSizePolicy, QCompleter, QApplication
 )
@@ -21,7 +24,136 @@ _KEYBOARD_CONTROL_KEYS = {
     Qt.Key.Key_Home: "HOME",
     Qt.Key.Key_End: "END",
     Qt.Key.Key_Delete: "DELETE",
+    Qt.Key.Key_PageUp: "PAGEUP",
+    Qt.Key.Key_PageDown: "PAGEDOWN",
 }
+
+_ANSI_SGR = re.compile(r"\x1b\[([0-9;:]*)m")
+_BASE16 = [
+    (0, 0, 0), (205, 49, 49), (13, 188, 121), (229, 229, 16), (36, 114, 200), (188, 63, 188),
+    (17, 168, 205), (204, 204, 204), (102, 102, 102), (241, 76, 76), (35, 209, 139), (245, 245, 67),
+    (59, 142, 234), (214, 112, 214), (41, 184, 219), (255, 255, 255),
+]
+
+
+# The terminal keeps the dashboard's orange-only scheme: every ANSI colour is reduced to how bright
+# it is and drawn on this ramp instead (dim orange -> the theme's primary orange).
+_ORANGE_DARK = (130, 65, 0)
+_ORANGE_BRIGHT = (255, 170, 0)  # Theme.C_PRIMARY
+_ORANGE_BG = (255, 140, 0)
+
+
+def _luminance(color: QColor) -> float:
+    return (0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()) / 255
+
+
+def _brightness(color: QColor) -> float:
+    # Greys go by luminance (so a shell's grey suggestion stays dim), saturated colours by their
+    # strongest channel (ANSI blue is perceptually dark but must stay readable, e.g. directories).
+    return max(_luminance(color), color.hsvSaturationF() * color.valueF())
+
+
+def orange_shade(color: QColor) -> QColor:
+    v = _brightness(color)
+    return QColor(*(round(d + (b - d) * v) for d, b in zip(_ORANGE_DARK, _ORANGE_BRIGHT)))
+
+
+def orange_background(color: QColor) -> QColor:
+    return QColor(*_ORANGE_BG, round(30 + 90 * _luminance(color)))
+
+
+def _xterm_color(n: int) -> QColor:
+    if n < 16:
+        return QColor(*_BASE16[n])
+    if n < 232:
+        n -= 16
+        level = lambda v: 0 if v == 0 else 55 + 40 * v
+        return QColor(level(n // 36), level((n // 6) % 6), level(n % 6))
+    g = 8 + 10 * (n - 232)
+    return QColor(g, g, g)
+
+
+class _AnsiStyle:
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.fg = self.bg = None
+        self.bold = self.dim = self.italic = self.underline = self.reverse = False
+
+    def apply(self, params: str):
+        codes = [int(p) if p.isdigit() else 0 for p in re.split(r"[;:]", params)] if params else [0]
+        i = 0
+        while i < len(codes):
+            c = codes[i]
+            if c == 0:
+                self.reset()
+            elif c in (1, 2, 3, 4, 7):
+                setattr(self, {1: "bold", 2: "dim", 3: "italic", 4: "underline", 7: "reverse"}[c], True)
+            elif c in (22, 23, 24, 27):
+                if c == 22:
+                    self.bold = self.dim = False
+                else:
+                    setattr(self, {23: "italic", 24: "underline", 27: "reverse"}[c], False)
+            elif 30 <= c <= 37:
+                self.fg = _xterm_color(c - 30)
+            elif 90 <= c <= 97:
+                self.fg = _xterm_color(c - 90 + 8)
+            elif 40 <= c <= 47:
+                self.bg = _xterm_color(c - 40)
+            elif 100 <= c <= 107:
+                self.bg = _xterm_color(c - 100 + 8)
+            elif c == 39:
+                self.fg = None
+            elif c == 49:
+                self.bg = None
+            elif c in (38, 48) and i + 1 < len(codes):
+                target = "fg" if c == 38 else "bg"
+                if codes[i + 1] == 5 and i + 2 < len(codes):
+                    setattr(self, target, _xterm_color(codes[i + 2] & 255))
+                    i += 2
+                elif codes[i + 1] == 2 and i + 4 < len(codes):
+                    setattr(self, target, QColor(*(v & 255 for v in codes[i + 2:i + 5])))
+                    i += 4
+            i += 1
+
+    def char_format(self) -> QTextCharFormat:
+        primary, ink = QColor(*_ORANGE_BRIGHT), QColor(20, 10, 0)
+        fmt = QTextCharFormat()
+        if self.reverse:
+            # A solid orange block with dark text, whatever the original colours were.
+            fmt.setForeground(ink)
+            fmt.setBackground(primary)
+        else:
+            if self.fg is not None:
+                fmt.setForeground(orange_shade(self.fg))
+            elif self.dim:
+                fmt.setForeground(orange_shade(QColor(110, 110, 110)))
+            if self.dim and self.fg is not None:
+                fmt.setForeground(orange_shade(QColor(self.fg).darker(180)))
+            if self.bg is not None:
+                fmt.setBackground(orange_background(self.bg))
+        if self.bold:
+            fmt.setFontWeight(700)
+        fmt.setFontItalic(self.italic)
+        fmt.setFontUnderline(self.underline)
+        return fmt
+
+
+def ansi_spans(ansi_text: str):
+    """[[(text, QTextCharFormat), ...] per row] for text carrying SGR escapes (colour/attributes)."""
+    style, rows = _AnsiStyle(), []
+    for line in ansi_text.split("\n"):
+        spans, pos = [], 0
+        for m in _ANSI_SGR.finditer(line):
+            if m.start() > pos:
+                spans.append((line[pos:m.start()], style.char_format()))
+            style.apply(m.group(1))
+            pos = m.end()
+        if pos < len(line):
+            spans.append((line[pos:], style.char_format()))
+        rows.append(spans)
+    return rows
 
 # Common Claude Code slash commands -- a starting set, not exhaustive; extend as needed.
 SLASH_COMMANDS = [
@@ -44,7 +176,11 @@ SLASH_COMMANDS = [
     ("/memory", "Edit CLAUDE.md memory files"),
     ("/vim", "Toggle vim keybindings"),
     ("/config", "Open settings"),
+    ("/terminal", "Switch this widget to a plain shell"),
+    ("/claude", "Switch back to the Claude session"),
 ]
+
+MODE_SWITCH_COMMANDS = ("/terminal", "/claude")
 
 
 def _build_slash_completer(parent) -> QCompleter:
@@ -109,8 +245,26 @@ class ClaudeTerminalView(ZoomTextEdit):
     MIN_COLS = 20
     MIN_ROWS = 5
 
-    def __init__(self, on_keys, on_control_key, on_resize, parent=None):
+    # After the line is synced/submitted, snapshots may still show the old CLI line for a moment;
+    # don't re-adopt it in that window. Adopting after Tab/Up/Down waits at most this long.
+    HOLD_S = 0.8
+    ADOPT_S = 1.5
+
+    def __init__(self, on_keys, on_control_key, on_resize, parent=None, local_line_editing=False, on_text=None):
         super().__init__(parent)
+        self._on_text = on_text  # whole-line messages, e.g. the /terminal and /claude mode switches
+        self._sel_anchor = None  # local editing: other end of the selection (the cursor is _lpos)
+        # Claude's framed input box is edited entirely locally (text + cursor) and only written to
+        # the CLI on Enter or when a key needs the CLI's own copy of the line; shells and menus
+        # keep the live-forwarding path below.
+        self._local_enabled = local_line_editing
+        self._lbuf = ""
+        self._lpos = 0
+        self._lsynced = ""  # what the CLI's own input line is known to contain
+        self._hold_until = 0.0
+        self._adopt = False
+        self._adopt_from = ""
+        self._adopt_deadline = 0.0
         self.setReadOnly(True)
         # Without this, Qt's own QWidget::event() intercepts Tab/Shift+Tab for
         # focus-traversal *before* keyPressEvent ever runs, silently shifting
@@ -121,19 +275,23 @@ class ClaudeTerminalView(ZoomTextEdit):
         self._on_control_key = on_control_key
         self._on_resize = on_resize
         self._server_screen = ""
-        self._pending = ""  # typed locally since the last authoritative screen
-        self._erased = 0  # chars backspaced off the server's own prompt-row text since then
+        self._server_ansi = None  # the same screen with colour/attribute escapes, when the backend has them
+        self._server_mode = None  # "claude", "terminal" (readline-style shell) or "terminal-basic"
+        self._server_idle = None  # terminal mode: the foreground process is the shell (at its prompt)
+        # Column where the shell's editable text begins: the cursor column at a fresh, idle prompt
+        # (i.e. the prompt's own length). Everything before that index is never editable locally.
+        self._shell_start = None
+        self._shell_touched = False  # the user has edited/moved on this prompt, so the start is fixed
+        self._hold_timer = QTimer(self)
+        self._hold_timer.setSingleShot(True)
+        self._hold_timer.timeout.connect(self._refresh_prompt)
+        # (kind, row, start_col, line) of the input line being edited locally, or None.
+        self._prompt = None
         self._server_cursor = None  # (col, row) reported by the backend, when it can
-        self._uncertain = False  # a cursor-moving key was sent; the real cursor is unknown until the next snapshot
-        self._ops = []  # keystrokes predicted locally and not yet confirmed by a snapshot
-        self._base_row = ""  # the prompt row of the last snapshot, which _ops are applied on top of
-        self._selected = False  # Ctrl+A: the whole editable line is highlighted
+        # Only to recognise "/claude" / "/terminal" typed live into a shell on Enter; never displayed.
+        self._shadow = ""
+        self._selected = False
         self._blink_on = True
-        # If a local edit never produces a new server snapshot (the CLI ignored it, or the
-        # screen ended up identical), the guess would otherwise sit on screen forever.
-        self._reconcile_timer = QTimer(self)
-        self._reconcile_timer.setSingleShot(True)
-        self._reconcile_timer.timeout.connect(self._drop_local_edits)
         self._blink_timer = QTimer(self)
         self._blink_timer.timeout.connect(self._toggle_blink)
         self._blink_timer.start(530)
@@ -180,86 +338,115 @@ class ClaudeTerminalView(ZoomTextEdit):
         self._last_dispatched_grid = grid
         self._on_resize(*grid)
 
-    RECONCILE_MS = 1500
-
-    def set_server_screen(self, text: str, cursor=None):
-        old_ops, old_base = self._ops, self._base_row
+    def set_server_screen(self, text: str, cursor=None, ansi=None, mode=None, idle=None):
         self._server_screen = text
+        self._server_ansi = ansi
+        if mode != self._server_mode:
+            self._shell_start, self._shell_touched = None, False
+        self._server_mode = mode
+        self._server_idle = idle
         self._server_cursor = tuple(cursor) if cursor else None
-        self._uncertain = False
-        rows = text.split("\n")
-        target = self._find_prompt_row(rows)
-        self._base_row = self._padded_row(rows[target], target)
-        self._ops = []
-        self._pending, self._erased = "", 0
-        self._reconcile_timer.stop()
-        if old_ops:
-            # A snapshot can lag a few keystrokes behind what was typed. Keep the prediction while
-            # the snapshot is just an earlier state of the same edits; a different one is the truth.
-            done = None
-            for k in range(len(old_ops), -1, -1):
-                if self._simulate(old_base, old_ops[:k]).rstrip() == self._base_row.rstrip():
-                    done = k
-                    break
-            if done is not None and done < len(old_ops):
-                self._ops = old_ops[done:]
-                self._recompute()
-                self._reconcile_timer.start(self.RECONCILE_MS)
+        self._refresh_prompt()
+
+    def _refresh_prompt(self):
+        self._update_shell_start()
+        self._prompt = self._compute_prompt()
+        if self._prompt:
+            self._adopt_snapshot()
         self._render()
 
-    def _simulate(self, base_row: str, ops) -> str:
-        erased, pending = self._apply_ops(base_row, ops)
-        return base_row[:len(base_row) - erased] + pending
+    def _touch(self):
+        # Fixes the measured prompt start -- but only for a shell prompt; typing into Claude's box
+        # (or anywhere else) must not leak into how the next shell prompt is measured.
+        if self._local_kind() == "shell":
+            self._shell_touched = True
 
-    def _apply_ops(self, base_row: str, ops):
-        avail = max(0, len(base_row) - self._editable_start(base_row))
-        erased, pending = 0, ""
-        for op in ops:
-            if op == "\x7f":
-                if pending:
-                    pending = pending[:-1]
-                elif erased < avail:
-                    erased += 1
-            elif op == "\x15":
-                pending, erased = "", avail
-            else:
-                pending += op
-        return erased, pending
+    def _hold(self):
+        self._hold_until = time.monotonic() + self.HOLD_S
+        # Nothing else may arrive once the hold is over (a fast command already redrew the prompt),
+        # so look at the latest screen again then.
+        self._hold_timer.start(int(self.HOLD_S * 1000) + 50)
 
-    def _recompute(self):
-        self._erased, self._pending = self._apply_ops(self._base_row, self._ops)
+    def _shell_ready(self) -> bool:
+        return (self._local_enabled and self._server_mode == "terminal"
+                and self._server_idle is True and self._server_cursor is not None)
 
-    def _record(self, *ops):
-        self._ops.extend(ops)
-        self._recompute()
-        self._local_edit()
+    def _update_shell_start(self):
+        if not self._shell_ready():
+            self._shell_start, self._shell_touched = None, False
+            return
+        if self._shell_touched or time.monotonic() < self._hold_until:
+            return
+        col = self._server_cursor[0]
+        self._shell_start = col if col > 0 else None
 
-    def _predict_ok(self) -> bool:
-        """Local echo/erase assumes the cursor is at the end of the line. Once it isn't (Ctrl+A,
-        Left, Home...), the CLI edits mid-line and only its own next snapshot can be trusted."""
-        if self._uncertain:
-            return False
-        if self._server_cursor:
-            rows = self._server_screen.split("\n")
-            target = self._find_prompt_row(rows)
-            col, row = self._server_cursor
-            if row == target and col < len(rows[target].rstrip()):
-                return False
-        return True
+    def _compute_prompt(self):
+        if not self._local_enabled:
+            return None
+        rows = self._server_screen.split("\n")
+        framed = self._framed_prompt_row(rows)
+        if framed is not None:
+            row = self._padded_row(rows[framed], framed)
+            start = self._local_start(row)
+            return ("claude", framed, start, row[start:].rstrip())
+        if self._shell_ready() and self._shell_start is not None:
+            col, r = self._server_cursor
+            start = self._shell_start
+            if 0 <= r < len(rows) and col >= start:
+                # Anything after the cursor is the shell's own suggestion, not typed text.
+                return ("shell", r, start, rows[r].ljust(col)[start:col])
+        return None
 
-    def _drop_local_edits(self):
-        self._ops = []
-        self._pending = ""
-        self._erased = 0
-        self._render()
+    def _snapshot_line(self):
+        _kind, row, start, line = self._prompt
+        return line, row, start
 
-    def _local_edit(self):
-        self._blink_on = True
-        self._reconcile_timer.start(self.RECONCILE_MS)
+    def _set_line(self, line: str, pos=None):
+        self._lbuf = self._lsynced = line
+        self._lpos = len(line) if pos is None else max(0, min(pos, len(line)))
+        self._selected, self._sel_anchor = False, None
+
+    def _adopt_snapshot(self):
+        now = time.monotonic()
+        line, target, start = self._snapshot_line()
+        if self._adopt:
+            if now > self._adopt_deadline:
+                self._adopt = False
+            elif line != self._adopt_from.rstrip():
+                self._adopt = False
+                self._set_line(line)
+                return
+        if self._lbuf == self._lsynced and now >= self._hold_until and line != self._lbuf.rstrip():
+            pos = None
+            if self._server_cursor and self._server_cursor[1] == target:
+                pos = self._server_cursor[0] - start
+            self._set_line(line, pos)
 
     def _toggle_blink(self):
         self._blink_on = not self._blink_on
         self.viewport().update()
+
+    @staticmethod
+    def _framed_prompt_row(rows):
+        for i in range(1, len(rows) - 1):
+            if (rows[i].lstrip().startswith("\u276f")
+                    and rows[i - 1].startswith("\u2500") and rows[i + 1].startswith("\u2500")):
+                return i
+        return None
+
+    def _local_active(self) -> bool:
+        return self._prompt is not None
+
+    def _local_kind(self):
+        return self._prompt[0] if self._prompt else None
+
+    @staticmethod
+    def _local_start(row: str) -> int:
+        i = row.find("\u276f")
+        return i + 2 if i >= 0 else len(row)
+
+    def _input_start(self, row: str) -> int:
+        return self._prompt[2] if self._local_active() else self._editable_start(row)
 
     @staticmethod
     def _find_prompt_row(rows) -> int:
@@ -297,18 +484,18 @@ class ClaudeTerminalView(ZoomTextEdit):
         return self._with_prompt_padding(row)
 
     def _visible_row(self, row: str, row_index: int) -> str:
-        row = self._padded_row(row, row_index)
-        start = self._editable_start(row)
-        self._erased = min(self._erased, max(0, len(row) - start))
-        return row[:len(row) - self._erased] + self._pending
+        start = self._prompt[2]
+        return self._padded_row(row, row_index).ljust(start)[:start] + self._lbuf
 
     def _cursor_cell(self):
-        """(row, col) to draw the cursor at: the end of the predicted line while local edits are
-        pending, otherwise where the backend says the real cursor is."""
+        """(row, col) to draw the cursor at: the local line's cursor inside Claude's input box,
+        otherwise wherever the backend says the real cursor is."""
         rows = self._server_screen.split("\n")
         target = self._find_prompt_row(rows)
-        if self._pending or self._erased or self._server_cursor is None:
-            return target, len(self._visible_row(rows[target], target))
+        if self._local_active():
+            return self._prompt[1], self._prompt[2] + self._lpos
+        if self._server_cursor is None:
+            return target, len(rows[target])
         col, row = self._server_cursor
         return min(row, len(rows) - 1), col
 
@@ -335,29 +522,80 @@ class ClaudeTerminalView(ZoomTextEdit):
             painter.drawRect(x, rect.top(), cell_w - 1, rect.height() - 1)
         painter.end()
 
+    def _sel_range(self):
+        if self._sel_anchor is None or self._sel_anchor == self._lpos:
+            return None
+        return min(self._sel_anchor, self._lpos), max(self._sel_anchor, self._lpos)
+
     def _apply_selection_highlight(self, row: str, row_index: int):
-        if not self._selected:
+        local = self._local_active()
+        rng = self._sel_range() if local else ((0, len(row) - self._input_start(row)) if self._selected else None)
+        if rng is None:
             self.setExtraSelections([])
             return
         block = self.document().findBlockByNumber(row_index)
         if not block.isValid():
             return
+        start = min(self._input_start(row), len(row))
         tc = QTextCursor(block)
-        tc.setPosition(block.position() + min(self._editable_start(row), len(row)))
-        tc.setPosition(block.position() + len(row), QTextCursor.MoveMode.KeepAnchor)
+        tc.setPosition(block.position() + min(start + rng[0], len(row)))
+        tc.setPosition(block.position() + min(start + rng[1], len(row)), QTextCursor.MoveMode.KeepAnchor)
         sel = QTextEdit.ExtraSelection()
         sel.cursor = tc
         sel.format.setBackground(QColor(255, 150, 0, 110))
         self.setExtraSelections([sel])
+
+    def _suggestion_cut(self):
+        """(row, col) after which nothing is drawn: at an idle shell prompt everything beyond the
+        cursor is the shell's own autosuggestion, which the terminal deliberately never shows."""
+        if self._server_mode == "terminal" and self._server_idle is True and self._server_cursor:
+            return self._server_cursor[1], self._server_cursor[0]
+        return None
+
+    def _set_styled_document(self, ansi_text: str, override=None):
+        """override=(row, start_col, text): that row keeps its styled prompt (first start_col
+        columns) and shows `text` after it in the default style -- the locally edited line."""
+        self.clear()
+        cursor = QTextCursor(self.document())
+        cursor.beginEditBlock()
+        for i, spans in enumerate(ansi_spans(ansi_text)):
+            if override and i == override[0]:
+                kept, used = [], 0
+                for text, fmt in spans:
+                    if used >= override[1]:
+                        break
+                    piece = text[:override[1] - used]
+                    kept.append((piece, fmt))
+                    used += len(piece)
+                if used < override[1]:
+                    kept.append((" " * (override[1] - used), QTextCharFormat()))
+                spans = kept + [(override[2], QTextCharFormat())]
+            if i:
+                cursor.insertBlock()
+            for text, fmt in spans:
+                cursor.insertText(text, fmt)
+        cursor.endEditBlock()
 
     def _render(self):
         scrollbar = self.verticalScrollBar()
         at_bottom = scrollbar.value() == scrollbar.maximum()
         preserved_value = scrollbar.value()
         rows = self._server_screen.split("\n")
-        target_row = self._find_prompt_row(rows)
-        rows[target_row] = self._visible_row(rows[target_row], target_row)
-        self.setPlainText("\n".join(rows))
+        target_row = self._prompt[1] if self._local_active() else self._find_prompt_row(rows)
+        if self._local_active():
+            rows[target_row] = self._visible_row(rows[target_row], target_row)
+            if self._server_ansi and self._local_kind() == "shell":
+                self._set_styled_document(self._server_ansi, (target_row, self._prompt[2], self._lbuf))
+            else:
+                self.setPlainText("\n".join(rows))
+        else:
+            cut = self._suggestion_cut()
+            if self._server_ansi:
+                self._set_styled_document(self._server_ansi, (cut[0], cut[1], "") if cut else None)
+            else:
+                if cut and cut[0] < len(rows):
+                    rows[cut[0]] = rows[cut[0]][:cut[1]]
+                self.setPlainText("\n".join(rows))
         self._apply_selection_highlight(rows[target_row], target_row)
         cursor = self.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.Start)
@@ -377,75 +615,241 @@ class ClaudeTerminalView(ZoomTextEdit):
     def _update_completer(self):
         # Only while typing the command token itself -- a trailing space means
         # the user's on to arguments, which aren't slash commands to match.
-        if self._pending.startswith("/") and " " not in self._pending:
-            self.completer.setCompletionPrefix(self._pending)
+        if self._local_kind() != "claude":
+            self.completer.popup().hide()
+            return
+        line = self._lbuf
+        # An exact match has nothing left to complete; keeping the popup up would swallow Enter
+        # (it "accepts" the identical text) so the line could never be submitted.
+        exact = any(line.lower() == command.lower() for command, _ in SLASH_COMMANDS)
+        if line.startswith("/") and " " not in line and not exact:
+            self.completer.setCompletionPrefix(line)
             if self.completer.completionCount() > 0:
-                self.completer.popup().setCurrentIndex(self.completer.completionModel().index(0, 0))
-                self.completer.complete(self.cursorRect())
+                popup = self.completer.popup()
+                popup.setCurrentIndex(self.completer.completionModel().index(0, 0))
+                rect = self.cursorRect()
+                rect.setWidth(max(220, popup.sizeHintForColumn(0) + 2 * popup.frameWidth() + 24))
+                self.completer.complete(rect)
                 return
         self.completer.popup().hide()
 
-    def _consume_selection(self) -> bool:
-        """Ctrl+A highlighted the line: the next edit replaces it. End-then-kill-line clears the
-        CLI's line wherever its cursor is. Returns True if there was a selection to clear."""
-        if not self._selected:
-            return False
-        self._selected = False
-        self._record("\x15")
+    def _line_edit(self, start: int, end: int, text: str):
+        self._touch()
+        self._lbuf = self._lbuf[:start] + text + self._lbuf[end:]
+        self._lpos = start + len(text)
+        self._selected, self._sel_anchor = False, None
+        self._blink_on = True
         self._render()
-        self._on_keys("\x05\x15")
+
+    def _local_span(self):
+        return self._sel_range() or (self._lpos, self._lpos)
+
+    def _local_insert(self, text: str):
+        start, end = self._local_span()
+        self._line_edit(start, end, text)
+
+    def _local_backspace(self):
+        rng = self._sel_range()
+        if rng:
+            self._line_edit(*rng, "")
+        elif self._lpos > 0:
+            self._line_edit(self._lpos - 1, self._lpos, "")
+
+    def _word_left(self, pos: int) -> int:
+        while pos > 0 and self._lbuf[pos - 1].isspace():
+            pos -= 1
+        while pos > 0 and not self._lbuf[pos - 1].isspace():
+            pos -= 1
+        return pos
+
+    def _word_right(self, pos: int) -> int:
+        n = len(self._lbuf)
+        while pos < n and not self._lbuf[pos].isspace():
+            pos += 1
+        while pos < n and self._lbuf[pos].isspace():
+            pos += 1
+        return pos
+
+    def _move_cursor(self, pos: int, extend: bool):
+        self._touch()
+        pos = max(0, min(pos, len(self._lbuf)))
+        if extend:
+            if self._sel_anchor is None:
+                self._sel_anchor = self._lpos
+        else:
+            self._sel_anchor = None
+        self._lpos = pos
+        self._selected = self._sel_range() is not None
+
+    def _sync_line(self):
+        """Overwrite the CLI's line with the local one (end-of-line, kill-line, then the text) so
+        the CLI can never disagree with what's on screen."""
+        if self._lbuf != self._lsynced:
+            self._on_keys("\x05\x15" + self._lbuf)
+            self._lsynced = self._lbuf
+        self._hold()
+
+    def _forward_after_sync(self, send):
+        # For keys whose meaning depends on the CLI's own copy of the line (Tab completion,
+        # history, most Ctrl shortcuts): sync first, then re-adopt whatever the CLI does with it.
+        self._touch()
+        self._sync_line()
+        send()
+        self._adopt, self._adopt_from = True, self._lsynced
+        self._adopt_deadline = time.monotonic() + self.ADOPT_S
+        self._selected, self._sel_anchor = False, None
+        self._render()
+
+    def _local_enter(self):
+        cmd = self._lbuf.strip().lower()
+        if cmd in MODE_SWITCH_COMMANDS and self._on_text:
+            # A widget-level mode switch, not something to type into the CLI.
+            self._on_text(cmd)
+            self._lbuf, self._lpos = "", 0
+            self._selected, self._sel_anchor = False, None
+            self._hold()
+            self._render()
+            return
+        self._sync_line()
+        self._on_control_key("ENTER")
+        self._lbuf = self._lsynced = ""
+        self._lpos = 0
+        self._selected, self._sel_anchor = False, None
+        # The next prompt gets measured afresh once the hold is over.
+        self._shell_start, self._shell_touched = None, False
+        self._refresh_prompt()
+
+    def _local_key(self, event) -> bool:
+        key = event.key()
+        mods = event.modifiers()
+        ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
+        alt = bool(mods & Qt.KeyboardModifier.AltModifier)
+        shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
+        n = len(self._lbuf)
+        rng = self._sel_range()
+        word = ctrl or alt
+        K = Qt.Key
+        if key == K.Key_Backspace and word:
+            self._line_edit(*(rng or (self._word_left(self._lpos), self._lpos)), "")
+        elif key == K.Key_Delete and word:
+            self._line_edit(*(rng or (self._lpos, self._word_right(self._lpos))), "")
+        elif key == K.Key_Left:
+            if rng and not shift and not word:
+                self._move_cursor(rng[0], False)
+            else:
+                self._move_cursor(self._word_left(self._lpos) if word else self._lpos - 1, shift)
+        elif key == K.Key_Right:
+            if rng and not shift and not word:
+                self._move_cursor(rng[1], False)
+            else:
+                self._move_cursor(self._word_right(self._lpos) if word else self._lpos + 1, shift)
+        elif key == K.Key_Home:
+            self._move_cursor(0, shift)
+        elif key == K.Key_End:
+            self._move_cursor(n, shift)
+        elif ctrl and key == K.Key_A:
+            if self._local_kind() == "shell":
+                self._move_cursor(0, False)  # readline: beginning of line
+            else:
+                self._sel_anchor, self._lpos = (0 if n else None), n
+                self._selected = self._sel_range() is not None
+        elif ctrl and key == K.Key_C:
+            if rng:
+                QApplication.clipboard().setText(self._lbuf[rng[0]:rng[1]])
+            else:
+                self._on_keys("\x03")
+                self._lbuf = self._lsynced = ""
+                self._lpos = 0
+                self._hold()
+        elif ctrl and key == K.Key_X:
+            if rng:
+                QApplication.clipboard().setText(self._lbuf[rng[0]:rng[1]])
+                self._line_edit(*rng, "")
+        elif ctrl and event.matches(QKeySequence.StandardKey.Paste):
+            self._paste()
+        elif ctrl and key == K.Key_U:
+            self._line_edit(0, self._lpos, "")
+        elif ctrl and key == K.Key_K:
+            self._line_edit(self._lpos, n, "")
+        elif ctrl and key == K.Key_W:
+            self._line_edit(self._word_left(self._lpos), self._lpos, "")
+        elif ctrl and key == K.Key_E:
+            self._move_cursor(n, False)
+        elif ctrl and self._is_ctrl_letter(event):
+            byte = chr(key - K.Key_A.value + 1)
+            self._forward_after_sync(lambda: self._on_keys(byte))
+        elif ctrl:
+            return False
+        elif key == K.Key_Delete:
+            if rng:
+                self._line_edit(*rng, "")
+            elif self._lpos < n:
+                self._line_edit(self._lpos, self._lpos + 1, "")
+        elif key == K.Key_Backspace:
+            self._local_backspace()
+        elif key in (K.Key_Return, K.Key_Enter):
+            self._local_enter()
+        elif key == K.Key_Escape:
+            self._on_control_key("ESCAPE")
+        elif key == K.Key_Backtab or (key == K.Key_Tab and shift):
+            self._on_control_key("SHIFT_TAB")
+        elif key == K.Key_Tab:
+            self._forward_after_sync(lambda: self._on_keys("\t"))
+        elif key in (K.Key_Up, K.Key_Down):
+            token = "UP" if key == K.Key_Up else "DOWN"
+            self._forward_after_sync(lambda: self._on_control_key(token))
+        elif event.matches(QKeySequence.StandardKey.Paste):
+            self._paste()
+        elif event.text() and event.text().isprintable():
+            self._insert(event.text())
+        else:
+            return False
+        self._blink_on = True
+        self._render()
         return True
 
     def _insert(self, char: str):
-        self._consume_selection()
-        if not self._predict_ok():
-            self._on_keys(char)
+        if self._local_active():
+            self._local_insert(char)
             return
-        self._record(char)
-        self._render()
+        self._shadow += char
         self._on_keys(char)
 
     def _backspace(self):
-        # With nothing pending the text being erased is already in the CLI's own input
-        # (typed earlier, or left there), so there's nothing to predict locally -- just forward it.
-        if self._consume_selection():
+        if self._local_active():
+            self._local_backspace()
             return
-        if not self._predict_ok():
-            self._on_keys("\x7f")
-            return
-        self._record("\x7f")
-        self._render()
+        self._shadow = self._shadow[:-1]
         self._on_keys("\x7f")
 
     def _paste(self):
         text = QApplication.clipboard().text()
         if not text:
             return
-        self._consume_selection()
-        if not self._predict_ok():
-            self._on_keys(text)
+        if self._local_active():
+            self._local_insert(text.replace("\r\n", " ").replace("\n", " ").replace("\r", " "))
             return
-        self._record(*text)
-        self._render()
+        self._shadow += text
         self._on_keys(text)
 
     def _submit_line(self):
-        # Optimistic reset: don't wait for the round trip to clear the typed
-        # line -- the next real screen snapshot will overwrite this anyway.
-        self._on_control_key("ENTER")
-        self._pending = ""
-        self._erased = 0
-        self._render()
+        if self._local_active():
+            self._local_enter()
+            return
+        cmd = self._shadow.strip().lower()
+        if self._on_text and cmd in MODE_SWITCH_COMMANDS:
+            # Already typed into the shell live -- erase it, then switch instead of running it.
+            self._on_keys("\x7f" * len(self._shadow))
+            self._on_text(cmd)
+        else:
+            self._on_control_key("ENTER")
+        self._shadow = ""
 
     def _insert_completion(self, text: str):
-        if not text.startswith(self._pending):
-            return
-        suffix = text[len(self._pending):]
-        self._pending = text
-        self._render()
-        if suffix:
-            self._on_keys(suffix)
-        self.completer.popup().hide()
+        if self._local_active() and text.startswith(self._lbuf):
+            self._lbuf, self._lpos, self._selected, self._sel_anchor = text, len(text), False, None
+            self.completer.popup().hide()
+            self._render()
 
     # Every key the completer's popup cares about (navigation, accept,
     # dismiss) while it's visible -- explicitly deferred to Qt's own popup
@@ -473,75 +877,49 @@ class ClaudeTerminalView(ZoomTextEdit):
             event.ignore()
             return
 
+        if self._local_active() and self._local_key(event):
+            event.accept()
+            return
+
+        # Everything else is a pure mirror: each key goes to the real shell/CLI exactly as a
+        # terminal would send it, and the screen shows only what the backend reports.
         key = event.key()
-        ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
-        if ctrl and key == Qt.Key.Key_A:
-            self._selected = True
-            self._render()
-            event.accept()
-            return
-        if self._selected and ctrl and key == Qt.Key.Key_C:
-            rows = self._server_screen.split("\n")
-            target = self._find_prompt_row(rows)
-            row = self._visible_row(rows[target], target)
-            QApplication.clipboard().setText(row[self._editable_start(row):])
-            event.accept()
-            return
-        if self._selected and key == Qt.Key.Key_Delete:
-            self._consume_selection()
-            event.accept()
-            return
-        keeps_selection = key == Qt.Key.Key_Backspace or event.matches(QKeySequence.StandardKey.Paste) or (
-            not ctrl and bool(event.text()) and event.text().isprintable())
-        if self._selected and not keeps_selection:
-            self._selected = False
-            self._render()
+        mods = event.modifiers()
+        ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
+        shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
         token = _KEYBOARD_CONTROL_KEYS.get(key)
         if token is not None:
-            if token in ("LEFT", "RIGHT", "HOME", "END", "DELETE"):
-                self._uncertain = True
+            if ctrl and token in ("LEFT", "RIGHT"):
+                token = "CTRL_" + token
+            self._shadow = ""
             self._on_control_key(token)
-            event.accept()
-            return
-        if key == Qt.Key.Key_Backtab or (key == Qt.Key.Key_Tab and event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+        elif key == Qt.Key.Key_Backtab or (key == Qt.Key.Key_Tab and shift):
             self._on_control_key("SHIFT_TAB")
-            event.accept()
-            return
-        if key == Qt.Key.Key_Tab:
+        elif key == Qt.Key.Key_Tab:
+            self._shadow = ""
             self._on_keys("\t")
-            event.accept()
-            return
-        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+        elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self._submit_line()
-            event.accept()
-            return
-        if key == Qt.Key.Key_Backspace:
-            self._backspace()
-            event.accept()
-            return
-        if event.matches(QKeySequence.StandardKey.Paste):
-            self._paste()
-            event.accept()
-            return
-        if self._is_ctrl_letter(event):
-            # Ctrl+C copies a selection like any terminal; otherwise it's the interrupt byte.
-            if key == Qt.Key.Key_C and self.textCursor().hasSelection():
-                self.copy()
+        elif key == Qt.Key.Key_Backspace:
+            if ctrl:
+                self._shadow = ""
+                self._on_keys("\x17")  # readline's delete-previous-word
             else:
-                if key not in (Qt.Key.Key_C, Qt.Key.Key_U):
-                    self._uncertain = True
-                if key in (Qt.Key.Key_C, Qt.Key.Key_U):
-                    self._record("\x15")
-                    self._render()
+                self._backspace()
+        elif event.matches(QKeySequence.StandardKey.Paste):
+            self._paste()
+        elif self._is_ctrl_letter(event):
+            if key == Qt.Key.Key_C and self.textCursor().hasSelection():
+                self.copy()  # like any terminal: copy a mouse selection, otherwise interrupt
+            else:
+                self._shadow = ""
                 self._on_keys(chr(key - Qt.Key.Key_A.value + 1))
-            event.accept()
+        elif event.text() and event.text().isprintable():
+            self._insert(event.text())
+        else:
+            event.ignore()
             return
-        text = event.text()
-        if text and text.isprintable():
-            self._insert(text)
-            event.accept()
-            return
-        event.ignore()
+        event.accept()
 
 
 class ClaudeWidget(QWidget):
@@ -560,7 +938,9 @@ class ClaudeWidget(QWidget):
         layout.setContentsMargins(10, 8, 10, 10)
         layout.setSpacing(8)
 
-        self.screen_view = ClaudeTerminalView(self._send_keys, self._send_control_key, self._send_resize)
+        self.screen_view = ClaudeTerminalView(
+            self._send_keys, self._send_control_key, self._send_resize,
+            local_line_editing=True, on_text=self._send_text)
         self.screen_view.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         self.screen_view.setStyleSheet(Theme.get_style("LogViewer"))
         layout.addWidget(self.screen_view, stretch=1)
@@ -568,6 +948,12 @@ class ClaudeWidget(QWidget):
     def _send_control_key(self, token: str):
         try:
             self.router.dispatch("claude.control_key", control_key=token)
+        except Exception:
+            pass
+
+    def _send_text(self, text: str):
+        try:
+            self.router.dispatch("claude.ask", text=text)
         except Exception:
             pass
 
@@ -583,10 +969,14 @@ class ClaudeWidget(QWidget):
         except Exception:
             pass
 
-    def update_screen(self, text: str, cursor=None):
+    def update_from_payload(self, payload: dict):
+        self.update_screen(payload.get("text", ""), payload.get("cursor"), payload.get("ansi"),
+                           payload.get("mode"), payload.get("idle"))
+
+    def update_screen(self, text: str, cursor=None, ansi=None, mode=None, idle=None):
         # jarvis/claude/screen is a full-snapshot payload, not an incremental
         # tail, so each update replaces the whole view rather than appending.
-        self.screen_view.set_server_screen(text, cursor)
+        self.screen_view.set_server_screen(text, cursor, ansi, mode, idle)
 
     def get_standalone_min_size(self):
         return 480, 420

@@ -25,6 +25,12 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file_
 
 MAX_SPOKEN_CHARS = 800
 
+_ANSI_CSI = re.compile(r"\x1b\[[0-9;:?]*[A-Za-z]")
+
+
+def strip_ansi(text: str) -> str:
+    return _ANSI_CSI.sub("", text)
+
 
 def speakable_text(raw: str) -> str:
     """Turns a markdown answer into something worth reading aloud: code, tables
@@ -108,10 +114,26 @@ class ClaudeBridgeService:
             self._publish_if_active(screen_text)
 
     def _on_terminal_screen_update(self, screen_text: str):
-        screen_text = self._trim_screen(screen_text)
-        self._last_terminal_screen = screen_text
+        # A backend may hand over styled text (SGR escapes); the plain text stays the source of
+        # truth for the widget's logic and the styled copy rides along only when it differs.
+        ansi = self._trim_screen(screen_text)
+        plain = strip_ansi(ansi)
+        self._last_terminal_screen = plain
         if self.mode == "terminal":
-            self._publish_if_active(screen_text)
+            self._publish_if_active(plain, ansi if ansi != plain else None)
+
+    def _screen_mode(self) -> str:
+        # Tells the widget what it's mirroring: only a readline-style shell can have its line
+        # edited locally and overwritten with Ctrl+E Ctrl+U on Enter.
+        if self.mode == "claude":
+            return "claude"
+        return "terminal" if getattr(self.terminal_bridge, "READLINE_EDITING", False) is True else "terminal-basic"
+
+    def _shell_idle(self):
+        if self.mode != "terminal":
+            return None
+        idle = getattr(self.terminal_bridge, "idle", None)
+        return idle if isinstance(idle, bool) else None
 
     def _active_cursor(self):
         backend = self.bridge if self.mode == "claude" else self.terminal_bridge
@@ -120,19 +142,30 @@ class ClaudeBridgeService:
             return (cursor[0], cursor[1])
         return None
 
-    def _publish_if_active(self, screen_text: str):
+    def _publish_if_active(self, screen_text: str, ansi=None):
         cursor = self._active_cursor()
-        if (screen_text, cursor) == self._last_published_screen:
+        key = (screen_text, cursor, ansi, self._screen_mode(), self._shell_idle())
+        if key == self._last_published_screen:
             return
-        self._last_published_screen = (screen_text, cursor)
+        self._last_published_screen = key
         if self.loop and self.mqtt_client:
-            coro = self._publish_screen(screen_text, cursor) if cursor else self._publish_screen(screen_text)
+            if ansi:
+                coro = self._publish_screen(screen_text, cursor, ansi)
+            elif cursor:
+                coro = self._publish_screen(screen_text, cursor)
+            else:
+                coro = self._publish_screen(screen_text)
             asyncio.run_coroutine_threadsafe(coro, self.loop)
 
-    async def _publish_screen(self, screen_text: str, cursor=None):
-        payload = {"text": screen_text}
+    async def _publish_screen(self, screen_text: str, cursor=None, ansi=None):
+        payload = {"text": screen_text, "mode": self._screen_mode()}
+        idle = self._shell_idle()
+        if idle is not None:
+            payload["idle"] = idle
         if cursor:
             payload["cursor"] = list(cursor)
+        if ansi:
+            payload["ansi"] = ansi
         try:
             # Retained so a widget (or anything else) that subscribes after
             # the last change still sees the current screen immediately,

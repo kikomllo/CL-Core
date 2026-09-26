@@ -1021,5 +1021,56 @@
     "priority_words": [
       "logs"
     ]
+  },
+  "monitor_pair": {
+    "action_id": "monitor.pair",
+    "templates": [
+      "pair my phone",
+      "pair my device",
+      "pair a new device",
+      "pair my beacon",
+      "start pairing",
+      "set up my beacon",
+      "pair my jarvis app",
+      "begin pairing my phone"
+    ],
+    "priority_words": [
+      "pair",
+      "pairing"
+    ]
+  },
+  "monitor_unpair": {
+    "action_id": "monitor.unpair",
+    "templates": [
+      "unpair my phone",
+      "unpair my device",
+      "unpair my beacon",
+      "forget my phone",
+      "forget my device",
+      "remove my paired device",
+      "remove my beacon"
+    ],
+    "priority_words": [
+      "unpair",
+      "forget"
+    ]
+  },
+  "monitor_status": {
+    "action_id": "monitor.status",
+    "templates": [
+      "can you see my phone",
+      "can you see my device",
+      "can you see my beacon",
+      "do you see me",
+      "am i detected",
+      "is my phone paired",
+      "is my beacon paired",
+      "is my device paired"
+    ],
+    "priority_words": [
+      "detected",
+      "paired",
+      "beacon"
+    ]
   }
 }

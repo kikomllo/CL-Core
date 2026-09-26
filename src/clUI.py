@@ -74,6 +74,8 @@ class MqttThread(QThread):
     note_status_signal = pyqtSignal(dict)
     calendar_status_signal = pyqtSignal(dict)
     claude_screen_signal = pyqtSignal(dict)
+    presence_signal = pyqtSignal(dict)
+    pairing_signal = pyqtSignal(dict)
 
     def __init__(self, mode="overlay"):
         super().__init__()
@@ -141,6 +143,8 @@ class MqttThread(QThread):
         client.subscribe("jarvis/sys/note/status")
         client.subscribe("jarvis/sys/calendar/status")
         client.subscribe("jarvis/claude/screen")
+        client.subscribe("jarvis/sys/presence")
+        client.subscribe("jarvis/monitor/pairing")
         client.publish("jarvis/sys/module_ready", json.dumps({"module": "ui"}), retain=False)
         
     def on_message(self, client, userdata, msg):
@@ -170,6 +174,8 @@ class MqttThread(QThread):
             "jarvis/sys/note/status": self._handle_note_status,
             "jarvis/sys/calendar/status": self._handle_calendar_status,
             "jarvis/claude/screen": self._handle_claude_screen,
+            "jarvis/sys/presence": self._handle_presence,
+            "jarvis/monitor/pairing": self._handle_pairing,
         }
 
         handler = handlers.get(topic)
@@ -179,6 +185,14 @@ class MqttThread(QThread):
     def _handle_claude_screen(self, payload):
         if isinstance(payload, dict):
             self.claude_screen_signal.emit(payload)
+
+    def _handle_presence(self, payload):
+        if isinstance(payload, dict):
+            self.presence_signal.emit(payload)
+
+    def _handle_pairing(self, payload):
+        if isinstance(payload, dict):
+            self.pairing_signal.emit(payload)
 
     def _handle_todo_status(self, payload):
         if isinstance(payload, dict):
@@ -1733,6 +1747,13 @@ class JarvisUI(QWidget):
         # ClaudeWidget starts populated instead of blank until the next real change.
         self._last_claude_screen_text = ""
         self._last_claude_screen_cursor = None
+        self._last_claude_screen_ansi = None
+        self._last_claude_screen_mode = None
+        self._last_claude_payload = {"text": ""}
+        # Presence is retained, but a pairing code is not -- both are cached so the Settings widget's
+        # Presence tab is correct the moment it's opened, whenever the message arrived.
+        self._last_presence = None
+        self._last_pairing = None
 
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_animation)
@@ -1862,6 +1883,8 @@ class JarvisUI(QWidget):
         self.mqtt_thread.note_status_signal.connect(self._handle_note_status)
         self.mqtt_thread.calendar_status_signal.connect(self._handle_calendar_data)
         self.mqtt_thread.claude_screen_signal.connect(self._handle_claude_screen)
+        self.mqtt_thread.presence_signal.connect(self._handle_presence)
+        self.mqtt_thread.pairing_signal.connect(self._handle_pairing)
         self.mqtt_thread.start()
 
         # Only restore fullscreen mode -- and any dashboard widgets that were
@@ -2106,7 +2129,7 @@ class JarvisUI(QWidget):
             widget_id = "widget_claude"
             if widget_id not in self.active_widgets:
                 claude_widget = ClaudeWidget()
-                claude_widget.update_screen(self._last_claude_screen_text, self._last_claude_screen_cursor)
+                claude_widget.update_from_payload(self._last_claude_payload)
                 self.spawn_widget(widget_id, "Claude", claude_widget)
             else:
                 w = self.active_widgets[widget_id]
@@ -2122,6 +2145,7 @@ class JarvisUI(QWidget):
             widget_id = "widget_settings"
             if widget_id not in self.active_widgets:
                 settings_widget = SettingsWidget()
+                settings_widget.apply_monitor_state(self._last_presence, self._last_pairing)
                 self.spawn_widget(widget_id, "System Settings", settings_widget)
             else:
                 w = self.active_widgets[widget_id]
@@ -2234,14 +2258,34 @@ class JarvisUI(QWidget):
             if isinstance(wrapper.content_widget, NoteWidget):
                 wrapper.content_widget.update_status(data)
 
+    def _settings_widget(self):
+        wrapper = self.active_widgets.get("widget_settings")
+        content = getattr(wrapper, "content_widget", None)
+        return content if isinstance(content, SettingsWidget) else None
+
+    def _handle_presence(self, data):
+        self._last_presence = data
+        widget = self._settings_widget()
+        if widget:
+            widget.update_presence(data)
+
+    def _handle_pairing(self, data):
+        self._last_pairing = data
+        widget = self._settings_widget()
+        if widget:
+            widget.update_pairing(data)
+
     def _handle_claude_screen(self, data):
         self._last_claude_screen_text = data.get("text", "")
         self._last_claude_screen_cursor = data.get("cursor")
+        self._last_claude_screen_ansi = data.get("ansi")
+        self._last_claude_screen_mode = data.get("mode")
+        self._last_claude_payload = data
         widget_id = "widget_claude"
         if widget_id in self.active_widgets:
             wrapper = self.active_widgets[widget_id]
             if isinstance(wrapper.content_widget, ClaudeWidget):
-                wrapper.content_widget.update_screen(self._last_claude_screen_text, self._last_claude_screen_cursor)
+                wrapper.content_widget.update_from_payload(self._last_claude_payload)
 
     def _handle_calendar_data(self, data):
         if hasattr(self, 'calendar_drawer'):
@@ -3153,6 +3197,7 @@ class JarvisUI(QWidget):
                     elif widget_id == "widget_settings":
                         if widget_id not in self.active_widgets:
                             settings_widget = SettingsWidget()
+                            settings_widget.apply_monitor_state(self._last_presence, self._last_pairing)
                             self.spawn_widget(widget_id, "System Settings", settings_widget)
                     elif widget_id == "widget_updates":
                         if widget_id not in self.active_widgets:
@@ -3161,7 +3206,7 @@ class JarvisUI(QWidget):
                     elif widget_id == "widget_claude":
                         if widget_id not in self.active_widgets:
                             claude_widget = ClaudeWidget()
-                            claude_widget.update_screen(self._last_claude_screen_text, self._last_claude_screen_cursor)
+                            claude_widget.update_from_payload(self._last_claude_payload)
                             self.spawn_widget(widget_id, "Claude", claude_widget)
 
                     if widget_id in self.active_widgets:

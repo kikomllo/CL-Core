@@ -375,6 +375,90 @@ class TestScreenUpdatePublishing:
         service._on_claude_screen_update("frame A")
         assert scheduled.call_count == 2
 
+    def test_styled_terminal_screen_is_published_as_plain_text_plus_ansi(self, service, mocker):
+        service.mqtt_client = MagicMock()
+        service.loop = MagicMock()
+        service.mode = "terminal"
+        service.terminal_bridge = MagicMock()
+        service.terminal_bridge.cursor = (4, 1)
+        publish = mocker.patch.object(service, "_publish_screen")
+        mocker.patch("asyncio.run_coroutine_threadsafe")
+        styled = "out\n$ \x1b[38;5;244mear\x1b[0m   "
+
+        service._on_terminal_screen_update(styled)
+
+        publish.assert_called_once_with("out\n$ ear", (4, 1), "out\n$ \x1b[38;5;244mear\x1b[0m")
+        assert service._last_terminal_screen == "out\n$ ear"
+
+    def test_plain_terminal_screen_carries_no_ansi_field(self, service, mocker):
+        service.mqtt_client = MagicMock()
+        service.loop = MagicMock()
+        service.mode = "terminal"
+        publish = mocker.patch.object(service, "_publish_screen")
+        mocker.patch("asyncio.run_coroutine_threadsafe")
+
+        service._on_terminal_screen_update("plain text")
+
+        publish.assert_called_once_with("plain text")
+
+    def test_screen_mode_tells_the_widget_what_it_is_mirroring(self, service):
+        service.mode = "claude"
+        assert service._screen_mode() == "claude"
+
+        service.mode = "terminal"
+        service.terminal_bridge = MagicMock(READLINE_EDITING=True)
+        assert service._screen_mode() == "terminal"
+
+        service.terminal_bridge = MagicMock(READLINE_EDITING=False)
+        assert service._screen_mode() == "terminal-basic"
+
+    def test_published_payload_includes_the_mode(self, service):
+        import asyncio
+        service.mode = "claude"
+        service.mqtt_client = MagicMock()
+        service.mqtt_client.publish = MagicMock(side_effect=lambda *a, **k: asyncio.sleep(0))
+
+        asyncio.run(service._publish_screen("hi", (1, 0)))
+
+        payload = json.loads(service.mqtt_client.publish.call_args.args[1])
+        assert payload == {"text": "hi", "mode": "claude", "cursor": [1, 0]}
+
+    def test_idle_is_published_only_for_the_terminal_and_a_change_republishes(self, service, mocker):
+        service.mqtt_client = MagicMock()
+        service.loop = MagicMock()
+        service.mode = "terminal"
+        service.terminal_bridge = MagicMock(READLINE_EDITING=True, idle=True, cursor=(3, 0))
+        publish = mocker.patch.object(service, "_publish_screen")
+        scheduled = mocker.patch("asyncio.run_coroutine_threadsafe")
+
+        service._on_terminal_screen_update("$ ")
+        service._on_terminal_screen_update("$ ")
+        assert scheduled.call_count == 1
+
+        service.terminal_bridge.idle = False  # a program started; same screen, different state
+        service._on_terminal_screen_update("$ ")
+        assert scheduled.call_count == 2
+
+        assert service._shell_idle() is False
+        service.mode = "claude"
+        assert service._shell_idle() is None
+
+    def test_published_payload_carries_the_idle_flag(self, service):
+        import asyncio
+        service.mode = "terminal"
+        service.terminal_bridge = MagicMock(READLINE_EDITING=True, idle=True)
+        service.mqtt_client = MagicMock()
+        service.mqtt_client.publish = MagicMock(side_effect=lambda *a, **k: asyncio.sleep(0))
+
+        asyncio.run(service._publish_screen("hi", (1, 0)))
+
+        payload = json.loads(service.mqtt_client.publish.call_args.args[1])
+        assert payload["idle"] is True and payload["mode"] == "terminal"
+
+    def test_strip_ansi_removes_sgr_sequences(self):
+        from clClaudeBridge import strip_ansi
+        assert strip_ansi("\x1b[1;34mhi\x1b[0m there") == "hi there"
+
     def test_padding_only_changes_do_not_republish(self, service, mocker):
         service.mqtt_client = MagicMock()
         service.loop = MagicMock()

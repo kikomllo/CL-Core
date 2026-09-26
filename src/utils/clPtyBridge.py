@@ -41,6 +41,10 @@ class ClaudePtyBridge(ClaudeSessionBase):
         "HOME": "\x1bOH",
         "END": "\x1bOF",
         "DELETE": "\x1b[3~",
+        "PAGEUP": "\x1b[5~",
+        "PAGEDOWN": "\x1b[6~",
+        "CTRL_LEFT": "\x1b[1;5D",
+        "CTRL_RIGHT": "\x1b[1;5C",
         "DOWN": "\x1bOB",
     }
 

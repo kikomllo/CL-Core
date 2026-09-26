@@ -3,7 +3,7 @@ import os
 import sys
 from clTheme import Theme
 from utils.clActionRouter import ActionRouter
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QFrame, QCheckBox, QComboBox, QPushButton, QTabWidget, QLineEdit, QInputDialog, QSizePolicy, QStylePainter, QStyleOptionComboBox, QStyle
+from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QFrame, QCheckBox, QComboBox, QPushButton, QTabWidget, QLineEdit, QInputDialog, QSizePolicy, QStylePainter, QStyleOptionComboBox, QStyle
 from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal
 from PyQt6.QtGui import QFontMetrics
 from utils.clConfigLoader import ConfigLoader
@@ -536,6 +536,8 @@ class SettingsWidget(QWidget):
         ))
         audio_layout.addSpacing(20)
 
+        self._build_presence_tab()
+
         # --- TAB 7: DEBUG ---
         debug_scroll, debug_layout = self._create_scroll_tab()
         self.tabs.addTab(debug_scroll, "Debug")
@@ -570,6 +572,140 @@ class SettingsWidget(QWidget):
             lambda state: self._toggle_debug_flag("capture_stt_training_data", state)
         ))
         debug_layout.addSpacing(20)
+
+    # ---- Presence tab: pair/unpair the single beacon device and show whether it's nearby ----
+    def _build_presence_tab(self):
+        scroll, layout = self._create_scroll_tab()
+        self.tabs.addTab(scroll, "Presence")
+        self._presence = None
+        self._pairing = None
+
+        layout.addWidget(self._create_section_label("Paired Device"))
+        self.presence_status = QLabel("Waiting for the presence monitor...")
+        self.presence_status.setWordWrap(True)
+        self.presence_status.setStyleSheet("color: #ffe6cc; font-size: 9.5pt;")
+        layout.addWidget(self.presence_status)
+
+        button_row = QWidget()
+        row = QHBoxLayout(button_row)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(s(8))
+        self.pair_btn = QPushButton("Pair new device")
+        self.cancel_pair_btn = QPushButton("Cancel pairing")
+        self.unpair_btn = QPushButton("Unpair")
+        for btn, action in ((self.pair_btn, "monitor.pair"), (self.cancel_pair_btn, "monitor.cancel"),
+                            (self.unpair_btn, "monitor.unpair")):
+            btn.setStyleSheet(Theme.get_style("SecondaryButton"))
+            btn.clicked.connect(lambda checked=False, a=action: self._monitor_action(a))
+            row.addWidget(btn)
+        row.addStretch(1)
+        layout.addWidget(button_row)
+
+        # Shown only while a pairing is open: the code to give the beacon, and how long it's valid.
+        self.pairing_panel = QWidget()
+        panel = QVBoxLayout(self.pairing_panel)
+        panel.setContentsMargins(0, s(4), 0, 0)
+        panel.setSpacing(s(6))
+        panel.addWidget(self._create_section_label("Pairing Code"))
+        self.pairing_code = QLabel("")
+        self.pairing_code.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.pairing_code.setStyleSheet(
+            f"color: {Theme.C_PRIMARY}; font-family: monospace; font-size: 12pt; font-weight: bold;")
+        self.pairing_code.setWordWrap(True)
+        panel.addWidget(self.pairing_code)
+        self.pairing_hint = QLabel("Enter this code in your JARVIS beacon app.")
+        self.pairing_hint.setWordWrap(True)
+        self.pairing_hint.setStyleSheet("color: #a89a8c; font-size: 9pt;")
+        panel.addWidget(self.pairing_hint)
+        self.copy_code_btn = QPushButton("Copy code")
+        self.copy_code_btn.setStyleSheet(Theme.get_style("SecondaryButton"))
+        self.copy_code_btn.clicked.connect(self._copy_pairing_code)
+        panel.addWidget(self.copy_code_btn, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self.pairing_panel)
+
+        self.pairing_message = QLabel("")
+        self.pairing_message.setWordWrap(True)
+        self.pairing_message.setStyleSheet("color: #ffe6cc; font-size: 9pt;")
+        layout.addWidget(self.pairing_message)
+        layout.addSpacing(20)
+
+        self._pairing_timer = QTimer(self)
+        self._pairing_timer.timeout.connect(self._refresh_pairing_countdown)
+        self._refresh_presence_view()
+
+    def _monitor_action(self, action):
+        try:
+            self.router.dispatch(action)
+        except Exception:
+            pass
+
+    def _copy_pairing_code(self):
+        if self._pairing and self._pairing.get("code"):
+            QApplication.clipboard().setText(self._pairing["code"])
+            self.pairing_message.setText("Code copied.")
+
+    def apply_monitor_state(self, presence, pairing):
+        """Called when the widget opens, with whatever the dashboard last heard."""
+        self._presence, self._pairing = presence, pairing
+        if self._pairing and self._pairing.get("state") != "waiting":
+            self._pairing = None  # a finished attempt from earlier isn't worth replaying
+        self._refresh_presence_view()
+
+    def update_presence(self, payload):
+        self._presence = payload
+        self._refresh_presence_view()
+
+    def update_pairing(self, payload):
+        state = payload.get("state")
+        if state == "waiting":
+            self._pairing = payload
+            self.pairing_message.setText("")
+        else:
+            self._pairing = None
+            self.pairing_message.setText({
+                "paired": "Paired.",
+                "expired": "Pairing timed out.",
+                "cancelled": "Pairing cancelled.",
+                "failed": f"Pairing failed: {payload.get('reason') or 'unknown reason'}",
+            }.get(state, ""))
+        self._refresh_presence_view()
+
+    @staticmethod
+    def presence_text(p):
+        if not p:
+            return "Waiting for the presence monitor..."
+        if not p.get("paired"):
+            return "No device paired."
+        if p.get("available") is False:
+            return f"Paired - Bluetooth unavailable ({p.get('reason') or 'unknown'})."
+        if p.get("present"):
+            rssi = p.get("rssi")
+            return "Paired - here" + (f" (signal {rssi} dBm)." if rssi is not None else ".")
+        return "Paired - away."
+
+    def _refresh_presence_view(self):
+        p = self._presence
+        self.presence_status.setText(self.presence_text(p))
+        waiting = bool(self._pairing and self._pairing.get("state") == "waiting")
+        self.pair_btn.setVisible(not waiting)
+        self.cancel_pair_btn.setVisible(waiting)
+        self.unpair_btn.setVisible(bool(p and p.get("paired")) and not waiting)
+        self.pairing_panel.setVisible(waiting)
+        if waiting:
+            self.pairing_code.setText(self._pairing.get("code", ""))
+            self._refresh_pairing_countdown()
+            self._pairing_timer.start(1000)
+        else:
+            self._pairing_timer.stop()
+
+    def _refresh_pairing_countdown(self):
+        import time
+        expires = (self._pairing or {}).get("expires_at")
+        if expires is None:
+            return
+        left = max(0, int(expires - time.time()))
+        self.pairing_hint.setText(
+            f"Enter this code in your JARVIS beacon app. Expires in {left // 60}:{left % 60:02d}.")
 
     def _toggle_debug_flag(self, flag_key, state):
         is_enabled = (state == 2)

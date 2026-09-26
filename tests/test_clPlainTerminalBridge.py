@@ -132,3 +132,52 @@ class TestSendRawKeys:
         run.assert_called_once_with(
             ["tmux", "send-keys", "-t", bridge.SESSION_NAME, "-l", "ls -la"], check=True
         )
+
+
+class TestStyledUnjoinedCapture:
+    """/terminal should look like a real terminal: colours kept (-e) and wrapped lines left as the
+    pane shows them (no -J), with the pane's own cursor position."""
+
+    def test_capture_keeps_attributes_and_does_not_join_lines(self, mocker):
+        bridge = _bridge()
+        run = mocker.patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="x\n"))
+        mocker.patch("utils.clPlainTerminalBridge.read_tmux_cursor", return_value=(1, 0))
+        mocker.patch("utils.clPlainTerminalBridge.tmux_at_shell", return_value=True)
+
+        bridge._emit_screen()
+
+        args = run.call_args_list[0][0][0]
+        assert args == ["tmux", "capture-pane", "-p", "-e", "-t", bridge.SESSION_NAME]
+
+    def test_cursor_is_read_from_the_pane_itself(self, mocker):
+        bridge = _bridge()
+        mocker.patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="x\n"))
+        read = mocker.patch("utils.clPlainTerminalBridge.read_tmux_cursor", return_value=(6, 1))
+
+        bridge._emit_screen()
+
+        read.assert_called_once_with(bridge.SESSION_NAME, joined_mode=False)
+        assert bridge.cursor == (6, 1)
+
+
+class TestNavigationTokens:
+    def test_page_and_ctrl_arrow_tokens_use_tmux_key_names(self, mocker):
+        bridge = _bridge()
+        send_keys = mocker.patch.object(bridge, "send_keys")
+        for token in ("PAGEUP", "PAGEDOWN", "CTRL_LEFT", "CTRL_RIGHT"):
+            bridge.send_control_key(token)
+        assert [c.args[0] for c in send_keys.call_args_list] == ["PPage", "NPage", "C-Left", "C-Right"]
+
+
+class TestIdleReport:
+    def test_every_capture_refreshes_whether_the_shell_is_at_its_prompt(self, mocker):
+        bridge = _bridge()
+        mocker.patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="x\n"))
+        mocker.patch("utils.clPlainTerminalBridge.read_tmux_cursor", return_value=(1, 0))
+        at_shell = mocker.patch("utils.clPlainTerminalBridge.tmux_at_shell", side_effect=[False, True])
+
+        bridge._emit_screen()
+        assert bridge.idle is False
+        bridge._emit_screen()
+        assert bridge.idle is True
+        at_shell.assert_called_with(bridge.SESSION_NAME)
