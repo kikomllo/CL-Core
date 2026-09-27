@@ -31,6 +31,7 @@ Detailed notes live in separate files so they're only loaded when relevant:
 | OS-specific code: volume/media/eco mode, alarms, WiFi SSID, PTT keys, Spotify wakeup, process sweeps, Windows two-process note | `docs/context/cross-platform.md` |
 | `clUI.py`, `src/ui/*Widget.py`, window flags, widget geometry | `docs/context/ui.md` |
 | Presence monitor: `clMonitor.py`, `utils/clBeacon.py`, beacon pairing, the Settings Presence tab | `docs/context/monitor.md` |
+| Automation engine: `clAutomation.py`, presence lights, `settings.automation_settings` | `docs/context/automation.md` |
 | Claude bridge: backends, config dir, `--continue`, requirements | `docs/context/claude-bridge-core.md` |
 | Claude bridge: first-run auto-answers, speech, stall watchdog, sign-in/`--setup` | `docs/context/claude-bridge-session.md` |
 | Claude widget, `/terminal` ⇄ `/claude`, terminal resize | `docs/context/claude-bridge-widget.md` |

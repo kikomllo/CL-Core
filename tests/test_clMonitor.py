@@ -51,7 +51,8 @@ CLOCK = Clock()
 
 
 @pytest.fixture(autouse=True)
-def _reset():
+def _reset(tmp_path, monkeypatch):
+    monkeypatch.setattr(m, "BASELINE_PATH", str(tmp_path / "room_baseline.json"))
     FakeScanner.fail = None
     FakeScanner.created = []
     CLOCK.t = 1_000_000.0
@@ -142,6 +143,70 @@ class TestPresenceTracker:
         t.update(0)
         assert t.update(29) is None
         assert t.update(31) == "left"
+
+    def decay_tracker(self):
+        return m.PresenceTracker(-70, -85, away_timeout_s=30, smoothing=1.0)   # decays 0.5 dB/s from -70
+
+    def test_silence_after_a_weak_packet_leaves_sooner_than_after_a_strong_one(self):
+        weak, strong = self.decay_tracker(), self.decay_tracker()
+        for t in (weak, strong):
+            t.observe(-60, 0)
+            t.update(0)
+        weak.observe(-80, 5)
+        strong.observe(-60, 5)
+        assert weak.update(14) is None and weak.update(16) == "left"     # -80 - 0.5 * age crosses -85 at 10 s
+        assert strong.update(16) is None and strong.update(25) is None   # -60 stays far above -85
+
+    def test_a_strong_signal_that_goes_quiet_still_leaves_at_the_hard_limit(self):
+        t = self.decay_tracker()
+        t.observe(-60, 0)
+        t.update(0)
+        assert t.update(29) is None
+        assert t.update(31) == "left" and "limit 30s" in t.reason
+
+    def test_a_new_packet_resets_the_estimate(self):
+        t = self.decay_tracker()
+        t.observe(-60, 0)
+        t.update(0)
+        t.observe(-80, 5)
+        t.update(14)
+        t.observe(-78, 14)          # heard again just before it would have crossed
+        assert t.update(20) is None and t.estimated_rssi(20) == pytest.approx(-81)
+
+    def test_the_decay_rate_is_a_fixed_dB_per_second_whatever_the_timeout(self):
+        t = m.PresenceTracker(-70, -85, away_timeout_s=30, smoothing=1.0)
+        assert t.decay_rate() == 0.5
+        t.baseline, t.away_timeout_s = -60, 10
+        assert t.decay_rate() == 0.5
+        assert m.PresenceTracker(-70, -85, 30, 1.0, decay_db_per_s=2).decay_rate() == 2
+
+    def test_arrival_needs_a_stronger_signal_than_leaving(self):
+        t = m.PresenceTracker(-75, -88, 30, 1.0, margins=(15, 21))
+        for baseline in (None, -40, -60, -71, -85):
+            t.baseline = baseline
+            enter, exit_ = t.thresholds()
+            assert enter - exit_ >= 6
+
+    def test_service_wires_the_decay_setting_into_the_tracker(self, tmp_path):
+        s = m.MonitorService(settings=dict(m.DEFAULT_SETTINGS, decay_db_per_s=1.5),
+                             store=m.PairingStore(str(tmp_path / "p.json")))
+        assert s.tracker.decay_rate() == 1.5
+
+    def test_a_missing_estimate_before_any_packet(self):
+        assert self.decay_tracker().estimated_rssi(10) is None
+
+    def test_events_record_why_they_fired(self):
+        t = self.decay_tracker()
+        t.observe(-60, 0)
+        assert t.update(0) == "arrived" and "-60 dBm reached -70" in t.reason
+        t.observe(-80, 5)
+        t.update(5)
+        assert t.update(16) == "left"
+        assert "no beacon for 11s: last -80 dBm faded to -86, below -85" in t.reason
+        t.observe(-60, 20)
+        t.update(20)
+        t.observe(-90, 21)
+        assert t.update(21) == "left" and "signal -90 dBm fell below -85" in t.reason
 
     def test_after_leaving_it_needs_the_enter_threshold_again(self):
         t = self.tracker()
@@ -606,3 +671,284 @@ class TestEcosystemWiring:
     def test_bleak_is_a_declared_dependency(self):
         with open(os.path.join(self.ROOT, "requirements.txt"), encoding="utf-8") as f:
             assert any(line.lower().startswith("bleak") for line in f)
+
+
+class TestRelativeThresholds:
+    def tracker(self, baseline):
+        t = m.PresenceTracker(-75, -88, 30, 1.0, margins=(15, 28))
+        t.baseline = baseline
+        return t
+
+    def test_fixed_values_are_used_until_calibrated(self):
+        assert self.tracker(None).thresholds() == (-75, -88)
+
+    def test_thresholds_follow_the_in_room_level(self):
+        assert self.tracker(-60).thresholds() == (-75, -88)
+        assert self.tracker(-50).thresholds() == (-65, -78)
+
+    def test_a_weak_phone_still_gets_sane_thresholds(self):
+        enter, exit_ = self.tracker(-85).thresholds()
+        assert enter == -90 and exit_ == -98
+
+    def test_a_very_strong_baseline_is_capped(self):
+        enter, exit_ = self.tracker(-30).thresholds()
+        assert enter == -50 and exit_ == -58
+
+    def test_arrival_and_leaving_use_the_relative_values(self):
+        t = self.tracker(-50)               # enter -65, exit -78
+        t.observe(-70, 0)
+        assert t.update(0) is None          # would have arrived under the fixed -75
+        t.observe(-60, 1)
+        assert t.update(1) == "arrived"
+        t.observe(-80, 2)                   # would still be present under the fixed -88
+        assert t.update(2) == "left"
+
+
+class TestRoomBaseline:
+    def test_needs_enough_samples_then_reports_the_lower_quartile(self, tmp_path):
+        b = m.RoomBaseline(str(tmp_path / "b.json"))
+        for i, rssi in enumerate([-50, -52, -54, -56, -58, -60, -62]):
+            assert b.add(rssi, i * 10)
+        assert b.level() is None
+        b.add(-64, 100)
+        assert b.level() == -60.0  # the weak quartile of the eight samples
+
+    def test_samples_are_rate_limited(self, tmp_path):
+        b = m.RoomBaseline(str(tmp_path / "b.json"))
+        assert b.add(-60, 100) and not b.add(-61, 102) and b.add(-62, 106)
+
+    def test_persists_and_clears(self, tmp_path):
+        path = str(tmp_path / "b.json")
+        b = m.RoomBaseline(path)
+        b.add(-60, 100)
+        assert m.RoomBaseline(path).samples == [-60]
+        b.clear()
+        assert m.RoomBaseline(path).samples == [] and not os.path.exists(path)
+
+    def test_history_is_capped_and_junk_files_are_ignored(self, tmp_path):
+        path = tmp_path / "b.json"
+        path.write_text("not json")
+        b = m.RoomBaseline(str(path))
+        assert b.samples == []
+        for i in range(m.RoomBaseline.MAX_SAMPLES + 10):
+            b.add(-60, i * 10)
+        assert len(b.samples) == m.RoomBaseline.MAX_SAMPLES
+
+
+class TestActivityCalibration:
+    def paired_here(self, store, rssi=-60):
+        s = make_service(store)
+        secret = pair(s)
+        s.on_beacon(beacon_for(secret), rssi, CLOCK.t)
+        s.tick(CLOCK.t)
+        s.drain()
+        return s, secret
+
+    def feed(self, s, secret, rssi, n=1):
+        for _ in range(n):
+            CLOCK.advance(6)
+            s.on_beacon(beacon_for(secret), rssi, CLOCK.t)
+            s.on_activity(CLOCK.t)
+
+    def test_activity_while_present_calibrates_after_enough_samples(self, store):
+        s, secret = self.paired_here(store)
+        self.feed(s, secret, -55, n=7)
+        assert s.tracker.baseline is None
+        self.feed(s, secret, -55)
+        assert s.tracker.baseline == -55
+        assert s.tracker.thresholds() == (-70, -76)
+        assert s.presence_payload()["baseline"] == -55
+
+    def test_activity_while_away_or_unpaired_is_ignored(self, store):
+        s = make_service(store)
+        s.on_activity(CLOCK.t)                       # unpaired
+        secret = pair(s)
+        s.on_activity(CLOCK.t)                       # paired but not present
+        assert s.baseline.samples == []
+
+    def test_a_stale_reading_is_not_used(self, store):
+        s, secret = self.paired_here(store)
+        CLOCK.advance(20)
+        s.on_activity(CLOCK.t)
+        assert s.baseline.samples == []
+
+    def test_a_new_pairing_or_unpairing_forgets_the_baseline(self, store):
+        s, secret = self.paired_here(store)
+        self.feed(s, secret, -55, n=8)
+        assert s.tracker.baseline is not None
+        s.unpair(CLOCK.t)
+        assert s.tracker.baseline is None and s.baseline.samples == []
+        s, secret = self.paired_here(store)
+        self.feed(s, secret, -55, n=8)
+        pair(s)
+        assert s.tracker.baseline is None and s.baseline.samples == []
+
+    def test_a_saved_baseline_is_used_at_startup_only_when_paired(self, store, tmp_path):
+        s, secret = self.paired_here(store)
+        self.feed(s, secret, -55, n=8)
+        assert make_service(store).tracker.baseline == -55
+        store.clear()
+        assert make_service(store).tracker.baseline is None
+
+
+class TestReceptionRate:
+    def test_counts_only_valid_beacon_packets_over_a_sliding_window(self, store):
+        s = make_service(store)
+        secret = pair(s)
+        for i in range(20):
+            s.on_beacon(beacon_for(secret), -60, CLOCK.t + i * 0.25)
+        s.on_beacon(b"junk", -60, CLOCK.t + 5)
+        assert s.packets_per_s(CLOCK.t + 5) == 2.0          # 20 packets in a 10 s window
+        assert s.packets_per_s(CLOCK.t + 30) == 0.0          # all aged out
+
+    def test_the_rate_is_in_the_presence_payload(self, store):
+        s = make_service(store)
+        secret = pair(s)
+        for i in range(10):
+            s.on_beacon(beacon_for(secret), -60, CLOCK.t)
+        assert s.presence_payload()["packets_per_s"] == 1.0
+
+    def test_reception_is_logged_periodically_while_scanning(self, store, caplog):
+        import logging
+        s = make_service(store)
+        secret = pair(s)
+        s.scanner = FakeScanner(s.on_beacon)
+        s.scanner.running = True
+        s.scanner.advertisements = 0
+        for i in range(8):
+            s.on_beacon(beacon_for(secret), -60, CLOCK.t + 25)
+        with caplog.at_level(logging.INFO):
+            s._log_reception(CLOCK.t)       # starts the first period
+            s.scanner.advertisements = 300
+            s._log_reception(CLOCK.t + 30)
+            s._log_reception(CLOCK.t + 40)  # too soon for another line
+        lines = [r.message for r in caplog.records if "Reception" in r.message]
+        assert len(lines) == 1 and "0.8 beacon packets/s" in lines[0] and "10/s from all" in lines[0]
+
+
+class TestDisabled:
+    @pytest.mark.asyncio
+    async def test_a_disabled_monitor_never_scans_even_when_paired(self, store):
+        s = make_service(store)
+        pair(s)
+        s.settings["enabled"] = False
+        s.scanner = None
+        await s.ensure_scanner(CLOCK.t)
+        assert s.scanner is None and not s.scanning_needed
+
+
+FAKE_HELPER = (
+    "import json,sys,time\n"
+    "print(json.dumps({'adv': 7}), flush=True)\n"
+    "print(json.dumps({'rssi': -66, 'payload': '015ed556066f75530a'}), flush=True)\n"
+    "print('not json', flush=True)\n"
+    "time.sleep(30)\n")
+
+
+class TestHciBeaconScanner:
+    @pytest.mark.asyncio
+    async def test_output_lines_become_beacon_callbacks_and_counts(self):
+        import asyncio
+        got = []
+        sc = m.HciBeaconScanner(lambda p, r: got.append((p.hex(), r)), command=[sys.executable, "-c", FAKE_HELPER])
+        await sc.start()
+        try:
+            for _ in range(50):
+                if got:
+                    break
+                await asyncio.sleep(0.05)
+            assert sc.running and sc.high_rate
+            assert got == [("015ed556066f75530a", -66)] and sc.advertisements == 7
+        finally:
+            await sc.stop()
+        assert not sc.running
+
+    @pytest.mark.asyncio
+    async def test_a_helper_that_exits_at_once_is_reported_with_its_message(self):
+        sc = m.HciBeaconScanner(lambda p, r: None, command=[
+            sys.executable, "-c", "import sys; print('raw Bluetooth access needs CAP_NET_RAW', file=sys.stderr); sys.exit(3)"])
+        with pytest.raises(m.HciUnavailable, match="CAP_NET_RAW"):
+            await sc.start()
+        assert not sc.running
+
+    @pytest.mark.asyncio
+    async def test_not_set_up_or_unlaunchable_is_unavailable(self):
+        with pytest.raises(m.HciUnavailable, match="isn't set up"):
+            await m.HciBeaconScanner(lambda p, r: None, command=[]).start()
+        with pytest.raises(m.HciUnavailable):
+            await m.HciBeaconScanner(lambda p, r: None, command=["/nonexistent/python"]).start()
+
+    def test_default_command_needs_the_privileged_copy(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(m, "HCI_PYTHON", str(tmp_path / "missing"))
+        assert m.HciBeaconScanner.default_command() is None
+        fake = tmp_path / "hci_python"
+        fake.write_text("#!/bin/sh\n")
+        fake.chmod(0o755)
+        monkeypatch.setattr(m, "HCI_PYTHON", str(fake))
+        assert m.HciBeaconScanner.default_command() == [str(fake), m.HCI_HELPER]
+
+
+class FakeBackend:
+    def __init__(self, on_beacon, fail=None, fast=False):
+        self.fail, self.high_rate = fail, fast
+        self.running = False
+        self.last_any_advertisement = 5.0
+        self.advertisements = 3
+
+    async def start(self):
+        if self.fail:
+            raise self.fail
+        self.running = True
+
+    async def stop(self):
+        self.running = False
+
+
+class TestAutoScanner:
+    @pytest.mark.asyncio
+    async def test_prefers_the_fast_scanner(self):
+        s = m.AutoScanner(lambda p, r: None, hci_factory=lambda cb: FakeBackend(cb, fast=True),
+                          bleak_factory=lambda cb: FakeBackend(cb))
+        await s.start()
+        assert s.running and s.high_rate and s.advertisements == 3
+        await s.stop()
+        assert not s.running
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_bluez_once_and_stays_there(self):
+        made = []
+
+        def hci(cb):
+            made.append("hci")
+            return FakeBackend(cb, fail=m.HciUnavailable("not set up"), fast=True)
+        s = m.AutoScanner(lambda p, r: None, hci_factory=hci, bleak_factory=lambda cb: FakeBackend(cb))
+        await s.start()
+        assert s.running and not s.high_rate
+        await s.stop()
+        await s.start()                       # a restart doesn't retry the raw scanner
+        assert s.running and not s.high_rate
+
+    @pytest.mark.asyncio
+    async def test_bluez_failure_still_surfaces_as_scanner_unavailable(self):
+        s = m.AutoScanner(lambda p, r: None, hci_factory=lambda cb: FakeBackend(cb, fail=m.HciUnavailable("x")),
+                          bleak_factory=lambda cb: FakeBackend(cb, fail=m.ScannerUnavailable("Bluetooth is off")))
+        with pytest.raises(m.ScannerUnavailable, match="Bluetooth is off"):
+            await s.start()
+
+
+class TestFastTimeouts:
+    def test_the_fast_scanner_shortens_the_silence_limit(self, store):
+        s = make_service(store)
+        s.scanner = FakeBackend(None, fast=True)
+        s.scanner.running = True
+        s.tick(CLOCK.t)
+        assert s.tracker.away_timeout_s == 10
+        s.scanner.high_rate = False
+        s.tick(CLOCK.t)
+        assert s.tracker.away_timeout_s == 30
+
+    def test_a_stopped_scanner_uses_the_normal_limit(self, store):
+        s = make_service(store)
+        s.scanner = FakeBackend(None, fast=True)   # not running
+        s.tick(CLOCK.t)
+        assert s.tracker.away_timeout_s == 30

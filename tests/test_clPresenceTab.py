@@ -5,6 +5,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 import pytest
+from PyQt6.QtWidgets import QPushButton
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 
@@ -59,7 +60,8 @@ class TestPresenceTab:
     def test_a_waiting_pairing_shows_the_code_and_cancel(self, widget):
         widget.update_pairing(dict(WAITING, expires_at=time.time() + 125))
         assert not widget.pairing_panel.isHidden()
-        assert widget.pairing_code.text() == "ABCD-EFGH-IJKL"
+        assert widget.pairing_code.value.text() == "ABCD-EFGH-IJKL"
+        assert not widget.pairing_code.isHidden() and widget.pairing_data.isHidden()
         assert not widget.cancel_pair_btn.isHidden() and widget.pair_btn.isHidden()
         assert "2:0" in widget.pairing_hint.text()  # counting down from about 2:05
 
@@ -83,10 +85,28 @@ class TestPresenceTab:
         assert [c.args[0] for c in widget.router.dispatch.call_args_list] == [
             "monitor.pair", "monitor.cancel", "monitor.unpair"]
 
+    def test_test_mode_checkbox_is_passed_to_the_pair_action(self, widget):
+        widget.pair_btn.click()
+        widget.test_mode_chk.setChecked(True)
+        widget.pair_btn.click()
+        calls = widget.router.dispatch.call_args_list
+        assert calls[0].kwargs == {"static": False} and calls[1].kwargs == {"static": True}
+
     def test_copy_code_puts_the_code_on_the_clipboard(self, widget, qapp):
         widget.update_pairing(dict(WAITING, expires_at=time.time() + 60))
-        widget.copy_code_btn.click()
+        widget.pairing_code.findChild(QPushButton).click()
         assert qapp.clipboard().text() == "ABCD-EFGH-IJKL"
+
+    def test_test_mode_shows_the_uuid_and_ready_to_paste_service_data(self, widget, qapp):
+        from utils import clBeacon
+        secret = clBeacon.generate_secret()
+        code = clBeacon.encode_secret(secret)
+        widget.update_pairing(dict(WAITING, code=code, static=True, expires_at=time.time() + 60))
+        assert widget.pairing_uuid.value.text() == clBeacon.BEACON_SERVICE_UUID
+        assert widget.pairing_data.value.text() == clBeacon.static_payload(secret).hex()
+        assert not widget.pairing_data.isHidden() and widget.pairing_code.isHidden()
+        widget.pairing_data.findChild(QPushButton).click()
+        assert qapp.clipboard().text() == clBeacon.static_payload(secret).hex()
 
     def test_opening_the_widget_replays_only_a_pairing_that_is_still_open(self, widget):
         widget.apply_monitor_state(PAIRED_HERE, dict(WAITING, expires_at=time.time() + 60))
@@ -138,3 +158,43 @@ class TestDashboardPlumbing:
         thread._handle_pairing({"state": "waiting"})
         thread._handle_presence("not a dict")
         assert seen == [("presence", {"present": True}), ("pairing", {"state": "waiting"})]
+
+
+class TestPresenceLightsSection:
+    @pytest.fixture
+    def config(self, widget, tmp_path):
+        import json
+        (tmp_path / "core.json").write_text(json.dumps({"settings": {"automation_settings": {
+            "presence_lights": {"enabled": True, "lights": ["bedroom"]}}}}))
+        (tmp_path / "devices.json").write_text(json.dumps({"networks": {
+            "home": {"bedroom": {}, "kitchen": {}}, "other": {"bedroom": {}}}}))
+        widget.loader.config_dir = str(tmp_path)
+        return tmp_path
+
+    def saved(self, config):
+        import json
+        return json.loads((config / "core.json").read_text())["settings"]["automation_settings"]
+
+    def build(self, widget):
+        from PyQt6.QtWidgets import QVBoxLayout, QWidget
+        holder = QWidget()
+        widget._build_presence_lights_section(QVBoxLayout(holder))
+        widget._test_holder = holder  # keeps the built widgets alive
+        return holder
+
+    def test_lists_saved_lights_once_and_marks_the_chosen_ones(self, widget, config):
+        self.build(widget)
+        assert list(widget.presence_light_boxes) == ["bedroom", "kitchen"]
+        assert widget.ui_elements["PRESENCE_LIGHT_bedroom"].isChecked()
+        assert not widget.ui_elements["PRESENCE_LIGHT_kitchen"].isChecked()
+
+    def test_toggling_a_light_updates_the_config(self, widget, config):
+        self.build(widget)
+        widget.ui_elements["PRESENCE_LIGHT_kitchen"].setChecked(True)
+        widget.ui_elements["PRESENCE_LIGHT_bedroom"].setChecked(False)
+        assert self.saved(config)["presence_lights"]["lights"] == ["kitchen"]
+
+    def test_master_checkbox_is_saved(self, widget, config):
+        self.build(widget)
+        widget.ui_elements["PRESENCE_LIGHTS_ENABLED"].setChecked(False)
+        assert self.saved(config)["presence_lights"]["enabled"] is False

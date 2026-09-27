@@ -3,6 +3,7 @@ import os
 import sys
 from clTheme import Theme
 from utils.clActionRouter import ActionRouter
+from utils import clBeacon
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QFrame, QCheckBox, QComboBox, QPushButton, QTabWidget, QLineEdit, QInputDialog, QSizePolicy, QStylePainter, QStyleOptionComboBox, QStyle
 from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal
 from PyQt6.QtGui import QFontMetrics
@@ -586,6 +587,13 @@ class SettingsWidget(QWidget):
         self.presence_status.setStyleSheet("color: #ffe6cc; font-size: 9.5pt;")
         layout.addWidget(self.presence_status)
 
+        self.test_mode_chk = QCheckBox("Test mode: use a phone advertiser app (e.g. nRF Connect)")
+        self.test_mode_chk.setStyleSheet("color: #a89a8c; font-size: 9pt;")
+        self.test_mode_chk.setToolTip(
+            "The phone broadcasts one fixed value instead of a rotating token. Anyone nearby could copy it, "
+            "so use this for testing only.")
+        layout.addWidget(self.test_mode_chk)
+
         button_row = QWidget()
         row = QHBoxLayout(button_row)
         row.setContentsMargins(0, 0, 0, 0)
@@ -601,48 +609,139 @@ class SettingsWidget(QWidget):
         row.addStretch(1)
         layout.addWidget(button_row)
 
-        # Shown only while a pairing is open: the code to give the beacon, and how long it's valid.
+        # Shown only while a pairing is open: step-by-step instructions and the values to give the beacon.
         self.pairing_panel = QWidget()
         panel = QVBoxLayout(self.pairing_panel)
         panel.setContentsMargins(0, s(4), 0, 0)
         panel.setSpacing(s(6))
-        panel.addWidget(self._create_section_label("Pairing Code"))
-        self.pairing_code = QLabel("")
-        self.pairing_code.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.pairing_code.setStyleSheet(
-            f"color: {Theme.C_PRIMARY}; font-family: monospace; font-size: 12pt; font-weight: bold;")
-        self.pairing_code.setWordWrap(True)
-        panel.addWidget(self.pairing_code)
-        self.pairing_hint = QLabel("Enter this code in your JARVIS beacon app.")
+        panel.addWidget(self._create_section_label("Pair your device"))
+        self.pairing_steps = QLabel("")
+        self.pairing_steps.setWordWrap(True)
+        self.pairing_steps.setStyleSheet("color: #ffe6cc; font-size: 9.5pt;")
+        panel.addWidget(self.pairing_steps)
+        self.pairing_uuid = self._add_value_row(panel, "Service UUID")
+        self.pairing_code = self._add_value_row(panel, "Pairing code")
+        self.pairing_data = self._add_value_row(panel, "Service data (hex)")
+        self.pairing_hint = QLabel("")
         self.pairing_hint.setWordWrap(True)
         self.pairing_hint.setStyleSheet("color: #a89a8c; font-size: 9pt;")
         panel.addWidget(self.pairing_hint)
-        self.copy_code_btn = QPushButton("Copy code")
-        self.copy_code_btn.setStyleSheet(Theme.get_style("SecondaryButton"))
-        self.copy_code_btn.clicked.connect(self._copy_pairing_code)
-        panel.addWidget(self.copy_code_btn, 0, Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(self.pairing_panel)
 
         self.pairing_message = QLabel("")
         self.pairing_message.setWordWrap(True)
         self.pairing_message.setStyleSheet("color: #ffe6cc; font-size: 9pt;")
         layout.addWidget(self.pairing_message)
+        self._build_presence_lights_section(layout)
         layout.addSpacing(20)
 
         self._pairing_timer = QTimer(self)
         self._pairing_timer.timeout.connect(self._refresh_pairing_countdown)
         self._refresh_presence_view()
 
-    def _monitor_action(self, action):
+    # ---- Presence lights: the automation that reacts to the paired device arriving/leaving ----
+    def _automation_settings(self):
         try:
-            self.router.dispatch(action)
+            return self.loader.load_json("core.json").get("settings", {}).get("automation_settings", {})
+        except (OSError, ValueError):
+            return {}
+
+    def _save_automation(self, mutate):
+        def update_cb(core):
+            mutate(core.setdefault("settings", {}).setdefault("automation_settings", {}))
+        self.loader.update_json_atomic("core.json", update_cb)
+
+    def _saved_light_names(self):
+        try:
+            networks = self.loader.load_json("devices.json").get("networks", {})
+        except (OSError, ValueError):
+            return []
+        names = []
+        for lights in networks.values():
+            for name in lights:
+                if name not in names:
+                    names.append(name)
+        return names
+
+    def _build_presence_lights_section(self, layout):
+        cfg = self._automation_settings()
+        rule = cfg.get("presence_lights", {})
+        chosen = set(rule.get("lights", []))
+
+        layout.addWidget(self._create_section_label("Presence Lights"))
+        note = QLabel("When your paired device arrives in the evening (19:00 to 07:00), the chosen lights turn on. "
+                      "When it leaves, they turn off.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #a89a8c; font-size: 9pt;")
+        layout.addWidget(note)
+
+        layout.addWidget(self._create_checkbox(
+            "PRESENCE_LIGHTS_ENABLED", "Control lights with my presence", bool(rule.get("enabled", False)),
+            lambda state: self._set_presence_lights_enabled(state == 2)))
+
+        self.presence_light_boxes = {}
+        names = self._saved_light_names()
+        for name in names:
+            self.presence_light_boxes[name] = self._create_checkbox(
+                f"PRESENCE_LIGHT_{name}", name.replace("_", " ").title(), name in chosen,
+                lambda state, n=name: self._toggle_presence_light(n, state == 2))
+            layout.addWidget(self.presence_light_boxes[name])
+        if not names:
+            empty = QLabel("No saved lights yet. Add lights first, then pick them here.")
+            empty.setStyleSheet("color: #a89a8c; font-size: 9pt;")
+            layout.addWidget(empty)
+
+    def _set_presence_lights_enabled(self, on):
+        self._save_automation(lambda a: a.setdefault("presence_lights", {}).update(enabled=on))
+
+    def _toggle_presence_light(self, name, on):
+        def mutate(a):
+            lights = a.setdefault("presence_lights", {}).setdefault("lights", [])
+            if on and name not in lights:
+                lights.append(name)
+            elif not on and name in lights:
+                lights.remove(name)
+        self._save_automation(mutate)
+
+    def _monitor_action(self, action):
+        kwargs = {"static": self.test_mode_chk.isChecked()} if action == "monitor.pair" else {}
+        try:
+            self.router.dispatch(action, **kwargs)
         except Exception:
             pass
 
-    def _copy_pairing_code(self):
-        if self._pairing and self._pairing.get("code"):
-            QApplication.clipboard().setText(self._pairing["code"])
-            self.pairing_message.setText("Code copied.")
+    def _add_value_row(self, layout, title):
+        """A titled, selectable monospace value with a Copy button. Returns the row's holder widget,
+        whose `value` label carries the text."""
+        holder = QWidget()
+        col = QVBoxLayout(holder)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(s(2))
+        head = QLabel(title)
+        head.setStyleSheet("color: #a89a8c; font-size: 9pt;")
+        col.addWidget(head)
+        line = QWidget()
+        row = QHBoxLayout(line)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(s(8))
+        holder.value = QLabel("")
+        holder.value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        holder.value.setWordWrap(True)
+        holder.value.setStyleSheet(
+            f"color: {Theme.C_PRIMARY}; font-family: monospace; font-size: 11pt; font-weight: bold;")
+        row.addWidget(holder.value, 1)
+        copy = QPushButton("Copy")
+        copy.setStyleSheet(Theme.get_style("SecondaryButton"))
+        copy.clicked.connect(lambda: self._copy_value(holder.value.text(), title))
+        row.addWidget(copy)
+        col.addWidget(line)
+        layout.addWidget(holder)
+        return holder
+
+    def _copy_value(self, text, title):
+        if text:
+            QApplication.clipboard().setText(text)
+            self.pairing_message.setText(f"{title} copied.")
 
     def apply_monitor_state(self, presence, pairing):
         """Called when the widget opens, with whatever the dashboard last heard."""
@@ -688,15 +787,44 @@ class SettingsWidget(QWidget):
         self.presence_status.setText(self.presence_text(p))
         waiting = bool(self._pairing and self._pairing.get("state") == "waiting")
         self.pair_btn.setVisible(not waiting)
+        self.test_mode_chk.setVisible(not waiting)
         self.cancel_pair_btn.setVisible(waiting)
         self.unpair_btn.setVisible(bool(p and p.get("paired")) and not waiting)
         self.pairing_panel.setVisible(waiting)
         if waiting:
-            self.pairing_code.setText(self._pairing.get("code", ""))
+            self._fill_pairing_panel(self._pairing)
             self._refresh_pairing_countdown()
             self._pairing_timer.start(1000)
         else:
             self._pairing_timer.stop()
+
+    def _fill_pairing_panel(self, pairing):
+        code = pairing.get("code", "")
+        test_mode = bool(pairing.get("static"))
+        data = ""
+        if test_mode:
+            try:
+                data = clBeacon.static_payload(clBeacon.decode_secret(code)).hex()
+            except ValueError:
+                pass
+        self.pairing_uuid.value.setText(clBeacon.BEACON_SERVICE_UUID)
+        self.pairing_code.setVisible(not test_mode)
+        self.pairing_code.value.setText(code)
+        self.pairing_data.setVisible(test_mode)
+        self.pairing_data.value.setText(data)
+        if test_mode:
+            self.pairing_steps.setText(
+                "1. In your advertiser app, add a Service Data advertisement.\n"
+                "2. Paste the Service UUID and the Service data below (hex).\n"
+                "3. Start advertising and stay close to this PC.\n"
+                "Pairing finishes by itself when JARVIS hears it.")
+        else:
+            self.pairing_steps.setText(
+                "1. Open your JARVIS beacon app and choose Add device.\n"
+                "2. Type in the Pairing code below (it is not a UUID).\n"
+                "3. Keep the app running and stay close to this PC.\n"
+                "Using nRF Connect or another advertiser app? There is no service data in this mode: "
+                "cancel, tick Test mode and pair again.")
 
     def _refresh_pairing_countdown(self):
         import time
@@ -704,8 +832,7 @@ class SettingsWidget(QWidget):
         if expires is None:
             return
         left = max(0, int(expires - time.time()))
-        self.pairing_hint.setText(
-            f"Enter this code in your JARVIS beacon app. Expires in {left // 60}:{left % 60:02d}.")
+        self.pairing_hint.setText(f"Expires in {left // 60}:{left % 60:02d}.")
 
     def _toggle_debug_flag(self, flag_key, state):
         is_enabled = (state == 2)

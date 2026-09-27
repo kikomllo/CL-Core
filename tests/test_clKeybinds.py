@@ -66,3 +66,31 @@ class TestIsPttKey:
         dedicated PTT key on many keyboards) must now work too."""
         assert is_ptt_key(keyboard.Key.f13, "KEY_F13") is True
         assert is_ptt_key(keyboard.Key.f14, "KEY_F13") is False
+
+
+class TestUserActivity:
+    def test_dispatch_runs_the_action_and_signals_activity(self, monkeypatch):
+        import clKeybinds as k
+        calls = []
+        monkeypatch.setattr(k, "signal_activity", lambda: calls.append("activity"))
+        router = type("R", (), {"dispatch": lambda self, a: calls.append(a)})()
+        k.dispatch(router, "mic.ptt_start")
+        assert calls == ["mic.ptt_start", "activity"]
+
+    def test_signals_are_rate_limited_and_published_off_thread(self, monkeypatch):
+        import clKeybinds as k
+        published = []
+        import paho.mqtt.publish as publish
+        monkeypatch.setattr(publish, "single", lambda topic, payload, hostname: published.append(topic))
+
+        class Inline:
+            def __init__(self, target, daemon=None):
+                self.target = target
+
+            def start(self):
+                self.target()
+        monkeypatch.setattr(k.threading, "Thread", Inline)
+        monkeypatch.setattr(k, "_last_activity", 0.0)
+        k.signal_activity()
+        k.signal_activity()
+        assert published == [k.ACTIVITY_TOPIC]

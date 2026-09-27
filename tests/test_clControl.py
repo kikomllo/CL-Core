@@ -5,7 +5,7 @@ import json
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
-from clControl import LightManager, poll_light_status
+from clControl import LightManager, LightCommandError, poll_light_status
 from pywizlight.utils import percent_to_hex
 
 @pytest.fixture
@@ -165,9 +165,9 @@ class TestControlEdgeCases:
         mock_wiz = mocker.patch('clControl.wizlight')
         mock_wiz.return_value.updateState = mocker.AsyncMock(side_effect=asyncio.TimeoutError("Bulb offline"))
         
-        # Should not crash, but it logs an error
-        await manager.control_bulb(on=True, target_name="bedroom")
-        # We just assert it completed without raising
+        # A light that can't be reached is reported, not silently treated as done
+        with pytest.raises(LightCommandError, match="couldn't reach the bedroom"):
+            await manager.control_bulb(on=True, target_name="bedroom")
 
     @pytest.mark.asyncio
     async def test_invalid_color_hex(self, manager, mocker):
@@ -249,3 +249,47 @@ class TestBrightness:
         await manager.adjust_brightness("down", target_name="bedroom")
 
         mock_execute.assert_called_once_with("192.168.1.10", False, True, False, None, 1, None)
+
+class TestFailureReporting:
+    """A command a light refuses or can't receive must surface as an error, not as success."""
+
+    @pytest.fixture
+    def two_lights(self, manager):
+        manager.lights = {"bedroom": {"ip": "192.168.1.10", "mac": "AA", "type": "wiz"},
+                          "kitchen": {"ip": "192.168.1.11", "mac": "BB", "type": "wiz"}}
+        return manager
+
+    @pytest.mark.asyncio
+    async def test_one_failing_light_does_not_stop_the_others_but_is_reported(self, two_lights, mocker):
+        reached = []
+
+        async def fake_wiz(ip, *args):
+            if ip.endswith(".10"):
+                raise TimeoutError("offline")
+            reached.append(ip)
+        mocker.patch.object(two_lights, "_execute_wiz_target", side_effect=fake_wiz)
+        with pytest.raises(LightCommandError) as err:
+            await two_lights.control_bulb(off=True, target_name="all")
+        assert reached == ["192.168.1.11"]
+        assert "bedroom" in str(err.value) and "kitchen" not in str(err.value)
+
+    @pytest.mark.asyncio
+    async def test_a_tapo_login_refusal_names_the_fix(self, manager, mocker):
+        manager.lights = {"bedroom": {"ip": "192.168.1.10", "mac": "AA", "type": "tapo"}}
+        mocker.patch.object(manager, "_execute_tapo_target", side_effect=Exception(
+            'Tapo(Unauthorized { kind: "FORBIDDEN", description: "Make sure Third-Party Compatibility is turned on" })'))
+        with pytest.raises(LightCommandError, match="Third-Party Compatibility"):
+            await manager.control_bulb(off=True, target_name="bedroom")
+
+    @pytest.mark.asyncio
+    async def test_success_does_not_raise(self, two_lights, mocker):
+        mocker.patch.object(two_lights, "_execute_wiz_target", new=mocker.AsyncMock())
+        await two_lights.control_bulb(on=True, target_name="all")
+
+    @pytest.mark.asyncio
+    async def test_brightness_changes_report_failures_too(self, manager, mocker):
+        manager.lights = {"bedroom": {"ip": "192.168.1.10", "mac": "AA", "type": "wiz"}}
+        mock_wiz = mocker.patch('clControl.wizlight')
+        mock_wiz.return_value.updateState = mocker.AsyncMock(side_effect=TimeoutError("offline"))
+        with pytest.raises(LightCommandError):
+            await manager.adjust_brightness("up", target_name="bedroom")

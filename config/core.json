@@ -11,7 +11,7 @@
         "stt_processing_mode": "parallel",
         "audio_settings": {
             "input_device": "System Default",
-            "output_device": "System Default"
+            "output_device": "BIK-8 (3)"
         },
         "slm_settings": {
             "enabled": true,
@@ -32,6 +32,17 @@
             "gpu_layers": -1
         },
         "last_light_target": "bedroom",
+        "automation_settings": {
+            "enabled": true,
+            "presence_lights": {
+                "enabled": true,
+                "lights": [
+                    "bedroom"
+                ],
+                "off_on_leave": true,
+                "leave_delay_s": 5
+            }
+        },
         "followup_settings": {
             "cooldown_asked_minutes": 15,
             "cooldown_declined_minutes": 60,

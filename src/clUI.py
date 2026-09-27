@@ -23,6 +23,7 @@ from ui.clSettingsWidget import SettingsWidget
 from ui.clUpdateWidget import UpdateWidget
 from ui.clLogWidget import LogWidget
 from ui.clClaudeWidget import ClaudeWidget
+from ui.clActivity import ActivityReporter
 from ui.clMarqueeLabel import MarqueeLabel
 
 from clUIScalerInjector import inject_scaler
@@ -3296,6 +3297,7 @@ def _load_bundled_fonts():
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     _load_bundled_fonts()
+    app.installEventFilter(ActivityReporter(app))
     window = JarvisUI()
     window.show()
     sys.exit(app.exec())

@@ -109,6 +109,7 @@ NATIVE_SERVICES = [
 
 NATIVE_SERVICES.append(("Claude Bridge", "src/clClaudeBridge.py"))
 NATIVE_SERVICES.append(("Monitor", "src/clMonitor.py"))
+NATIVE_SERVICES.append(("Automation", "src/clAutomation.py"))
 
 def load_modules_config():
     global NATIVE_SERVICES

@@ -21,6 +21,7 @@ The system relies on a publish/subscribe model over a local MQTT broker to ensur
 7. **The Desktop UI (`src/clUI.py`)**: A PyQt6 dashboard (media, lights, to-dos, reminders, calendar, settings, live logs) that talks to the rest of the ecosystem purely over MQTT — a fully decoupled client, not a privileged process. Paired with a system tray icon (`clTrayIcon.py`) and global OS-level keybindings (`clKeybinds.py`, with optional Linux `evdev` support for background use on Wayland).
 8. **Lifecycle & Utility Services**: `clUtilities.py` owns alarms, reminders, to-dos, and calendar events (with natural-language time parsing via `dateparser`), while standalone `clAlarmTrigger.py` / `clReminderTrigger.py` scripts fire scheduled events and can auto-boot the ecosystem if it's offline. `clUpdater.py` handles self-updates over MQTT, and `clHealth.py` is a standalone diagnostic CLI.
 9. **The Presence Monitor (`src/clMonitor.py`)**: Tracks one paired beacon device (a rotating-token BLE advertisement, paired from the dashboard, by voice or the CLI) and publishes home/away state and arrival/leave events on MQTT for other modules to react to.
+10. **The Automation Engine (`src/clAutomation.py`)**: Reacts to presence events and drives the actuators through ActionRouter. Today it turns your chosen lights on when you arrive in the evening (19:00 to 07:00) and off when you leave; the lights are chosen in the dashboard's Presence tab.
 
 ## Repository Structure
 
@@ -47,6 +48,7 @@ The system relies on a publish/subscribe model over a local MQTT broker to ensur
     ├── clTerminal.py          # OS navigation and execution actuator
     ├── clTTS.py               # Edge-TTS voice generation microservice
     ├── clMonitor.py           # Paired-beacon presence monitor
+    ├── clAutomation.py        # Presence-driven light automation
     ├── clUI.py                # PyQt6 desktop dashboard
     ├── clKeybinds.py          # Global OS-level keybinding listener
     ├── clTrayIcon.py          # System tray icon and quick controls

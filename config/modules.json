@@ -4,7 +4,8 @@
     "Keybinds": true,
     "Utilities": true,
     "Updater": true,
-    "Monitor": true
+    "Monitor": true,
+    "Automation": true
   },
   "docker": {
     "jarvis-whisper": true,

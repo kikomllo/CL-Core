@@ -34,6 +34,18 @@ def _normalize_mac(mac: str) -> str:
     return mac.replace(":", "").replace("-", "").strip().lower()
 
 
+class LightCommandError(Exception):
+    """One or more lights couldn't be reached or refused a command; the message is spoken/shown as is."""
+
+
+def _describe_failures(failures) -> str:
+    names = " and ".join(name.replace("_", " ") for name, _ in failures)
+    reasons = " ".join(str(e) for _, e in failures).lower()
+    if "third-party compatibility" in reasons or "forbidden" in reasons or "unauthorized" in reasons:
+        return f"The {names} light refused the login. Check Third-Party Compatibility and the account in the Tapo app."
+    return f"I couldn't reach the {names} light."
+
+
 class LightManager:
     """Enterprise state controller for single-device execution, dual discovery, and self-healing recovery."""
     
@@ -271,20 +283,33 @@ class LightManager:
             raise ValueError("No matching lights found to execute command.")
         return targets
 
+    async def _run_on_targets(self, targets, worker) -> None:
+        """Runs `worker` on every target, letting one failure not stop the others, then raises
+        LightCommandError naming the lights that failed so the caller doesn't report success."""
+        failures = []
+
+        async def guarded(name, ip, mac, l_type):
+            try:
+                await worker(name, ip, mac, l_type)
+            except Exception as e:
+                logging.error(f"Hardware communication error for {name}: {e}")
+                failures.append((name, e))
+
+        await asyncio.gather(*(guarded(*t) for t in targets))
+        if failures:
+            raise LightCommandError(_describe_failures(failures))
+
     async def control_bulb(self, toggle: bool = False, on: bool = False, off: bool = False,
                            color: str = None, lum: int = None, temp: int = None, retry_attempt: bool = False, target_name: str = "all") -> None:
         targets = self._resolve_targets(target_name)
 
         async def execute_single(name, ip, mac, l_type):
-            try:
-                if l_type == "wiz":
-                    await self._execute_wiz_target(ip, toggle, on, off, color, lum, temp)
-                else:
-                    await self._execute_tapo_target(ip, toggle, on, off, color, lum, temp)
-            except Exception as e:
-                logging.error(f"Hardware communication error for {name}: {e}")
+            if l_type == "wiz":
+                await self._execute_wiz_target(ip, toggle, on, off, color, lum, temp)
+            else:
+                await self._execute_tapo_target(ip, toggle, on, off, color, lum, temp)
 
-        await asyncio.gather(*(execute_single(*t) for t in targets))
+        await self._run_on_targets(targets, execute_single)
 
     # Default step (percentage points) for a relative "lower/raise the brightness"
     # request that doesn't name a specific percentage.
@@ -297,26 +322,23 @@ class LightManager:
         delta = self.BRIGHTNESS_STEP if direction == "up" else -self.BRIGHTNESS_STEP
 
         async def adjust_single(name, ip, mac, l_type):
-            try:
-                if l_type == "wiz":
-                    bulb = wizlight(ip)
-                    await asyncio.wait_for(bulb.updateState(), timeout=3.0)
-                    current_hex = bulb.state[0].get_brightness() if bulb.state and bulb.state[0] else None
-                    current_percent = hex_to_percent(current_hex) if current_hex is not None else 50
-                    new_percent = max(1, min(100, current_percent + delta))
-                    await self._execute_wiz_target(ip, False, True, False, None, new_percent, None)
-                else:
-                    model = os.getenv("TAPO_MODEL", "l530").lower()
-                    get_device = getattr(self.tapo_client, model, self.tapo_client.l530)
-                    device = await get_device(ip)
-                    info = await asyncio.wait_for(device.get_device_info(), timeout=3.0)
-                    current_percent = getattr(info, 'brightness', 50) or 50
-                    new_percent = max(1, min(100, current_percent + delta))
-                    await self._execute_tapo_target(ip, False, True, False, None, new_percent, None)
-            except Exception as e:
-                logging.error(f"Hardware communication error for {name}: {e}")
+            if l_type == "wiz":
+                bulb = wizlight(ip)
+                await asyncio.wait_for(bulb.updateState(), timeout=3.0)
+                current_hex = bulb.state[0].get_brightness() if bulb.state and bulb.state[0] else None
+                current_percent = hex_to_percent(current_hex) if current_hex is not None else 50
+                new_percent = max(1, min(100, current_percent + delta))
+                await self._execute_wiz_target(ip, False, True, False, None, new_percent, None)
+            else:
+                model = os.getenv("TAPO_MODEL", "l530").lower()
+                get_device = getattr(self.tapo_client, model, self.tapo_client.l530)
+                device = await get_device(ip)
+                info = await asyncio.wait_for(device.get_device_info(), timeout=3.0)
+                current_percent = getattr(info, 'brightness', 50) or 50
+                new_percent = max(1, min(100, current_percent + delta))
+                await self._execute_tapo_target(ip, False, True, False, None, new_percent, None)
 
-        await asyncio.gather(*(adjust_single(*t) for t in targets))
+        await self._run_on_targets(targets, adjust_single)
         
     async def _execute_wiz_target(self, ip, toggle, on, off, color, lum, temp):
         bulb = wizlight(ip)
@@ -834,10 +856,14 @@ def main():
         return
 
     if any([args.on, args.off, args.toggle, args.color, args.lum, args.temp]):
-        asyncio.run(manager.control_bulb(
-            toggle=args.toggle, on=args.on, off=args.off, 
-            color=args.color, lum=args.lum, temp=args.temp
-        ))
+        try:
+            asyncio.run(manager.control_bulb(
+                toggle=args.toggle, on=args.on, off=args.off,
+                color=args.color, lum=args.lum, temp=args.temp
+            ))
+        except LightCommandError as e:
+            print(e)
+            sys.exit(1)
     else:
         async def run_services():
             await asyncio.gather(

@@ -18,6 +18,35 @@ except ImportError:
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [KEYBINDS] %(message)s", datefmt="%H:%M:%S")
 
+ACTIVITY_TOPIC = "jarvis/sys/user_activity"
+ACTIVITY_MIN_GAP_S = 5.0
+_last_activity = 0.0
+
+
+def signal_activity():
+    """Tell other services (the presence monitor's calibration) the user is at this PC. Rate-limited
+    and published off-thread so a slow broker can never delay a hotkey."""
+    global _last_activity
+    now = time.time()
+    if now - _last_activity < ACTIVITY_MIN_GAP_S:
+        return
+    _last_activity = now
+
+    def publish_it():
+        try:
+            import paho.mqtt.publish as publish
+            publish.single(ACTIVITY_TOPIC, json.dumps({"source": "keybind", "ts": now}), hostname="localhost")
+        except Exception:
+            pass
+    threading.Thread(target=publish_it, daemon=True).start()
+
+
+def dispatch(router, action_id):
+    """Run a keybind's action and note the activity."""
+    router.dispatch(action_id)
+    signal_activity()
+
+
 def is_debug():
     config_path = os.path.join("config", "core.json")
     try:
@@ -175,11 +204,11 @@ def evdev_listener():
                                 if event.value == 1 and not ptt_active: # Press
                                     ptt_active = True
                                     logging.info("Push-to-Talk (Mic Opened via Hardware)")
-                                    router.dispatch("mic.ptt_start")
+                                    dispatch(router, "mic.ptt_start")
                                 elif event.value == 0 and ptt_active: # Release
                                     ptt_active = False
                                     logging.info("Push-to-Talk (Mic Closed via Hardware)")
-                                    router.dispatch("mic.ptt_stop")
+                                    dispatch(router, "mic.ptt_stop")
                                     
                             if event.value in (1, 2): # Press or Auto-Repeat
                                 for action, hk in parsed_hotkeys.items():
@@ -194,10 +223,10 @@ def evdev_listener():
                                                 if action not in active_hardware_actions:
                                                     active_hardware_actions.add(action)
                                                     logging.info(f"[ACTION ROUTER] Hardware dispatch '{action}' (Single)")
-                                                    router.dispatch(action)
+                                                    dispatch(router, action)
                                             else:
                                                 logging.info(f"[ACTION ROUTER] Hardware dispatch '{action}' (Continuous)")
-                                                router.dispatch(action)
+                                                dispatch(router, action)
                                                 
                             if event.value == 0: # Release
                                 actions_to_remove = []
@@ -282,7 +311,7 @@ def main():
         if not EVDEV_PTT_READY and is_ptt_key(key, ptt_key_str) and not ptt_active:
             ptt_active = True
             logging.info("Push-to-Talk (Mic Opened via pynput)")
-            router.dispatch("mic.ptt_start")
+            dispatch(router, "mic.ptt_start")
 
         # Custom HotKey logic
         if not EVDEV_PTT_READY:
@@ -297,10 +326,10 @@ def main():
                         # State-based dedup only, matching evdev on Linux.
                         if action not in active_actions:
                             active_actions.add(action)
-                            router.dispatch(action)
+                            dispatch(router, action)
                     else:
                         # continuous mode triggers every OS key-repeat
-                        router.dispatch(action)
+                        dispatch(router, action)
 
     def on_release(key):
         nonlocal ptt_active
@@ -310,7 +339,7 @@ def main():
         if not EVDEV_PTT_READY and is_ptt_key(key, ptt_key_str) and ptt_active:
             ptt_active = False
             logging.info("Push-to-Talk (Mic Closed via pynput)")
-            router.dispatch("mic.ptt_stop")
+            dispatch(router, "mic.ptt_stop")
 
         # Custom HotKey logic
         if not EVDEV_PTT_READY:

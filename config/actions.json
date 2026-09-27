@@ -318,7 +318,10 @@
   "monitor": {
     "pair": {
       "topic": "jarvis/monitor/control",
-      "payload": {"action": "pair_start"}
+      "payload": {"action": "pair_start"},
+      "schema": {
+        "static": {"type": "boolean", "default": false}
+      }
     },
     "cancel": {
       "topic": "jarvis/monitor/control",

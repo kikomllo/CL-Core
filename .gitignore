@@ -48,6 +48,7 @@ data/training_capture/
 data/claude_bridge_config/
 data/ui_state.json
 data/monitor_registry.json
+data/monitor/
 config/ui_state.json
 
 # Project specific
