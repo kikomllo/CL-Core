@@ -198,3 +198,40 @@ class TestPresenceLightsSection:
         self.build(widget)
         widget.ui_elements["PRESENCE_LIGHTS_ENABLED"].setChecked(False)
         assert self.saved(config)["presence_lights"]["enabled"] is False
+
+
+class TestWifiGateSection:
+    @pytest.fixture
+    def config(self, widget, tmp_path):
+        import json
+        (tmp_path / "core.json").write_text(json.dumps({"settings": {"monitor_settings": {
+            "wifi_gate_enabled": True, "wifi_mac": "aa:bb:cc:dd:ee:ff"}}}))
+        widget.loader.config_dir = str(tmp_path)
+        return tmp_path
+
+    def saved(self, config):
+        import json
+        return json.loads((config / "core.json").read_text())["settings"]["monitor_settings"]
+
+    def build(self, widget):
+        from PyQt6.QtWidgets import QVBoxLayout, QWidget
+        holder = QWidget()
+        widget._build_wifi_gate_section(QVBoxLayout(holder))
+        widget._test_holder2 = holder
+        return holder
+
+    def test_shows_the_saved_checkbox_and_mac(self, widget, config):
+        self.build(widget)
+        assert widget.ui_elements["WIFI_GATE_ENABLED"].isChecked()
+
+    def test_toggling_and_editing_saves_to_core_json(self, widget, config):
+        self.build(widget)
+        widget.ui_elements["WIFI_GATE_ENABLED"].setChecked(False)
+        assert self.saved(config)["wifi_gate_enabled"] is False
+        widget._save_wifi_mac("  AA:11:22:33:44:55  ")
+        assert self.saved(config)["wifi_mac"] == "aa:11:22:33:44:55"
+
+    def test_clearing_the_mac_saves_none(self, widget, config):
+        self.build(widget)
+        widget._save_wifi_mac("   ")
+        assert self.saved(config)["wifi_mac"] is None

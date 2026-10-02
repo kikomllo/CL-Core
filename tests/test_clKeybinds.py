@@ -28,7 +28,12 @@ class TestPttKeyMap:
         assert set(PTT_KEY_MAP[evdev_name]) == expected_members
 
     @pytest.mark.parametrize("f_num", range(13, 25))
-    def test_f13_through_f24_are_mapped(self, f_num):
+    def test_f13_through_f24_are_mapped_when_this_backend_defines_the_key(self, f_num):
+        # pynput's Linux (X11) backend only defines up to Key.f20 (Windows goes to f24) -- the map
+        # deliberately skips whichever ones the current backend doesn't have (see PTT_KEY_MAP).
+        if not hasattr(keyboard.Key, f"f{f_num}"):
+            assert f"KEY_F{f_num}" not in PTT_KEY_MAP
+            return
         assert PTT_KEY_MAP[f"KEY_F{f_num}"] == (getattr(keyboard.Key, f"f{f_num}"),)
 
     def test_unmapped_key_name_is_absent(self):

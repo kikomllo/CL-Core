@@ -777,12 +777,14 @@ async def mqtt_service_listener(manager: LightManager) -> None:
                                     "message": f"Successfully shifted hardware targets to '{action_cmd}' state.",
                                     "action_cmd": action_cmd,
                                     "target": manager.last_target,
+                                    "light_target": light_target,
                                     "silent": True
                                 }))
                                 manager.poll_trigger.set()
                             except Exception as e:
                                 await mqtt_client.publish("jarvis/feedback", json.dumps({
-                                    "device": "smart_lights", "status": "error", "message": str(e), "silent": is_silent
+                                    "device": "smart_lights", "status": "error", "message": str(e),
+                                    "action_cmd": action_cmd, "light_target": light_target, "silent": is_silent
                                 }))
 
                         asyncio.create_task(execute_hardware(payload, action))

@@ -322,3 +322,39 @@ class TestCreateDropdownDisplayMap:
         combo = fake.ui_elements["k"]
 
         assert combo.toolTip() == actual
+
+
+class TestSttProcessingModeSetting:
+    """Settings tab: switching multi-language transcription between running every configured
+    language's Whisper worker at once (more RAM) and one after another (less RAM, see clWhisper.py)."""
+
+    @pytest.fixture
+    def widget(self, qapp):
+        from unittest.mock import MagicMock
+        from ui.clSettingsWidget import SettingsWidget
+        w = SettingsWidget()
+        w.router = MagicMock()
+        yield w
+        w.update_timer.stop()
+        w.deleteLater()
+
+    def test_the_dropdown_offers_parallel_and_sequential(self, widget):
+        combo = widget.ui_elements["stt_processing_mode"]
+        options = [combo.itemText(i) for i in range(combo.count())]
+        assert options == ["parallel", "sequential"]
+
+    def test_changing_it_saves_and_flags_a_reboot(self, widget, mocker):
+        save = mocker.patch.object(widget, "_update_core_json")
+        widget.needs_reboot = False
+        widget._change_stt_processing_mode("sequential")
+        save.assert_called_once_with("stt_processing_mode", "sequential")
+        assert widget.needs_reboot is True
+
+    def test_opening_the_tab_shows_the_value_already_saved_in_core_json(self, widget, tmp_path, mocker):
+        import json
+        (tmp_path / "core.json").write_text(json.dumps({"settings": {"stt_processing_mode": "sequential"}}))
+        widget.loader.config_dir = str(tmp_path)
+        widget.core_json_path = str(tmp_path / "core.json")
+        widget.last_mtime = 0
+        widget._check_for_updates()
+        assert widget.ui_elements["stt_processing_mode"].currentText() == "sequential"

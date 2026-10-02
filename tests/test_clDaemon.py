@@ -10,7 +10,21 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
 from clDaemon import CentralDaemon
 
 @pytest.fixture
-def daemon():
+def daemon(mocker):
+    # These tests exercise the fuzzy-routing/dialogue-state layer, not the SLM itself (that's
+    # tests/test_clSLM.py) -- constructing the real engines would load actual GGUF models via
+    # llama.cpp on every test. That's slow even when it works, and on a machine with no GPU
+    # (core.json defaults to gpu_layers: -1) it can hang instead of erroring, taking the whole
+    # suite down with it. A disabled stub keeps `daemon.slm`/`daemon.reply_slm` real objects
+    # (`.enabled` is False, `parse_intent_async`/`generate_reply_async` are AsyncMocks) so a test
+    # that wants SLM behavior can still patch/await them, same as it could on the real thing.
+    def fake_slm(core_config):
+        engine = MagicMock(enabled=False)
+        engine.parse_intent_async = AsyncMock(return_value=None)
+        engine.generate_reply_async = AsyncMock(return_value=None)
+        return engine
+    mocker.patch("clDaemon.SLMInferenceEngine", side_effect=fake_slm)
+    mocker.patch("clDaemon.ReplySLMEngine", side_effect=fake_slm)
     d = CentralDaemon()
     # Several settings-toggle code paths (silent_mode, enable_followup, ecosystem_state)
     # persist to the real config/core.json via this call -- stub it out so exercising

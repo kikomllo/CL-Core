@@ -20,7 +20,7 @@ import logging
 import os
 import sys
 import time
-from typing import Callable, Deque, Dict, List, Optional, Tuple
+from typing import Callable, Deque, Dict, List, Optional, Set, Tuple
 
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..' if 'src' in __file__ else 'src'))
 from utils.clLogging import setup_logging
@@ -33,6 +33,7 @@ if sys.platform == 'win32':
 
 import aiomqtt
 from utils import clBeacon
+from utils import clNetworkUtils
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 STORE_PATH = os.path.join(REPO_ROOT, "data", "monitor", "paired_device.json")
@@ -62,6 +63,10 @@ DEFAULT_SETTINGS = {
     "evaluate_every_s": 1,
     "scanner_stall_s": 90,    # no advertisements of any kind for this long means restart the scan
     "unavailable_retry_s": 30,
+    "wifi_gate_enabled": False,   # opt-in: only scan while the phone is on the home network
+    "wifi_mac": None,             # the phone's WiFi MAC (fixed/non-randomized) on that network
+    "wifi_check_every_s": 30,
+    "wifi_away_grace_s": 120,     # keep scanning this long after the MAC drops off (ARP entries lag)
 }
 
 
@@ -74,11 +79,15 @@ def load_settings(core_path: str = CORE_JSON) -> dict:
     except (OSError, ValueError):
         overrides = {}
     for key, default in DEFAULT_SETTINGS.items():
+        if key == "wifi_mac":
+            continue
         value = overrides.get(key, default)
         if isinstance(default, bool):
             merged[key] = bool(value)
         elif isinstance(value, (int, float)) and not isinstance(value, bool):
             merged[key] = type(default)(value)
+    mac = overrides.get("wifi_mac")
+    merged["wifi_mac"] = mac.strip().lower() if isinstance(mac, str) and mac.strip() else None
     merged["smoothing"] = min(1.0, max(0.05, merged["smoothing"]))
     return merged
 
@@ -240,6 +249,44 @@ class PairingStore:
             os.remove(self.path)
         except FileNotFoundError:
             pass
+
+
+class WifiGate:
+    """Whether the phone was recently seen on the local network (its WiFi MAC in the ARP/neighbor
+    table). Optional and off by default -- it needs a fixed MAC, which itself needs the phone's
+    per-network MAC randomization turned off, a one-time setting on the phone. While it's on and the
+    phone hasn't been seen for a while, the monitor stops scanning entirely, since nobody able to
+    trigger a BLE sighting is home; the grace period covers ARP entries lagging behind reality."""
+
+    def __init__(self, clock: Callable[[], float] = time.time,
+                 lookup: Callable[[], Set[str]] = clNetworkUtils.local_network_macs):
+        self.clock, self.lookup = clock, lookup
+        self.last_seen: Optional[float] = None
+        self.available = True
+        self.reason: Optional[str] = None
+
+    def check(self, mac: str, now: Optional[float] = None):
+        now = self.clock() if now is None else now
+        try:
+            seen = mac.strip().lower() in self.lookup()
+        except clNetworkUtils.ArpUnavailable as e:
+            self.available, self.reason = False, str(e)
+            return
+        self.available, self.reason = True, None
+        if seen:
+            self.last_seen = now
+
+    def home_recently(self, grace_s: float, now: Optional[float] = None) -> bool:
+        """True unless the MAC has actually been confirmed absent for longer than the grace period.
+        A tool outage or a MAC never yet seen both fail open -- neither should silently stop the
+        room-level BLE presence check running underneath this gate."""
+        if not self.available or self.last_seen is None:
+            return True
+        now = self.clock() if now is None else now
+        return now - self.last_seen <= grace_s
+
+    def reset(self):
+        self.last_seen = None
 
 
 class ScannerUnavailable(Exception):
@@ -431,10 +478,12 @@ Outbound = Tuple[str, dict, bool]  # topic, payload, retain
 class MonitorService:
     def __init__(self, settings: Optional[dict] = None, store: Optional[PairingStore] = None,
                  scanner_factory: Callable = AutoScanner, clock: Callable[[], float] = time.time,
-                 baseline: Optional[RoomBaseline] = None):
+                 baseline: Optional[RoomBaseline] = None, wifi_gate: Optional[WifiGate] = None):
         self.settings = settings or load_settings()
         self.store = store or PairingStore()
         self.baseline = baseline or RoomBaseline()
+        self.wifi_gate = wifi_gate or WifiGate()
+        self._last_wifi_check = 0.0
         self.scanner_factory = scanner_factory
         self.clock = clock
         self.secret: Optional[bytes] = self.store.load()
@@ -509,6 +558,9 @@ class MonitorService:
             "reason": self.reason,
             "baseline": None if t.baseline is None else round(t.baseline),
             "packets_per_s": round(self.packets_per_s(self.clock()), 1),
+            "wifi_gated": bool(self.settings["wifi_gate_enabled"] and self.settings["wifi_mac"]),
+            "wifi_home": (self.wifi_gate.home_recently(self.settings["wifi_away_grace_s"])
+                         if self.settings["wifi_gate_enabled"] and self.settings["wifi_mac"] else None),
         }
 
     def _publish_presence(self, now: float, force: bool = False):
@@ -567,6 +619,7 @@ class MonitorService:
         self.tracker.reset()
         self.baseline.clear()  # a different phone has a different signal level
         self.tracker.baseline = None
+        self.wifi_gate.reset()
         logging.info("[MONITOR] Device paired.")
         self._pairing_state("paired")
         self._say("Device paired. I'll keep an eye out for you.")
@@ -579,6 +632,7 @@ class MonitorService:
             self.pairing = None
             self._pairing_state("expired")
             self._say("Pairing timed out.")
+        self._check_wifi_gate(now)
         self._apply_timeouts()
         event = self.tracker.update(now)
         if event:
@@ -595,7 +649,22 @@ class MonitorService:
 
     @property
     def scanning_needed(self) -> bool:
-        return self.settings["enabled"] and (self.secret is not None or self.pairing is not None)
+        if not self.settings["enabled"] or (self.secret is None and self.pairing is None):
+            return False
+        if self.pairing is not None:
+            return True  # pairing needs BLE right away, whatever the WiFi gate says
+        if not (self.settings["wifi_gate_enabled"] and self.settings["wifi_mac"]):
+            return True
+        return self.wifi_gate.home_recently(self.settings["wifi_away_grace_s"])
+
+    def _check_wifi_gate(self, now: float):
+        mac = self.settings["wifi_mac"]
+        if not (self.settings["wifi_gate_enabled"] and mac):
+            return
+        if now - self._last_wifi_check < self.settings["wifi_check_every_s"]:
+            return
+        self._last_wifi_check = now
+        self.wifi_gate.check(mac, now)
 
     async def ensure_scanner(self, now: Optional[float] = None):
         """Start/stop/restart scanning to match what's needed."""
@@ -671,6 +740,7 @@ class MonitorService:
         self.tracker.reset()
         self.baseline.clear()
         self.tracker.baseline = None
+        self.wifi_gate.reset()
         self.static = False
         if was_present:
             self._emit(EVENT_TOPIC, {"event": "left", "ts": now, "rssi": None})

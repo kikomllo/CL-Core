@@ -383,6 +383,9 @@ class SettingsWidget(QWidget):
         
         sys_layout.addWidget(self._create_section_label("Inference Engine"))
         sys_layout.addWidget(self._create_dropdown("stt_model", "STT Model Size", ["tiny", "base", "small", "medium", "large"], "small", self._change_stt_model))
+        sys_layout.addWidget(self._create_dropdown(
+            "stt_processing_mode", "Multi-Language Transcription", ["parallel", "sequential"], "parallel",
+            self._change_stt_processing_mode))
         sys_layout.addWidget(self._create_dropdown("hardware", "Hardware Acceleration", ["cpu", "cuda"], "cpu", self._change_hardware))
         sys_layout.addSpacing(20)
 
@@ -633,11 +636,46 @@ class SettingsWidget(QWidget):
         self.pairing_message.setStyleSheet("color: #ffe6cc; font-size: 9pt;")
         layout.addWidget(self.pairing_message)
         self._build_presence_lights_section(layout)
+        self._build_wifi_gate_section(layout)
         layout.addSpacing(20)
 
         self._pairing_timer = QTimer(self)
         self._pairing_timer.timeout.connect(self._refresh_pairing_countdown)
         self._refresh_presence_view()
+
+    # ---- WiFi gate: pause BLE scanning entirely until the phone joins the home network ----
+    def _monitor_settings(self):
+        try:
+            return self.loader.load_json("core.json").get("settings", {}).get("monitor_settings", {})
+        except (OSError, ValueError):
+            return {}
+
+    def _save_monitor_setting(self, key, value):
+        def update_cb(core):
+            core.setdefault("settings", {}).setdefault("monitor_settings", {})[key] = value
+        self.loader.update_json_atomic("core.json", update_cb)
+
+    def _build_wifi_gate_section(self, layout):
+        cfg = self._monitor_settings()
+        layout.addWidget(self._create_section_label("Wi-Fi Gate"))
+        note = QLabel("Optional: stop scanning entirely until your phone joins this Wi-Fi network, "
+                      "then scan as usual for room-level detection. Saves power when nobody's home. "
+                      "Needs your phone's Wi-Fi MAC address to stay fixed on this network (in the "
+                      "phone's Wi-Fi settings, turn off 'Randomized MAC' / 'Private Wi-Fi address' "
+                      "for this network, then copy the address shown there).")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #a89a8c; font-size: 9pt;")
+        layout.addWidget(note)
+        layout.addWidget(self._create_checkbox(
+            "WIFI_GATE_ENABLED", "Only scan while my phone is on the home Wi-Fi", bool(cfg.get("wifi_gate_enabled", False)),
+            lambda state: self._save_monitor_setting("wifi_gate_enabled", state == 2)))
+        holder = self._create_line_edit_raw("Phone's Wi-Fi MAC address", cfg.get("wifi_mac") or "",
+                                            self._save_wifi_mac)
+        layout.addWidget(holder)
+
+    def _save_wifi_mac(self, text):
+        text = text.strip().lower()
+        self._save_monitor_setting("wifi_mac", text or None)
 
     # ---- Presence lights: the automation that reacts to the paired device arriving/leaving ----
     def _automation_settings(self):
@@ -1118,6 +1156,14 @@ class SettingsWidget(QWidget):
                     if combo.currentText() != val:
                         combo.setCurrentText(val)
                     combo.blockSignals(False)
+                    
+                if "stt_processing_mode" in self.ui_elements:
+                    combo = self.ui_elements["stt_processing_mode"]
+                    combo.blockSignals(True)
+                    val = settings.get("stt_processing_mode", "parallel")
+                    if combo.currentText() != val:
+                        combo.setCurrentText(val)
+                    combo.blockSignals(False)
         except Exception as e:
             pass
 
@@ -1161,6 +1207,13 @@ class SettingsWidget(QWidget):
 
     def _change_hardware(self, value):
         self._update_core_json("hardware", value)
+        self._flag_reboot()
+
+    def _change_stt_processing_mode(self, value):
+        # parallel runs one Whisper worker per configured language (roughly one full model copy each,
+        # in memory at once) so multi-language recognition happens at the same time; sequential runs
+        # them one after another with a single worker, trading a little speed for a lot less RAM.
+        self._update_core_json("stt_processing_mode", value)
         self._flag_reboot()
 
     def _flag_reboot(self):

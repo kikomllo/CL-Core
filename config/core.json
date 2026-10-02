@@ -8,10 +8,10 @@
             "en",
             "pt"
         ],
-        "stt_processing_mode": "parallel",
+        "stt_processing_mode": "sequential",
         "audio_settings": {
-            "input_device": "System Default",
-            "output_device": "BIK-8 (3)"
+            "input_device": "sof-hda-dsp: - (hw:0,7)",
+            "output_device": "System Default"
         },
         "slm_settings": {
             "enabled": true,
@@ -63,14 +63,14 @@
                 }
             }
         },
-        "hardware": "cuda",
+        "hardware": "cpu",
         "debug_flags": {
             "wakeword_diagnostics": false,
             "capture_wakeword_positive": true,
             "wakeword_debug_saving": false,
             "capture_stt_training_data": true
         },
-        "stt_model": "small"
+        "stt_model": "tiny"
     },
     "nlp_rules": {
         "abort_keywords": [

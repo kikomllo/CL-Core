@@ -175,3 +175,71 @@ class TestService:
         svc = a.AutomationService(engine())
         svc.handle_message(a.PRESENCE_TOPIC, {"present": True})
         assert svc.engine.home is True
+
+
+class TestRetryOnFailure:
+    def test_a_failed_command_is_retried_after_a_delay(self):
+        e = engine()
+        e.on_presence_event("arrived", 1000)
+        e.drain()
+        e.on_light_feedback("bedroom", "on", "error", 1000)
+        e.tick(1004)
+        assert e.drain() == []                  # too soon
+        e.tick(1005)
+        assert e.drain() == [ON]
+
+    def test_a_late_success_clears_the_pending_retry(self):
+        e = engine()
+        e.on_presence_event("arrived", 1000)
+        e.drain()
+        e.on_light_feedback("bedroom", "on", "error", 1000)
+        e.on_light_feedback("bedroom", "on", "success", 1002)
+        e.tick(1010)
+        assert e.drain() == []
+
+    def test_it_gives_up_after_the_third_attempt(self):
+        e = engine()
+        e.on_presence_event("arrived", 1000)     # attempt 1
+        e.drain()
+        e.on_light_feedback("bedroom", "on", "error", 1000)
+        e.tick(1005)                              # attempt 2
+        assert e.drain() == [ON]
+        e.on_light_feedback("bedroom", "on", "error", 1005)
+        e.tick(1010)                              # attempt 3
+        assert e.drain() == [ON]
+        e.on_light_feedback("bedroom", "on", "error", 1010)
+        e.tick(1015)                              # no more retries
+        assert e.drain() == []
+
+    def test_feedback_for_a_different_action_or_light_is_ignored(self):
+        e = engine()
+        e.on_presence_event("arrived", 1000)
+        e.drain()
+        e.on_light_feedback("bedroom", "off", "error", 1000)   # wrong action
+        e.on_light_feedback("kitchen", "on", "error", 1000)    # wrong light
+        e.tick(1010)
+        assert e.drain() == []
+
+    def test_a_new_command_for_the_same_light_resets_the_attempt_count(self):
+        e = engine()
+        e.on_presence_event("arrived", 1000)      # attempt 1 of "on"
+        e.drain()
+        e.on_light_feedback("bedroom", "on", "error", 1000)
+        e.on_presence_event("left", 1001)         # a fresh "off" supersedes the pending "on"
+        e.tick(1030)
+        assert e.drain() == [OFF]                 # not a stale retry of "on"
+
+    def test_the_service_routes_feedback_by_topic(self):
+        svc = a.AutomationService(engine())
+        svc.engine.on_presence_event("arrived", 1000)
+        svc.engine.drain()
+        svc.handle_message(a.FEEDBACK_TOPIC, {"device": "smart_lights", "status": "error",
+                                              "action_cmd": "on", "light_target": "bedroom"})
+        assert "bedroom" in svc.engine._pending
+
+    def test_feedback_from_something_else_is_ignored(self):
+        svc = a.AutomationService(engine())
+        svc.engine.on_presence_event("arrived", 1000)
+        svc.engine.drain()
+        svc.handle_message(a.FEEDBACK_TOPIC, {"device": "spotify", "status": "error"})
+        assert "bedroom" in svc.engine._pending   # untouched

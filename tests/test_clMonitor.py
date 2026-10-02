@@ -68,6 +68,17 @@ def make_service(store, **overrides):
     return m.MonitorService(settings=settings, store=store, scanner_factory=FakeScanner, clock=CLOCK)
 
 
+class FakeLookup:
+    """Stands in for clNetworkUtils.local_network_macs -- a settable/failable fake set of MACs."""
+    def __init__(self, macs=frozenset(), fail=None):
+        self.macs, self.fail = set(macs), fail
+
+    def __call__(self):
+        if self.fail:
+            raise self.fail
+        return set(self.macs)
+
+
 def topics(service):
     return [(t, p) for t, p, _ in service.drain()]
 
@@ -952,3 +963,117 @@ class TestFastTimeouts:
         s.scanner = FakeBackend(None, fast=True)   # not running
         s.tick(CLOCK.t)
         assert s.tracker.away_timeout_s == 30
+
+
+class TestWifiGate:
+    def gate(self, macs=frozenset(), fail=None):
+        return m.WifiGate(clock=lambda: CLOCK.t, lookup=FakeLookup(macs, fail))
+
+    def test_seeing_the_mac_updates_last_seen(self):
+        g = self.gate({"aa:bb:cc:dd:ee:ff"})
+        g.check("aa:bb:cc:dd:ee:ff", 1000)
+        assert g.last_seen == 1000 and g.available
+
+    def test_not_seeing_it_leaves_last_seen_alone(self):
+        g = self.gate({"11:22:33:44:55:66"})
+        g.check("aa:bb:cc:dd:ee:ff", 1000)
+        assert g.last_seen is None
+
+    def test_a_lookup_failure_is_reported_and_does_not_touch_last_seen(self):
+        g = self.gate(fail=m.clNetworkUtils.ArpUnavailable("no tool"))
+        g.check("aa:bb:cc:dd:ee:ff", 1000)
+        assert not g.available and g.reason == "no tool" and g.last_seen is None
+
+    def test_home_recently_fails_open_when_never_seen_or_unavailable(self):
+        assert self.gate().home_recently(120, 1000) is True
+        g = self.gate(fail=m.clNetworkUtils.ArpUnavailable("x"))
+        g.check("aa:bb:cc:dd:ee:ff", 1000)
+        assert g.home_recently(120, 100000) is True
+
+    def test_home_recently_respects_the_grace_period(self):
+        g = self.gate({"aa:bb:cc:dd:ee:ff"})
+        g.check("aa:bb:cc:dd:ee:ff", 1000)
+        assert g.home_recently(120, 1000 + 119) is True
+        assert g.home_recently(120, 1000 + 121) is False
+
+    def test_reset_forgets_last_seen(self):
+        g = self.gate({"aa:bb:cc:dd:ee:ff"})
+        g.check("aa:bb:cc:dd:ee:ff", 1000)
+        g.reset()
+        assert g.last_seen is None
+
+
+class TestWifiGatedScanning:
+    def paired(self, store, **overrides):
+        s = make_service(store, wifi_gate_enabled=True, wifi_mac="AA:BB:CC:DD:EE:FF", **overrides)
+        s.wifi_gate = m.WifiGate(clock=lambda: CLOCK.t, lookup=FakeLookup({"aa:bb:cc:dd:ee:ff"}))
+        pair(s)
+        return s
+
+    def test_off_by_default(self, store):
+        s = make_service(store)
+        pair(s)
+        assert s.scanning_needed   # no wifi_mac configured -- gate has no effect
+
+    def test_scanning_is_needed_while_never_checked_yet(self, store):
+        s = self.paired(store)
+        assert s.scanning_needed   # fails open until the first real check
+
+    def test_scanning_stops_once_confirmed_away_past_the_grace_period(self, store):
+        s = self.paired(store, wifi_away_grace_s=60)
+        s.wifi_gate.check("aa:bb:cc:dd:ee:ff", CLOCK.t)
+        CLOCK.advance(61)
+        assert not s.scanning_needed
+
+    def test_scanning_resumes_once_seen_again(self, store):
+        s = self.paired(store, wifi_away_grace_s=60)
+        s.wifi_gate.check("aa:bb:cc:dd:ee:ff", CLOCK.t)
+        CLOCK.advance(61)
+        assert not s.scanning_needed
+        s.wifi_gate.check("aa:bb:cc:dd:ee:ff", CLOCK.t)
+        assert s.scanning_needed
+
+    def test_an_open_pairing_scans_regardless_of_the_wifi_gate(self, store):
+        s = make_service(store, wifi_gate_enabled=True, wifi_mac="aa:bb:cc:dd:ee:ff", wifi_away_grace_s=1)
+        s.pair_start(CLOCK.t)
+        CLOCK.advance(5)
+        assert s.scanning_needed
+
+    def test_tick_polls_the_wifi_gate_on_its_own_cadence(self, store):
+        s = self.paired(store, wifi_check_every_s=30)
+        lookup = FakeLookup({"aa:bb:cc:dd:ee:ff"})
+        s.wifi_gate.lookup = lookup
+        s.tick(CLOCK.t)
+        assert s.wifi_gate.last_seen == CLOCK.t
+        lookup.macs = {"changed"}     # a later check should see this, an immediate one shouldn't
+        CLOCK.advance(10)
+        s.tick(CLOCK.t)
+        assert s.wifi_gate.last_seen != CLOCK.t   # too soon since the last check
+        CLOCK.advance(25)
+        s.tick(CLOCK.t)
+        assert s.wifi_gate.last_seen != CLOCK.t   # "changed" isn't the configured MAC
+
+    def test_disabling_the_gate_settings_stops_checking(self, store):
+        s = self.paired(store)
+        checks = []
+        s.wifi_gate.check = lambda mac, now=None: checks.append(mac)
+        s.settings["wifi_gate_enabled"] = False
+        s.tick(CLOCK.t)
+        assert checks == []
+
+    def test_presence_payload_reports_wifi_state_only_when_gated(self, store):
+        s = make_service(store)
+        pair(s)
+        assert s.presence_payload()["wifi_gated"] is False
+        assert s.presence_payload()["wifi_home"] is None
+
+        s2 = self.paired(store)
+        s2.wifi_gate.check("aa:bb:cc:dd:ee:ff", CLOCK.t)
+        payload = s2.presence_payload()
+        assert payload["wifi_gated"] is True and payload["wifi_home"] is True
+
+    def test_unpairing_resets_the_gate(self, store):
+        s = self.paired(store)
+        s.wifi_gate.check("aa:bb:cc:dd:ee:ff", CLOCK.t)
+        s.unpair(CLOCK.t)
+        assert s.wifi_gate.last_seen is None

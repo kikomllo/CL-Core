@@ -30,6 +30,10 @@ CORE_JSON = os.path.join(REPO_ROOT, "config", "core.json")
 
 PRESENCE_TOPIC = "jarvis/sys/presence"
 EVENT_TOPIC = "jarvis/sys/presence/event"
+FEEDBACK_TOPIC = "jarvis/feedback"
+
+RETRY_DELAY_S = 5
+MAX_ATTEMPTS = 3  # the first send plus two retries
 
 DEFAULT_SETTINGS = {
     "enabled": True,
@@ -95,6 +99,10 @@ class AutomationEngine:
         self.home: Optional[bool] = None
         self._leave_at: Optional[float] = None
         self.outbox: List[Tuple[str, dict]] = []
+        # A light command can fail (offline bulb, a Tapo login refusal...); track it so a failure
+        # gets retried instead of silently never happening. Keyed by light name.
+        self._pending: Dict[str, dict] = {}
+        self._retry_at: Dict[str, float] = {}
 
     def drain(self) -> List[Tuple[str, dict]]:
         actions, self.outbox = self.outbox, []
@@ -102,8 +110,33 @@ class AutomationEngine:
 
     def _lights(self, action: str, settings: dict):
         for name in settings["presence_lights"]["lights"]:
-            self.outbox.append(("light.set", {"action": action, "light_target": name, "silent": True}))
+            self._dispatch_light(name, action)
         logging.info(f"[AUTOMATION] Lights {action}: {', '.join(settings['presence_lights']['lights'])}.")
+
+    def _dispatch_light(self, name: str, action: str):
+        """A fresh command (not a retry of one already in flight): resets the attempt count."""
+        self.outbox.append(("light.set", {"action": action, "light_target": name, "silent": True}))
+        self._pending[name] = {"action": action, "attempts": 1}
+        self._retry_at.pop(name, None)
+
+    def on_light_feedback(self, target: str, action_cmd: str, status: str, now: Optional[float] = None):
+        """A `jarvis/feedback` reply for a light command this engine issued (ignored otherwise, e.g.
+        a voice command's own feedback, or a stale reply after the state changed again)."""
+        pending = self._pending.get(target)
+        if pending is None or pending["action"] != action_cmd:
+            return
+        if status == "success":
+            del self._pending[target]
+            self._retry_at.pop(target, None)
+        elif status == "error":
+            if pending["attempts"] >= MAX_ATTEMPTS:
+                logging.warning(f"[AUTOMATION] Giving up on '{target}' {action_cmd} after "
+                                f"{pending['attempts']} attempts.")
+                del self._pending[target]
+                self._retry_at.pop(target, None)
+            else:
+                now = self.clock() if now is None else now
+                self._retry_at[target] = now + RETRY_DELAY_S
 
     def _active(self, settings: dict) -> bool:
         rule = settings["presence_lights"]
@@ -127,9 +160,24 @@ class AutomationEngine:
             self.home = False
             if self._active(settings) and settings["presence_lights"]["off_on_leave"]:
                 self._leave_at = now + settings["presence_lights"]["leave_delay_s"]
+                # An "on" retry still in flight for one of these lights is now stale -- the
+                # deferred "off" below supersedes it, so don't let it fire in the meantime.
+                for name in settings["presence_lights"]["lights"]:
+                    self._retry_at.pop(name, None)
 
     def tick(self, now: Optional[float] = None):
         now = self.clock() if now is None else now
+        for name, when in list(self._retry_at.items()):
+            if now >= when:
+                del self._retry_at[name]
+                pending = self._pending.get(name)
+                if pending is None:
+                    continue
+                pending["attempts"] += 1
+                self.outbox.append(("light.set", {"action": pending["action"], "light_target": name,
+                                                   "silent": True}))
+                logging.info(f"[AUTOMATION] Retrying '{name}' {pending['action']} "
+                             f"(attempt {pending['attempts']}/{MAX_ATTEMPTS}).")
         if self._leave_at is None or now < self._leave_at:
             return
         self._leave_at = None
@@ -160,6 +208,10 @@ class AutomationService:
             self.engine.on_presence_event(str(payload.get("event")), payload.get("ts"))
         elif topic == PRESENCE_TOPIC:
             self.engine.on_presence_state(payload)
+        elif topic == FEEDBACK_TOPIC and payload.get("device") == "smart_lights":
+            target, action_cmd, status = payload.get("light_target"), payload.get("action_cmd"), payload.get("status")
+            if target and action_cmd and status:
+                self.engine.on_light_feedback(target, action_cmd, status)
 
     async def run(self):
         logging.info("[AUTOMATION] Online. Connecting to MQTT broker...")
@@ -170,6 +222,7 @@ class AutomationService:
                     attempt = 0
                     await client.subscribe(PRESENCE_TOPIC)
                     await client.subscribe(EVENT_TOPIC)
+                    await client.subscribe(FEEDBACK_TOPIC)
                     await client.publish("jarvis/sys/module_ready", json.dumps({"module": "automation"}))
                     logging.info("[AUTOMATION] Subscribed. Ready.")
                     ticker = asyncio.create_task(self._ticker(client))
