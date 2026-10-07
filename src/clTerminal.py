@@ -915,7 +915,12 @@ async def _get_linux_media_state(player: Optional[str] = None) -> Optional[Dict[
     except ValueError:
         duration = 0.0
 
-    return {"title": title, "artist": artist, "status": status, "position": position, "duration": duration}
+    # Empty output = the player doesn't expose it.
+    shuffle = {"On": True, "Off": False}.get(await _run("shuffle"))
+    repeat = {"None": "off", "Track": "track", "Playlist": "context"}.get(await _run("loop"))
+
+    return {"title": title, "artist": artist, "status": status, "position": position, "duration": duration,
+            "shuffle": shuffle, "repeat": repeat, "can_seek": None, "can_next": None, "can_prev": None}
 
 
 async def _find_linux_spotify_player() -> Optional[str]:
@@ -961,20 +966,58 @@ async def _extract_smtc_state(session) -> Optional[Dict[str, Any]]:
         elapsed = (datetime.now(timezone.utc) - timeline.last_updated_time).total_seconds()
         if elapsed > 0:
             position = min(position + elapsed, duration)
+    controls = playback_info.controls
+    shuffle = playback_info.is_shuffle_active
+    repeat_mode = playback_info.auto_repeat_mode
     return {
         "title": info.title or "",
         "artist": info.artist or "",
         "status": status,
         "position": position,
         "duration": duration,
+        # None = the app doesn't report it. Repeat uses the Spotify API's
+        # repeat_state names for MediaPlaybackAutoRepeatMode 0/1/2.
+        "shuffle": shuffle if isinstance(shuffle, bool) else None,
+        "repeat": {0: "off", 1: "track", 2: "context"}.get(int(repeat_mode)) if isinstance(repeat_mode, int) else None,
+        "can_seek": controls.is_playback_position_enabled is True,
+        "can_next": controls.is_next_enabled is True,
+        "can_prev": controls.is_previous_enabled is True,
     }
+
+
+_smtc_manager = None
+_smtc_manager_lock: Optional[asyncio.Lock] = None
+
+
+async def _get_smtc_manager():
+    """One long-lived SMTC session manager shared by every read and by the
+    event watcher, rather than a fresh request_async() per poll -- each one
+    is another registration with the OS's Now Playing service. The lock
+    matters at startup, when the watcher and both poll loops ask at once:
+    without it each builds its own and the watcher ends up subscribed to
+    one the polls no longer use."""
+    global _smtc_manager, _smtc_manager_lock
+    if _smtc_manager is None:
+        if _smtc_manager_lock is None:
+            _smtc_manager_lock = asyncio.Lock()
+        async with _smtc_manager_lock:
+            if _smtc_manager is None:
+                from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager as SMTC
+                _smtc_manager = await SMTC.request_async()
+    return _smtc_manager
+
+
+def _reset_smtc_manager() -> None:
+    """Drops the cached manager so the next read builds a fresh one -- for
+    when the Now Playing service restarted underneath it."""
+    global _smtc_manager, _smtc_manager_lock
+    _smtc_manager = None
+    _smtc_manager_lock = None
 
 
 async def _get_windows_media_state() -> Optional[Dict[str, Any]]:
     """Reads now-playing state from SMTC -- the Windows equivalent of playerctl."""
-    from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager as SMTC
-
-    session_manager = await SMTC.request_async()
+    session_manager = await _get_smtc_manager()
     session = session_manager.get_current_session()
     if session is None:
         return None
@@ -985,9 +1028,7 @@ async def _find_windows_spotify_session():
     """SMTC's 'current' session is whichever app the OS considers current --
     this instead scans every registered session for Spotify's own (matched
     by its app user model ID), regardless of which one that is."""
-    from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager as SMTC
-
-    session_manager = await SMTC.request_async()
+    session_manager = await _get_smtc_manager()
     for session in session_manager.get_sessions():
         aumid = session.source_app_user_model_id or ""
         if "spotify" in aumid.lower():
@@ -1007,7 +1048,9 @@ async def poll_media_status(manager: TerminalManager) -> None:
     on Windows) -- whichever app the OS considers current, not necessarily
     Spotify. Published separately from jarvis/sys/media_status (which is
     Spotify-only, populated by clSpotify.py's own status calls) so the
-    dashboard's Spotify panel never ends up showing a browser tab's title."""
+    dashboard's Spotify panel never ends up showing a browser tab's title.
+    Woken immediately by watch_media_events on any real change; the 10s
+    timeout is only a heartbeat (seeks, missed events)."""
     if CURRENT_OS == "linux":
         if not shutil.which("playerctl"):
             return
@@ -1034,9 +1077,7 @@ async def poll_media_status(manager: TerminalManager) -> None:
                             state_changed = False
                             if not last_state:
                                 state_changed = True
-                            elif current_state["title"] != last_state.get("title") or \
-                                 current_state["artist"] != last_state.get("artist") or \
-                                 current_state["status"] != last_state.get("status"):
+                            elif any(current_state.get(key) != last_state.get(key) for key in ("title", "artist", "status", "shuffle", "repeat")):
                                 state_changed = True
 
                             if state_changed:
@@ -1052,6 +1093,7 @@ async def poll_media_status(manager: TerminalManager) -> None:
                         break
                     except Exception as e:
                         logging.error(f"Media polling error: {e}")
+                        _reset_smtc_manager()
                         await asyncio.sleep(2)
         except aiomqtt.MqttError:
             await asyncio.sleep(5)
@@ -1102,11 +1144,166 @@ async def poll_spotify_local_status(manager: TerminalManager) -> None:
                         break
                     except Exception as e:
                         logging.error(f"Spotify local status polling error: {e}")
+                        _reset_smtc_manager()
                         await asyncio.sleep(2)
         except aiomqtt.MqttError:
             await asyncio.sleep(5)
         except asyncio.CancelledError:
             break
+
+# --- MEDIA CHANGE LISTENERS ---
+class _Debouncer:
+    """One change usually fires several OS events a few ms apart (track
+    change = media props + playback info + ...); this collapses a burst into
+    a single callback."""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, callback, delay: float = 0.15):
+        self._loop = loop
+        self._callback = callback
+        self._delay = delay
+        self._handle = None
+
+    def poke(self) -> None:
+        if self._handle is None:
+            self._handle = self._loop.call_later(self._delay, self._fire)
+
+    def call_threadsafe(self, fn) -> None:
+        # WinRT event handlers run on a thread-pool thread, not the loop's.
+        try:
+            self._loop.call_soon_threadsafe(fn)
+        except RuntimeError:
+            pass  # loop already closed (shutting down)
+
+    def poke_threadsafe(self, *_) -> None:
+        self.call_threadsafe(self.poke)
+
+    def _fire(self) -> None:
+        self._handle = None
+        self._callback()
+
+
+class SmtcEventWatcher:
+    """Windows listeners for the OS media session: the keyboard media keys,
+    Spotify's own buttons and any other app all change the SMTC state, and
+    this turns each change into an immediate poke instead of the next 10s
+    poll finding it. Timeline events also fire every ~4.5s while playing for
+    nothing but position drift (which the UI already interpolates), so those
+    only poke when the position *jumps* -- a seek, from here or inside Spotify
+    itself, fires nothing else."""
+
+    SEEK_JUMP_SECONDS = 1.5
+
+    def __init__(self, debouncer: _Debouncer):
+        self._debouncer = debouncer
+        self._manager = None
+        self._manager_tokens: List[Tuple[str, Any]] = []
+        self._session_subs: List[Tuple[Any, List[Tuple[str, Any]]]] = []
+        self._last_timeline: Dict[str, Tuple[float, float, bool]] = {}  # app id -> (position, monotonic time, playing)
+
+    def _on_timeline_changed(self, session, *_) -> None:
+        """WinRT thread. Compares the reported position with where the
+        previous one says playback should be by now."""
+        try:
+            timeline = session.get_timeline_properties()
+            playing = int(session.get_playback_info().playback_status) == 4
+            position = timeline.position.total_seconds()
+            if playing:
+                position += max(0.0, (datetime.now(timezone.utc) - timeline.last_updated_time).total_seconds())
+            app_id = session.source_app_user_model_id
+        except Exception:
+            return
+        now = time.monotonic()
+        last = self._last_timeline.get(app_id)
+        self._last_timeline[app_id] = (position, now, playing)
+        if last is None:
+            return
+        expected = last[0] + ((now - last[1]) if last[2] else 0.0)
+        if abs(position - expected) > self.SEEK_JUMP_SECONDS:
+            self._debouncer.poke_threadsafe()
+
+    async def sync(self) -> None:
+        """(Re)subscribes whenever the shared SMTC manager is a new object."""
+        manager = await _get_smtc_manager()
+        if manager is self._manager:
+            return
+        # The old manager is dead or replaced; its tokens go with it.
+        self._manager = manager
+        self._manager_tokens = [
+            ("remove_current_session_changed", manager.add_current_session_changed(self._debouncer.poke_threadsafe)),
+            ("remove_sessions_changed", manager.add_sessions_changed(self._on_sessions_changed)),
+        ]
+        self._session_subs = []
+        self._resubscribe_sessions()
+        self._debouncer.poke()
+        logging.info("Listening for Windows media session changes.")
+
+    def _on_sessions_changed(self, *_) -> None:
+        self._debouncer.poke_threadsafe()
+        self._debouncer.call_threadsafe(self._resubscribe_sessions)
+
+    def _resubscribe_sessions(self) -> None:
+        for session, tokens in self._session_subs:
+            for remove_name, token in tokens:
+                try:
+                    getattr(session, remove_name)(token)
+                except Exception:
+                    pass  # session already gone
+        self._session_subs = []
+        for session in self._manager.get_sessions():
+            self._session_subs.append((session, [
+                ("remove_media_properties_changed", session.add_media_properties_changed(self._debouncer.poke_threadsafe)),
+                ("remove_playback_info_changed", session.add_playback_info_changed(self._debouncer.poke_threadsafe)),
+                ("remove_timeline_properties_changed", session.add_timeline_properties_changed(self._on_timeline_changed)),
+            ]))
+
+
+async def _follow_playerctl(args: List[str], debouncer: _Debouncer) -> None:
+    """Pokes on every line `playerctl --follow` prints, restarting it if it exits."""
+    while True:
+        proc = await asyncio.create_subprocess_exec(
+            "playerctl", "--all-players", "--follow", *args,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            async for _ in proc.stdout:
+                debouncer.poke()
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+            await proc.wait()
+        await asyncio.sleep(5)
+
+
+async def watch_media_events(manager: TerminalManager) -> None:
+    """Wakes poll_media_status/poll_spotify_local_status the moment the OS's
+    media state changes (media keys, track change, a player opening/closing),
+    so the dashboard updates immediately instead of on the next heartbeat."""
+    loop = asyncio.get_running_loop()
+    debouncer = _Debouncer(loop, manager.media_trigger.set)
+
+    if CURRENT_OS == "linux":
+        if not shutil.which("playerctl"):
+            return
+        await asyncio.gather(
+            _follow_playerctl(["status"], debouncer),
+            _follow_playerctl(["metadata", "--format", "{{artist}} - {{title}}"], debouncer),
+        )
+    elif CURRENT_OS == "windows":
+        try:
+            import winsdk.windows.media.control  # noqa: F401 -- import check only
+        except ImportError:
+            return
+        watcher = SmtcEventWatcher(debouncer)
+        while True:
+            try:
+                await watcher.sync()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logging.error(f"Media event subscription failed: {e}")
+                _reset_smtc_manager()
+            # Also re-subscribes after a poll loop reset the manager (Now Playing service restart).
+            await asyncio.sleep(30)
 
 # --- MQTT SERVICE LISTENER ---
 async def mqtt_service_listener(manager: TerminalManager) -> None:
@@ -1207,7 +1404,8 @@ def main():
             task1 = asyncio.create_task(mqtt_service_listener(manager))
             task2 = asyncio.create_task(poll_media_status(manager))
             task3 = asyncio.create_task(poll_spotify_local_status(manager))
-            await asyncio.gather(task1, task2, task3)
+            task4 = asyncio.create_task(watch_media_events(manager))
+            await asyncio.gather(task1, task2, task3, task4)
 
         try:
             asyncio.run(main_loop())

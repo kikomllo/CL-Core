@@ -1,4 +1,5 @@
 import pytest
+import asyncio
 import os
 import sys
 import types
@@ -909,7 +910,7 @@ class TestWindowsMediaState:
 
         state = await _get_windows_media_state()
 
-        assert state == {"title": "Song", "artist": "Artist", "status": "Playing", "position": 12.5, "duration": 200.0}
+        assert state == {"title": "Song", "artist": "Artist", "status": "Playing", "position": 12.5, "duration": 200.0, "shuffle": None, "repeat": None, "can_seek": False, "can_next": False, "can_prev": False}
 
     @pytest.mark.asyncio
     async def test_extrapolates_position_by_time_elapsed_since_the_smtc_snapshot(self, fake_winsdk_smtc, mocker):
@@ -1011,7 +1012,7 @@ class TestWindowsSpotifyState:
 
         state = await _get_windows_spotify_state()
 
-        assert state == {"title": "Song", "artist": "Artist", "status": "Playing", "position": 5.0, "duration": 180.0}
+        assert state == {"title": "Song", "artist": "Artist", "status": "Playing", "position": 5.0, "duration": 180.0, "shuffle": None, "repeat": None, "can_seek": False, "can_next": False, "can_prev": False}
 
     @pytest.mark.asyncio
     async def test_returns_none_when_spotify_has_no_session(self, fake_winsdk_smtc):
@@ -1037,12 +1038,15 @@ class TestLinuxMediaState:
             _fake_proc(b"Playing\n"),
             _fake_proc(b"12.5\n"),
             _fake_proc(b"200000000\n"),  # microseconds
+            _fake_proc(b"On\n"),         # shuffle
+            _fake_proc(b"Playlist\n"),   # loop
         ]
         mocker.patch("clTerminal.asyncio.create_subprocess_exec", AsyncMock(side_effect=procs))
 
         state = await _get_linux_media_state()
 
-        assert state == {"title": "Song Title", "artist": "Some Artist", "status": "Playing", "position": 12.5, "duration": 200.0}
+        assert state == {"title": "Song Title", "artist": "Some Artist", "status": "Playing", "position": 12.5, "duration": 200.0,
+                         "shuffle": True, "repeat": "context", "can_seek": None, "can_next": None, "can_prev": None}
 
     @pytest.mark.asyncio
     async def test_returns_none_when_not_playing_or_paused(self, mocker):
@@ -1066,15 +1070,318 @@ class TestLinuxSpotifyState:
             _fake_proc(b"Playing\n"),
             _fake_proc(b"12.5\n"),
             _fake_proc(b"200000000\n"),  # microseconds
+            _fake_proc(b"Off\n"),        # shuffle
+            _fake_proc(b"None\n"),       # loop
         ]
         mocker.patch("clTerminal.asyncio.create_subprocess_exec", AsyncMock(side_effect=procs))
 
         state = await _get_linux_spotify_state()
 
-        assert state == {"title": "Song Title", "artist": "Some Artist", "status": "Playing", "position": 12.5, "duration": 200.0}
+        assert state == {"title": "Song Title", "artist": "Some Artist", "status": "Playing", "position": 12.5, "duration": 200.0,
+                         "shuffle": False, "repeat": "off", "can_seek": None, "can_next": None, "can_prev": None}
 
     @pytest.mark.asyncio
     async def test_returns_none_when_spotify_is_not_running(self, mocker):
         mocker.patch("clTerminal.asyncio.create_subprocess_exec", AsyncMock(return_value=_fake_proc(b"chromium.instance1\n")))
 
         assert await _get_linux_spotify_state() is None
+
+
+@pytest.fixture(autouse=True)
+def fresh_smtc_manager():
+    """The SMTC manager is cached module-wide; every test gets its own fake."""
+    clTerminal._reset_smtc_manager()
+    yield
+    clTerminal._reset_smtc_manager()
+
+
+class TestDebouncer:
+    """One user action fires several OS events a few ms apart; they must
+    collapse into a single wake-up of the poll loops."""
+
+    @pytest.mark.asyncio
+    async def test_a_burst_of_pokes_fires_the_callback_once(self):
+        calls = []
+        debouncer = clTerminal._Debouncer(asyncio.get_running_loop(), lambda: calls.append(1), delay=0.02)
+
+        debouncer.poke(); debouncer.poke(); debouncer.poke()
+        await asyncio.sleep(0.08)
+
+        assert calls == [1]
+
+    @pytest.mark.asyncio
+    async def test_a_later_poke_fires_again(self):
+        calls = []
+        debouncer = clTerminal._Debouncer(asyncio.get_running_loop(), lambda: calls.append(1), delay=0.02)
+
+        debouncer.poke()
+        await asyncio.sleep(0.06)
+        debouncer.poke()
+        await asyncio.sleep(0.06)
+
+        assert calls == [1, 1]
+
+    @pytest.mark.asyncio
+    async def test_pokes_from_another_thread_are_marshalled_onto_the_loop(self):
+        calls = []
+        loop = asyncio.get_running_loop()
+        debouncer = clTerminal._Debouncer(loop, lambda: calls.append(1), delay=0.02)
+
+        await loop.run_in_executor(None, debouncer.poke_threadsafe, "sender", "args")
+        await asyncio.sleep(0.08)
+
+        assert calls == [1]
+
+
+class TestSmtcEventWatcher:
+    """Windows listeners: the media keys, Spotify's own buttons and any other
+    app all change SMTC state, and each change must wake the poll loops now
+    instead of on the next 10s heartbeat."""
+
+    def _session(self):
+        session = MagicMock()
+        session.add_media_properties_changed.return_value = "props-token"
+        session.add_playback_info_changed.return_value = "playback-token"
+        return session
+
+    @pytest.mark.asyncio
+    async def test_subscribes_to_manager_and_session_events(self, fake_winsdk_smtc):
+        session = self._session()
+        fake_winsdk_smtc.get_sessions.return_value = [session]
+        debouncer = MagicMock()
+
+        await clTerminal.SmtcEventWatcher(debouncer).sync()
+
+        fake_winsdk_smtc.add_current_session_changed.assert_called_once()
+        fake_winsdk_smtc.add_sessions_changed.assert_called_once()
+        session.add_media_properties_changed.assert_called_once()
+        session.add_playback_info_changed.assert_called_once()
+        session.add_timeline_properties_changed.assert_called_once()  # only pokes on a position jump
+        debouncer.poke.assert_called_once()  # initial refresh
+
+    @pytest.mark.asyncio
+    async def test_syncing_again_with_the_same_manager_does_not_resubscribe(self, fake_winsdk_smtc):
+        fake_winsdk_smtc.get_sessions.return_value = [self._session()]
+        watcher = clTerminal.SmtcEventWatcher(MagicMock())
+
+        await watcher.sync()
+        await watcher.sync()
+
+        fake_winsdk_smtc.add_current_session_changed.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_resubscribes_after_the_manager_was_reset(self, fake_winsdk_smtc):
+        from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager as SMTC
+        replacement = MagicMock()
+        replacement.get_sessions.return_value = []
+        fake_winsdk_smtc.get_sessions.return_value = []
+        SMTC.request_async.side_effect = [fake_winsdk_smtc, replacement]
+        watcher = clTerminal.SmtcEventWatcher(MagicMock())
+        await watcher.sync()
+
+        clTerminal._reset_smtc_manager()  # what the poll loops do after an error
+        await watcher.sync()
+
+        fake_winsdk_smtc.add_current_session_changed.assert_called_once()
+        replacement.add_current_session_changed.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_a_sessions_change_swaps_the_per_session_subscriptions(self, fake_winsdk_smtc):
+        old_session, new_session = self._session(), self._session()
+        fake_winsdk_smtc.get_sessions.return_value = [old_session]
+        watcher = clTerminal.SmtcEventWatcher(MagicMock())
+        await watcher.sync()
+
+        fake_winsdk_smtc.get_sessions.return_value = [new_session]
+        watcher._resubscribe_sessions()
+
+        old_session.remove_media_properties_changed.assert_called_once_with("props-token")
+        old_session.remove_playback_info_changed.assert_called_once_with("playback-token")
+        new_session.add_playback_info_changed.assert_called_once()
+
+
+class TestSharedSmtcManager:
+    @pytest.mark.asyncio
+    async def test_reads_reuse_one_manager_instead_of_requesting_a_new_one_each_time(self, fake_winsdk_smtc):
+        from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager as SMTC
+        fake_winsdk_smtc.get_current_session.return_value = None
+
+        await _get_windows_media_state()
+        await _get_windows_media_state()
+        await _get_windows_spotify_state()
+
+        assert SMTC.request_async.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_simultaneous_first_requests_build_only_one_manager(self, fake_winsdk_smtc):
+        """Live finding: at startup the watcher and both poll loops ask at
+        once; unguarded, each built its own and the watcher subscribed to a
+        manager the polls then replaced."""
+        from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager as SMTC
+
+        async def slow_request():
+            await asyncio.sleep(0.01)
+            return MagicMock()
+        SMTC.request_async.side_effect = slow_request
+
+        managers = await asyncio.gather(clTerminal._get_smtc_manager(), clTerminal._get_smtc_manager(), clTerminal._get_smtc_manager())
+
+        assert SMTC.request_async.call_count == 1
+        assert managers[0] is managers[1] is managers[2]
+
+    @pytest.mark.asyncio
+    async def test_reset_forces_a_fresh_manager(self, fake_winsdk_smtc):
+        from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager as SMTC
+        fake_winsdk_smtc.get_current_session.return_value = None
+
+        await _get_windows_media_state()
+        clTerminal._reset_smtc_manager()
+        await _get_windows_media_state()
+
+        assert SMTC.request_async.await_count == 2
+
+
+class TestFollowPlayerctl:
+    @pytest.mark.asyncio
+    async def test_every_line_playerctl_prints_pokes_the_debouncer(self, mocker):
+        async def lines():
+            yield b"Playing\n"
+            yield b"Paused\n"
+
+        proc = MagicMock(returncode=0)
+        proc.stdout = lines()
+        proc.wait = AsyncMock()
+        create = mocker.patch("clTerminal.asyncio.create_subprocess_exec", AsyncMock(return_value=proc))
+        debouncer = MagicMock()
+
+        # The follower restarts playerctl after it exits; stop it at the restart delay.
+        mocker.patch("clTerminal.asyncio.sleep", AsyncMock(side_effect=asyncio.CancelledError))
+        with pytest.raises(asyncio.CancelledError):
+            await clTerminal._follow_playerctl(["status"], debouncer)
+
+        assert debouncer.poke.call_count == 2
+        assert create.call_args.args[:4] == ("playerctl", "--all-players", "--follow", "status")
+
+
+class TestSmtcShuffleRepeatState:
+    """shuffle/repeat/can_* come free from the local session, so the UI can
+    show them without a Spotify API call."""
+
+    def _playing_session(self, mocker, **info):
+        now = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        mocker.patch("clTerminal.datetime").now.return_value = now
+        session = MagicMock()
+        session.get_playback_info.return_value.playback_status = 4
+        for key, value in info.items():
+            setattr(session.get_playback_info.return_value, key, value)
+        session.try_get_media_properties_async = AsyncMock(return_value=MagicMock(title="Song", artist="Artist"))
+        timeline = MagicMock()
+        timeline.position.total_seconds.return_value = 1.0
+        timeline.end_time.total_seconds.return_value = 100.0
+        timeline.last_updated_time = now
+        session.get_timeline_properties.return_value = timeline
+        return session
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode, name", [(0, "off"), (1, "track"), (2, "context")])
+    async def test_repeat_modes_use_the_spotify_api_names(self, fake_winsdk_smtc, mocker, mode, name):
+        fake_winsdk_smtc.get_current_session.return_value = self._playing_session(mocker, is_shuffle_active=True, auto_repeat_mode=mode)
+
+        state = await _get_windows_media_state()
+
+        assert state["repeat"] == name
+        assert state["shuffle"] is True
+
+    @pytest.mark.asyncio
+    async def test_reports_none_when_the_app_does_not_expose_them(self, fake_winsdk_smtc, mocker):
+        fake_winsdk_smtc.get_current_session.return_value = self._playing_session(mocker, is_shuffle_active=None, auto_repeat_mode=None)
+
+        state = await _get_windows_media_state()
+
+        assert state["shuffle"] is None
+        assert state["repeat"] is None
+
+    @pytest.mark.asyncio
+    async def test_reports_which_controls_are_enabled(self, fake_winsdk_smtc, mocker):
+        controls = MagicMock(is_playback_position_enabled=True, is_next_enabled=True, is_previous_enabled=False)
+        fake_winsdk_smtc.get_current_session.return_value = self._playing_session(mocker, controls=controls)
+
+        state = await _get_windows_media_state()
+
+        assert (state["can_seek"], state["can_next"], state["can_prev"]) == (True, True, False)
+
+
+class TestSeekDetection:
+    """A seek (from our own seek action or inside Spotify) fires nothing but
+    timeline events, which also fire every ~4.5s for plain position drift --
+    only a jump away from where playback should be by now may poke."""
+
+    def _watcher(self):
+        debouncer = MagicMock()
+        return clTerminal.SmtcEventWatcher(debouncer), debouncer
+
+    def _session(self, position, playing, app_id="Spotify"):
+        session = MagicMock()
+        session.source_app_user_model_id = app_id
+        session.get_playback_info.return_value.playback_status = 4 if playing else 5
+        timeline = MagicMock()
+        timeline.position.total_seconds.return_value = position
+        timeline.last_updated_time = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        session.get_timeline_properties.return_value = timeline
+        return session
+
+    def test_the_first_event_only_records_a_baseline(self, mocker):
+        mocker.patch("clTerminal.time.monotonic", return_value=100.0)
+        watcher, debouncer = self._watcher()
+
+        watcher._on_timeline_changed(self._session(10.0, playing=False))
+
+        debouncer.poke_threadsafe.assert_not_called()
+
+    def test_normal_drift_while_paused_does_not_poke(self, mocker):
+        mocker.patch("clTerminal.time.monotonic", side_effect=[100.0, 104.5])
+        watcher, debouncer = self._watcher()
+
+        watcher._on_timeline_changed(self._session(10.0, playing=False))
+        watcher._on_timeline_changed(self._session(10.0, playing=False))
+
+        debouncer.poke_threadsafe.assert_not_called()
+
+    def test_a_jump_in_position_pokes(self, mocker):
+        mocker.patch("clTerminal.time.monotonic", side_effect=[100.0, 101.0])
+        watcher, debouncer = self._watcher()
+
+        watcher._on_timeline_changed(self._session(10.0, playing=False))
+        watcher._on_timeline_changed(self._session(70.0, playing=False))
+
+        debouncer.poke_threadsafe.assert_called_once()
+
+    def test_playback_that_advances_as_expected_does_not_poke(self, mocker):
+        """Playing: 4.5s of wall-clock should move the position ~4.5s."""
+        now = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        mocker.patch("clTerminal.datetime").now.return_value = now
+        mocker.patch("clTerminal.time.monotonic", side_effect=[100.0, 104.5])
+        watcher, debouncer = self._watcher()
+
+        watcher._on_timeline_changed(self._session(10.0, playing=True))
+        watcher._on_timeline_changed(self._session(14.5, playing=True))
+
+        debouncer.poke_threadsafe.assert_not_called()
+
+    def test_each_app_keeps_its_own_baseline(self, mocker):
+        mocker.patch("clTerminal.time.monotonic", side_effect=[100.0, 101.0])
+        watcher, debouncer = self._watcher()
+
+        watcher._on_timeline_changed(self._session(10.0, playing=False, app_id="Spotify"))
+        watcher._on_timeline_changed(self._session(500.0, playing=False, app_id="Firefox"))
+
+        debouncer.poke_threadsafe.assert_not_called()
+
+    def test_a_session_that_errors_is_ignored(self):
+        watcher, debouncer = self._watcher()
+        session = MagicMock()
+        session.get_timeline_properties.side_effect = OSError("gone")
+
+        watcher._on_timeline_changed(session)
+
+        debouncer.poke_threadsafe.assert_not_called()

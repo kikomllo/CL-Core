@@ -17,6 +17,13 @@ import aiohttp
 
 # NEW: Import your centralized env loader
 from utils.clEnvLoader import EnvLoader
+from utils.clLocalMedia import send_spotify_command, set_spotify_shuffle, set_spotify_repeat, seek_spotify, REPEAT_MODES
+from utils.clQueueTracker import QueueTracker, ADVANCED, DIVERGED
+from utils.clYtMusicLyrics import YtMusicLyrics
+from utils.clLyrics import LyricsCache, cache_key, clean_title, estimate_line_times, first_artist, pick_search_result, title_variants
+
+# Per-user runtime state (gitignored), like the rest of data/.
+LYRICS_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "lyrics_cache")
 
 # --- LOGGING SETUP ---
 import sys, os
@@ -26,6 +33,13 @@ setup_logging('SPOTIFY')
 
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+def _add_playback_modes(payload: Dict[str, Any], status_data: Dict[str, Any]) -> None:
+    """Carries shuffle/repeat from a status() result into a media_status payload when known."""
+    for key in ("shuffle", "repeat"):
+        if status_data.get(key) is not None:
+            payload[key] = status_data[key]
+
 
 _LRC_LINE_RE = re.compile(r"^\[(\d+):(\d+(?:\.\d+)?)\](.*)$")
 
@@ -53,6 +67,10 @@ class SpotifyManager:
 
     # Generous margin over clTerminal.py's ~10s local-session poll interval.
     LOCAL_STATUS_FRESHNESS_SECONDS = 15.0
+    LOCAL_FAILURE_LIMIT = 3
+    LOCAL_SKIP_SECONDS = 60.0
+    QUEUE_REFILL_AT = 2             # refetch when this few tracks remain (the API returns ~20)
+    QUEUE_REFRESH_BACKOFF_SECONDS = 30.0
 
     def __init__(self, debug_math: bool = True):
         self.base_dir: str = os.path.dirname(os.path.abspath(__file__))
@@ -92,7 +110,8 @@ class SpotifyManager:
         # subscription in mqtt_service_listener.
         self._local_status: Optional[Dict[str, Any]] = None
         self._local_status_time: float = 0.0
-        
+        self._last_pushed_local: Optional[Tuple[tuple, float, float]] = None  # (signature, position, time) last sent to the UI
+
         self.confidence_threshold: float = 0.60
         self.perfect_match_threshold: float = 0.85
         self.debug_math: bool = debug_math
@@ -100,7 +119,22 @@ class SpotifyManager:
         # --- NEW: API Lag Compensators ---
         self._local_playing_state: Optional[bool] = None
         self._last_state_change_time: float = 0.0
-        
+        # True when the last execute_command went through the local client's
+        # buttons (no API) -- the listener then skips its API status refresh,
+        # since clTerminal.py's media listeners push the change themselves.
+        self.last_command_local: bool = False
+        # Circuit breaker for the local path: after LOCAL_FAILURE_LIMIT
+        # failures in a row (Spotify not running, etc.) skip straight to the
+        # API for LOCAL_SKIP_SECONDS instead of paying the local attempt each time.
+        self._local_failures: Dict[str, int] = {}
+        self._local_skip_until: Dict[str, float] = {}
+
+        # Local copy of the up-next queue; fetched from the API on first
+        # request, then followed through the free local media session.
+        self.queue = QueueTracker()
+        self._last_shuffle: Optional[bool] = None
+        self._queue_refresh_blocked_until: float = 0.0
+
         # --- NEW: UI State Tracking ---
         self.ui_is_fullscreen: bool = False
         self.last_ui_poll_time: float = 0.0
@@ -114,11 +148,35 @@ class SpotifyManager:
         self._cached_playback_data: Optional[Dict[str, Any]] = None
         self._cached_playback_time: float = 0.0
 
+        # Lyric providers (chainable) and their on-disk cache.
+        self.lyrics_cache = LyricsCache(LYRICS_CACHE_DIR)
+        # Lyrics without timestamps are shown with estimated ones (see
+        # clLyrics.estimate_line_times); LYRICS_ESTIMATE_UNSYNCED=0 in .env
+        # turns that off and shows nothing for them instead.
+        self.estimate_unsynced_lyrics: bool = self.env.get("LYRICS_ESTIMATE_UNSYNCED", "1") != "0"
+        # Tried in order until one returns synced lyrics; each is
+        # async (title, artist, duration) -> (synced LRC | None, plain | None, errored).
+        self.lyrics_providers = [("lrclib", self._lookup_lrclib)]
+        # YouTube Music (no login, no cookie): synced lyrics for much that
+        # lrclib lacks. LYRICS_YTMUSIC_ENABLED=0 in .env turns it off.
+        self._ytmusic: Optional[YtMusicLyrics] = None
+        if self.env.get("LYRICS_YTMUSIC_ENABLED", "1") != "0":
+            try:
+                import ytmusicapi  # noqa: F401 -- availability check only
+            except ImportError:
+                logging.warning("ytmusicapi is not installed; YouTube Music lyrics are off. Run: pip install ytmusicapi")
+            else:
+                self._ytmusic = YtMusicLyrics()
+                self.lyrics_providers.append(("ytmusic", self._lookup_ytmusic))
         # --- NEW: Lyrics (lrclib.net) ---
         # Only re-fetched when the (title, artist) pair actually changes --
         # keyed on that rather than a Spotify track id, since that's all
         # this codebase's media_status payload already carries.
         self._last_lyrics_track: Optional[Tuple[str, str]] = None
+        self._last_lyrics_duration: float = 0.0
+        self._last_lyrics_found: bool = False
+        self._lyrics_settling: Optional[Tuple[str, str]] = None
+        self._background_tasks: set = set()
 
     # --- RATE LIMIT & CACHE ENGINES ---
     def _check_rate_limit(self) -> bool:
@@ -370,6 +428,8 @@ class SpotifyManager:
             "next_in_queue": "Unknown",
             "progress_ms": int(self._local_status.get("position", 0.0) * 1000),
             "duration_ms": int(self._local_status.get("duration", 0.0) * 1000),
+            "shuffle": self._local_status.get("shuffle"),
+            "repeat": self._local_status.get("repeat"),
         }
 
     def status(self, lightweight: bool = False, force_refresh: bool = False) -> Dict[str, Any]:
@@ -410,9 +470,11 @@ class SpotifyManager:
                     "context": "Unknown",
                     "next_in_queue": "Unknown",
                     "progress_ms": playback.get("progress_ms", 0),
-                    "duration_ms": playback['item'].get("duration_ms", 0)
+                    "duration_ms": playback['item'].get("duration_ms", 0),
+                    "shuffle": playback.get("shuffle_state"),
+                    "repeat": playback.get("repeat_state"),
                 }
-            
+
             context_name = "None"
             context = playback.get('context')
             if context and context.get('type') == 'playlist':
@@ -464,31 +526,109 @@ class SpotifyManager:
             logging.info(f"\n--- Spotify Status ---\nStatus:\t\t{status_data.get('message', 'Inactive')}\n----------------------\n")
 
     # --- LYRICS (lrclib.net) ---
-    async def fetch_lyrics(self, title: str, artist: str, duration_seconds: float) -> Dict[str, Any]:
-        """Queries lrclib.net's free, unauthenticated API for synced lyrics
-        matching the given track. Returns {"found": False} on no match or
-        any failure (network error, no synced lyrics available for this
-        track, malformed response) -- never raises, since a missing lyric
-        is an entirely normal, expected outcome, not an error condition."""
-        params = {"track_name": title, "artist_name": artist, "duration": int(round(duration_seconds))}
+    LRCLIB_API = "https://lrclib.net/api"
+    LRCLIB_MAX_GETS = 3  # title/artist variants tried before falling back to /search
+
+    async def _lrclib_request(self, session, endpoint: str, params: Dict[str, Any]) -> Tuple[Any, bool]:
+        """(json | None, errored). A 404 is a clean "not there"; anything else
+        that isn't a 200 (rate limit, server error, network failure) is an
+        error, so the caller doesn't cache it as a miss."""
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
-                async with session.get("https://lrclib.net/api/get", params=params) as resp:
-                    if resp.status != 200:
-                        return {"found": False}
-                    data = await resp.json()
+            async with session.get(f"{self.LRCLIB_API}/{endpoint}", params=params) as resp:
+                if resp.status == 404:
+                    return None, False
+                if resp.status != 200:
+                    return None, True
+                return await resp.json(), False
         except Exception as e:
-            logging.warning(f"Lyrics fetch failed for '{title}' by '{artist}': {e}")
-            return {"found": False}
+            logging.warning(f"lrclib {endpoint} failed for '{params.get('track_name')}': {e}")
+            return None, True
 
-        synced = data.get("syncedLyrics")
-        if not synced:
-            return {"found": False}
+    async def _lookup_lrclib(self, title: str, artist: str, duration: float) -> Tuple[Optional[str], Optional[str], bool]:
+        """(synced LRC, plain text, errored). Exact lookups first (the title
+        as Spotify has it, then without "(feat. ...)"-style tags), then one
+        fuzzy /search; stops at the first synced hit and remembers the first
+        plain-only one as a fallback."""
+        plain: Optional[str] = None
+        errored = False
+        duration_param = int(round(duration))
+        pairs = [(t, a) for t in title_variants(title) for a in dict.fromkeys([artist, first_artist(artist)])][:self.LRCLIB_MAX_GETS]
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+            for track_name, artist_name in pairs:
+                data, failed = await self._lrclib_request(session, "get", {"track_name": track_name, "artist_name": artist_name, "duration": duration_param})
+                errored = errored or failed
+                if isinstance(data, dict):
+                    if data.get("syncedLyrics"):
+                        return data["syncedLyrics"], data.get("plainLyrics") or plain, errored
+                    plain = plain or data.get("plainLyrics")
 
-        lines = parse_lrc(synced)
-        if not lines:
-            return {"found": False}
-        return {"found": True, "lines": lines}
+            results, failed = await self._lrclib_request(session, "search", {"track_name": clean_title(title), "artist_name": first_artist(artist)})
+            errored = errored or failed
+            best = pick_search_result(results if isinstance(results, list) else [], duration)
+            if best.get("syncedLyrics"):
+                return best["syncedLyrics"], best.get("plainLyrics") or plain, errored
+            plain = plain or best.get("plainLyrics")
+        return None, plain, errored
+
+    YTMUSIC_TIMEOUT_SECONDS = 15
+
+    async def _lookup_ytmusic(self, title: str, artist: str, duration: float) -> Tuple[Optional[str], Optional[str], bool]:
+        # ytmusicapi is blocking: a worker thread, and a deadline so a hung
+        # request can't stall the lookup (the thread finishes on its own).
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(self._ytmusic.find, title, artist, duration), timeout=self.YTMUSIC_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            logging.warning(f"YouTube Music lyrics timed out for '{title}'")
+            return None, None, True
+
+    async def _lookup_lyrics(self, title: str, artist: str, duration: float) -> Tuple[Optional[str], Optional[str], str, bool]:
+        """Runs the providers in order until one has synced lyrics. Returns
+        (synced, plain, source, errored); plain is the first plain text any
+        of them had."""
+        plain, source, errored = None, "none", False
+        for name, provider in self.lyrics_providers:
+            try:
+                synced, provider_plain, failed = await provider(title, artist, duration)
+            except Exception as e:
+                logging.warning(f"Lyrics provider '{name}' failed for '{title}': {e}")
+                errored = True
+                continue
+            errored = errored or failed
+            if synced:
+                return synced, provider_plain or plain, name, errored
+            if provider_plain and plain is None:
+                plain, source = provider_plain, name
+        return None, plain, source, errored
+
+    def _lyrics_payload(self, entry: Dict[str, Any], duration: float) -> Dict[str, Any]:
+        if entry.get("synced"):
+            lines = parse_lrc(entry["synced"])
+            if lines:
+                return {"found": True, "synced": True, "lines": lines}
+        if entry.get("plain") and self.estimate_unsynced_lyrics:
+            lines = estimate_line_times(entry["plain"], duration)
+            if lines:
+                return {"found": True, "synced": False, "lines": lines}
+        return {"found": False}
+
+    async def fetch_lyrics(self, title: str, artist: str, duration_seconds: float) -> Dict[str, Any]:
+        """Synced lyrics if any provider has them (lrclib first), otherwise
+        plain lyrics with estimated line times, otherwise {"found": False}.
+        Results -- including "nothing found" -- are cached on disk so a track
+        is looked up once, not on every play; a lookup that failed on the
+        network is never cached as a miss. Never raises: a missing lyric is
+        an entirely normal outcome, not an error condition."""
+        provider_names = [name for name, _ in self.lyrics_providers]
+        key = cache_key(title, artist, duration_seconds)
+        entry = self.lyrics_cache.get(key, provider_names)
+        if entry is None:
+            synced, plain, source, errored = await self._lookup_lyrics(title, artist, duration_seconds)
+            if errored and not synced:
+                # A provider couldn't be asked (down, paused, rate limited):
+                # use what we have for now but let the next play try again.
+                return self._lyrics_payload({"synced": None, "plain": plain}, duration_seconds)
+            entry = self.lyrics_cache.put(key, synced, plain, source, provider_names)
+        return self._lyrics_payload(entry, duration_seconds)
 
     async def maybe_publish_lyrics(self, mqtt_client, title: str, artist: str, duration_seconds: float) -> None:
         """Re-fetches and publishes the full synced lyric sheet only when
@@ -502,28 +642,88 @@ class SpotifyManager:
         line change; one publish per track covers the whole song."""
         track_key = (title, artist)
         if track_key == self._last_lyrics_track:
-            return
+            # Same track: only worth another lookup if the first came up empty
+            # and the duration it used turned out wrong (the local timeline
+            # can lag a track change, so the first reading may be the previous
+            # track's length) -- lrclib matches on duration.
+            corrected = abs(duration_seconds - self._last_lyrics_duration) > self.LYRICS_DURATION_CORRECTION_SECONDS
+            if self._last_lyrics_found or not corrected:
+                return
         self._last_lyrics_track = track_key
+        self._last_lyrics_duration = duration_seconds
         result = await self.fetch_lyrics(title, artist, duration_seconds)
+        self._last_lyrics_found = bool(result.get("found"))
         await mqtt_client.publish("jarvis/sys/spotify_lyrics", json.dumps({
             "title": title,
             "artist": artist,
             **result,
         }))
 
+    LYRICS_SETTLE_SECONDS = 1.5
+    LYRICS_DURATION_CORRECTION_SECONDS = 2.0
+
+    async def _request_lyrics(self, mqtt_client, title: str, artist: str, duration_seconds: float) -> None:
+        """Called for every changed local status. For a *new* track it doesn't
+        look up lyrics straight away: the OS reports the new title a moment
+        before the new length (live: GEIZA arrived with the previous track's
+        226s instead of its own 136s), and a lookup with the wrong duration
+        finds nothing -- and, once made, is never repeated. It waits briefly
+        and uses whatever duration the local status holds by then."""
+        track_key = (title, artist)
+        if track_key == self._last_lyrics_track:
+            await self.maybe_publish_lyrics(mqtt_client, title, artist, duration_seconds)  # acts only on a late correction
+        elif track_key != self._lyrics_settling:
+            self._lyrics_settling = track_key
+            task = asyncio.create_task(self._publish_lyrics_when_settled(mqtt_client, title, artist))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+
+    async def _publish_lyrics_when_settled(self, mqtt_client, title: str, artist: str) -> None:
+        try:
+            await asyncio.sleep(self.LYRICS_SETTLE_SECONDS)
+            local = self._local_status or {}
+            if (local.get("title") or "Unknown", local.get("artist") or "Unknown") != (title, artist):
+                return  # a different track is playing now; its own change scheduled its own lookup
+            await self.maybe_publish_lyrics(mqtt_client, title, artist, local.get("duration", 0.0))
+        except Exception as e:
+            logging.error(f"Lyrics lookup for '{title}' failed: {e}")
+        finally:
+            if self._lyrics_settling == (title, artist):
+                self._lyrics_settling = None
+
+    LOCAL_SEEK_JUMP_SECONDS = 1.5
+
+    def _local_status_changed(self, payload: Dict[str, Any]) -> bool:
+        """True when the local session differs from what was last pushed to
+        the UI: any visible field, or a position that jumped off the
+        interpolated course (a seek -- plain drift is the UI's own job)."""
+        now = time.time()
+        signature = tuple(payload.get(key) for key in (
+            "title", "artist", "status", "duration", "shuffle", "repeat", "can_seek", "can_next", "can_prev",
+        )) + (self.last_known_normal_volume,)
+        last = self._last_pushed_local
+        position = payload.get("position", 0.0)
+        self._last_pushed_local = (signature, position, now)
+        if last is None or last[0] != signature:
+            return True
+        expected = last[1] + ((now - last[2]) if payload.get("status") == "Playing" else 0.0)
+        return abs(position - expected) > self.LOCAL_SEEK_JUMP_SECONDS
+
     async def handle_local_status_update(self, mqtt_client, payload: Dict[str, Any]) -> None:
         """Reacts to clTerminal.py's free, local Spotify-filtered OS media
         session by also pushing a fresh media_status (and re-checking
         lyrics) directly, rather than only ever refreshing on an explicit
-        UI poll or command. poll_spotify_local_status publishes this
-        unconditionally on its own ~10s timer (not just on change), so
-        this gives the UI a steady, push-driven refresh cadence instead
-        of the much sparser one from MediaWidget's own request-near-
-        track-end/on-command polling -- without clUI.py needing to know
-        this topic exists at all (it stays clSpotify.py's own concern)."""
+        UI poll or command. poll_spotify_local_status still publishes on
+        its ~10s heartbeat (it doubles as the freshness signal for status()),
+        but the UI only hears about it when something actually changed --
+        the OS-event listeners wake that loop immediately on a track change,
+        so a change reaches the UI in well under a second."""
         self._local_status = payload
         self._local_status_time = time.time()
         if not payload.get("found"):
+            self._last_pushed_local = None
+            return
+        if not self._local_status_changed(payload):
             return
 
         refresh_payload = {
@@ -534,8 +734,13 @@ class SpotifyManager:
             "status": payload.get("status", "Paused"),
             "volume": self.last_known_normal_volume if self.last_known_normal_volume is not None else 100,
         }
+        # Free from the local session; the UI shows them without any API call.
+        for key in ("shuffle", "repeat", "can_seek", "can_next", "can_prev"):
+            if payload.get(key) is not None:
+                refresh_payload[key] = payload[key]
         await mqtt_client.publish("jarvis/sys/media_status", json.dumps(refresh_payload))
-        await self.maybe_publish_lyrics(mqtt_client, refresh_payload["title"], refresh_payload["artist"], refresh_payload["duration"])
+        await self._request_lyrics(mqtt_client, refresh_payload["title"], refresh_payload["artist"], refresh_payload["duration"])
+        await self.track_queue(mqtt_client, payload)
 
     # --- MATHEMATICS & LOGIC ENGINES ---
     def _calculate_confidence(self, track_query: str, artist_query: str, actual_name: str, actual_artist: str, popularity: int) -> float:
@@ -746,11 +951,11 @@ class SpotifyManager:
                     raw_vol = current_playback.get('device', {}).get('volume_percent')
                     current_vol = raw_vol if raw_vol is not None else 50
 
-                    if current_vol > 50:
+                    if current_vol > 50 or self.last_known_normal_volume is None:
                         self.last_known_normal_volume = current_vol
                         self.pre_duck_volume = current_vol
                     else:
-                        self.pre_duck_volume = self.last_known_normal_volume or 80
+                        self.pre_duck_volume = self.last_known_normal_volume
 
                 self.ducked_device_id = device
                 new_vol = max(0, int(self.pre_duck_volume * 0.8))
@@ -793,15 +998,149 @@ class SpotifyManager:
 
         return False, f"Unknown duck action: {action}"
 
+    def _local_first(self, kind: str, local_call) -> bool:
+        """Runs a local-client command behind a per-`kind` circuit breaker (a
+        client that refuses shuffle must not disable the play/next buttons).
+        True means it was delivered (and, for shuffle/repeat/seek, confirmed
+        by the session's own state); False means use the API."""
+        now = time.time()
+        if now < self._local_skip_until.get(kind, 0.0):
+            return False
+        try:
+            delivered = bool(local_call())
+        except Exception as e:
+            logging.error(f"Local Spotify '{kind}' failed: {e}")
+            delivered = False
+
+        if delivered:
+            self._local_failures[kind] = 0
+            self.last_command_local = True
+            return True
+        self._local_failures[kind] = self._local_failures.get(kind, 0) + 1
+        if self._local_failures[kind] >= self.LOCAL_FAILURE_LIMIT:
+            self._local_failures[kind] = 0
+            self._local_skip_until[kind] = now + self.LOCAL_SKIP_SECONDS
+            logging.warning(f"Local Spotify '{kind}' failed {self.LOCAL_FAILURE_LIMIT}x in a row; using the API for {self.LOCAL_SKIP_SECONDS:.0f}s.")
+        return False
+
+    def _try_local_media_command(self, action: str) -> Optional[str]:
+        """Presses the media button on the local Spotify client instead of
+        calling the Web API. Returns the result message, or None when there
+        is no local client to command (the caller then uses the API)."""
+        local = self._lightweight_status_from_local_session()
+        was_playing = local["is_playing"] if local else None
+        if not self._local_first("button", lambda: send_spotify_command(action)):
+            return None
+
+        self._last_state_change_time = time.time()
+        if action == "toggle":
+            self._local_playing_state = None if was_playing is None else not was_playing
+            if was_playing is None:
+                return "Toggled playback."
+            return "Music paused." if was_playing else "Resuming playback."
+        self._local_playing_state = True
+        return "Skipped to next track." if action == "next" else "Returned to previous track."
+
+    # --- SHUFFLE / REPEAT / SEEK (local first, API on failure) ---
+    def _set_shuffle(self, enabled: bool) -> Tuple[bool, str]:
+        message = "Shuffle on." if enabled else "Shuffle off."
+        if self._local_first("shuffle", lambda: set_spotify_shuffle(enabled)):
+            return True, message
+        device = self._get_any_device()
+        if not device: return False, "Spotify is not active."
+        self.sp.shuffle(enabled, device_id=device)
+        return True, message
+
+    def _set_repeat(self, mode: str) -> Tuple[bool, str]:
+        if mode not in REPEAT_MODES:
+            return False, f"Unknown repeat mode '{mode}'. Use off, track or context."
+        message = f"Repeat set to {mode}."
+        if self._local_first("repeat", lambda: set_spotify_repeat(mode)):
+            return True, message
+        device = self._get_any_device()
+        if not device: return False, "Spotify is not active."
+        self.sp.repeat(mode, device_id=device)
+        return True, message
+
+    def _seek(self, position_ms: int) -> Tuple[bool, str]:
+        position_ms = max(0, int(position_ms))
+        seconds = position_ms // 1000
+        message = f"Moved to {seconds // 60}:{seconds % 60:02d}."
+        if self._local_first("seek", lambda: seek_spotify(position_ms)):
+            return True, message
+        device = self._get_any_device()
+        if not device: return False, "Spotify is not active."
+        self.sp.seek_track(position_ms, device_id=device)
+        return True, message
+
+    # --- QUEUE ---
+    def refresh_queue(self) -> bool:
+        """The only place the queue costs an API request. False if blocked
+        (rate limit / recent failure) or the request failed."""
+        if time.time() < self._queue_refresh_blocked_until or not self._check_rate_limit():
+            return False
+        try:
+            self.queue.load(self.sp.queue())
+            return True
+        except Exception as e:
+            self._queue_refresh_blocked_until = time.time() + self.QUEUE_REFRESH_BACKOFF_SECONDS
+            logging.error(f"Queue refresh failed: {e}")
+            return False
+
+    def queue_payload(self, limit: int = 10) -> Dict[str, Any]:
+        """What jarvis/sys/spotify_queue carries."""
+        return {"queue": self.queue.snapshot(limit), "remaining": self.queue.remaining}
+
+    async def track_queue(self, mqtt_client, local_status: Dict[str, Any]) -> None:
+        """Follows playback through the local queue from the free local media
+        session; refetches (one API request) only when playback leaves the
+        queue we expected, the queue is nearly used up, or shuffle changed
+        (Spotify reorders everything). Does nothing until a queue was first
+        requested -- no one watching means no API cost."""
+        if not self.queue.loaded:
+            return
+        shuffle = local_status.get("shuffle")
+        shuffle_changed = shuffle is not None and self._last_shuffle is not None and shuffle != self._last_shuffle
+        if shuffle is not None:
+            self._last_shuffle = shuffle
+
+        outcome, _ = self.queue.observe(local_status.get("title"), int(round(local_status.get("duration", 0.0) * 1000)) or None)
+        needs_refetch = shuffle_changed or outcome == DIVERGED or (outcome == ADVANCED and self.queue.remaining <= self.QUEUE_REFILL_AT)
+        if needs_refetch:
+            await asyncio.to_thread(self.refresh_queue)
+        if needs_refetch or outcome == ADVANCED:
+            await mqtt_client.publish("jarvis/sys/spotify_queue", json.dumps(self.queue_payload()), retain=True)
+
     # --- MAIN EXECUTION ENGINE ---
     def execute_command(self, action: str, volume: Optional[int] = None, track_name: Optional[str] = None, 
                         artist_name: Optional[str] = None, playlist_name: Optional[str] = None, 
-                        search_query: Optional[str] = None, choice_index: Optional[int] = None) -> Tuple[bool, Any]:
+                        search_query: Optional[str] = None, choice_index: Optional[int] = None,
+                        enabled: Optional[bool] = None, mode: Optional[str] = None,
+                        position_ms: Optional[int] = None) -> Tuple[bool, Any]:
         """Clean router that delegates actions to the appropriate class helper methods."""
+        self.last_command_local = False
         try:
             if action in ["duck", "unduck"]:
                 return self._handle_ducking(action)
-            
+
+            if action == "shuffle" and enabled is not None:
+                return self._set_shuffle(enabled)
+            if action == "repeat" and mode is not None:
+                return self._set_repeat(mode)
+            if action == "seek" and position_ms is not None:
+                return self._seek(position_ms)
+
+            if action in ["queue", "queue_refresh"]:
+                if action == "queue_refresh" or not self.queue.loaded:
+                    if not self.refresh_queue():
+                        return False, "Could not fetch the queue right now."
+                return True, f"{self.queue.remaining} tracks up next."
+
+            if action in ["toggle", "next", "prev"]:
+                local_message = self._try_local_media_command(action)
+                if local_message is not None:
+                    return True, local_message
+
             if action and action.startswith("status"):
                 s = self.status()
                 s["query_action"] = action
@@ -979,6 +1318,7 @@ async def mqtt_service_listener(manager: SpotifyManager) -> None:
                                         "status": "Playing" if status_data.get("is_playing") else "Paused",
                                         "volume": raw_volume if isinstance(raw_volume, int) else 100
                                     }
+                                    _add_playback_modes(refresh_payload, status_data)
                                     await mqtt_client.publish("jarvis/sys/media_status", json.dumps(refresh_payload))
                                     await manager.maybe_publish_lyrics(mqtt_client, refresh_payload["title"], refresh_payload["artist"], refresh_payload["duration"])
                                 continue
@@ -998,8 +1338,11 @@ async def mqtt_service_listener(manager: SpotifyManager) -> None:
                                 track_name=payload.get("track_name"), 
                                 artist_name=payload.get("artist_name"), 
                                 playlist_name=payload.get("playlist_name"), 
-                                search_query=payload.get("search_query"), 
-                                choice_index=payload.get("choice_index")
+                                search_query=payload.get("search_query"),
+                                choice_index=payload.get("choice_index"),
+                                enabled=payload.get("enabled"),
+                                mode=payload.get("mode"),
+                                position_ms=payload.get("position_ms")
                             )
                             
                             await mqtt_client.publish("jarvis/feedback", json.dumps({
@@ -1012,13 +1355,18 @@ async def mqtt_service_listener(manager: SpotifyManager) -> None:
                             # --- Conditional Background Refresh ---
                             if success:
                                 action_cmd = payload.get("action")
-                                
+
+                                if action_cmd in ["queue", "queue_refresh"]:
+                                    await mqtt_client.publish("jarvis/sys/spotify_queue", json.dumps(manager.queue_payload()), retain=True)
+                                    continue
+
                                 # 1. Duck and Unduck don't change track metadata. Skip refresh completely.
                                 if action_cmd in ["duck", "unduck"]:
                                     continue
                                 
                                 # 2. Always refresh status on explicit playback commands to keep UI synced
-                                if action_cmd in ["play", "pause", "toggle", "next", "prev", "status"]:
+                                # (Skipped after a local button press: clTerminal.py's media listeners already push it, no API needed.)
+                                if action_cmd in ["play", "pause", "toggle", "next", "prev", "status"] and not manager.last_command_local:
                                     async def background_refresh():
                                         await asyncio.sleep(1.0)
                                         try:
@@ -1033,6 +1381,7 @@ async def mqtt_service_listener(manager: SpotifyManager) -> None:
                                                     "status": "Playing" if status_data.get("is_playing") else "Paused",
                                                     "volume": raw_volume if isinstance(raw_volume, int) else 100
                                                 }
+                                                _add_playback_modes(refresh_payload, status_data)
                                                 async with aiomqtt.Client("localhost") as bg_client:
                                                     await bg_client.publish("jarvis/sys/media_status", json.dumps(refresh_payload))
                                                     await manager.maybe_publish_lyrics(bg_client, refresh_payload["title"], refresh_payload["artist"], refresh_payload["duration"])

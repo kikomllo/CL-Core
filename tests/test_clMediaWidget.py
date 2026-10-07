@@ -43,21 +43,22 @@ class TestVolumeFaderHoverReveal:
         w = _widget(mocker)
         assert w.fader_container.parent() is w
 
-    def test_app_volume_tab_width_is_unaffected_by_the_fader_opening(self, qapp, mocker):
-        """app_volume_tab is a direct self.layout child (outside the content
-        row entirely), so it must not narrow when the fader opens."""
+    def test_bottom_button_row_is_unaffected_by_the_fader_opening(self, qapp, mocker):
+        """The bottom button row (lyrics / Up Next / App Volume) is a direct
+        self.layout child (outside the content row entirely), so it must not
+        shift or narrow when the fader opens."""
         from PyQt6.QtWidgets import QApplication
         w = _widget(mocker)
         w.show()
         w.resize(400, 300)
         QApplication.processEvents()
-        width_before = w.app_volume_tab.width()
+        positions_before = [b.x() for b in (w.lyrics_toggle_btn, w.queue_btn, w.app_volume_btn)]
 
         w._on_fader_width_changed(w._fader_width)
         QApplication.processEvents()
-        width_after = w.app_volume_tab.width()
+        positions_after = [b.x() for b in (w.lyrics_toggle_btn, w.queue_btn, w.app_volume_btn)]
 
-        assert width_after == width_before
+        assert positions_after == positions_before
 
     def test_opening_the_fader_widens_its_own_column(self, qapp, mocker):
         from PyQt6.QtWidgets import QApplication
@@ -658,25 +659,51 @@ class TestOutputDeviceMenu:
 
 
 class TestLyricsToggleButton:
-    """Next to the "SPOTIFY PLAYER" badge -- toggles LyricsDisplay, a
-    sibling widget owned by JarvisUI, not this one. There's no signal
-    wired between them; self.window() reaches JarvisUI the same way
-    showEvent()/_tick() already do for other state."""
+    """First of the three bottom buttons (lyrics, Up Next, App Volume) --
+    toggles LyricsDisplay, a sibling widget owned by JarvisUI, not this
+    one. There's no signal wired between them; self.window() reaches
+    JarvisUI the same way showEvent()/_tick() already do for other state."""
 
     def test_starts_enabled(self, qapp, mocker):
         w = _widget(mocker)
         assert w._lyrics_enabled is True
 
-    def test_sits_immediately_next_to_the_badge_not_pushed_to_the_row_end(self, qapp, mocker):
-        """The stretch that pushes other things to the row's far right
-        must come AFTER this button, not before it, or it lands at the
-        opposite end from the "SPOTIFY PLAYER" badge instead of right
-        next to it."""
+    def test_sits_in_the_middle_of_the_bottom_row_between_up_next_and_app_volume(self, qapp, mocker):
+        """It used to sit next to the "SPOTIFY PLAYER" badge; the header now
+        holds shuffle and repeat."""
         w = _widget(mocker)
-        badge_index = w.header_layout.indexOf(w.badge_lbl)
-        button_index = w.header_layout.indexOf(w.lyrics_toggle_btn)
 
-        assert button_index == badge_index + 1
+        assert w.header_layout.indexOf(w.lyrics_toggle_btn) == -1
+        lyrics = w.bottom_row.indexOf(w.lyrics_toggle_btn)
+        assert w.bottom_row.indexOf(w.queue_btn) == lyrics - 1
+        assert w.bottom_row.indexOf(w.app_volume_btn) == lyrics + 1
+
+    def test_is_a_little_bigger_than_its_neighbours(self, qapp, mocker):
+        w = _widget(mocker)
+        assert w.lyrics_toggle_btn.width() > w.queue_btn.width()
+        assert w.lyrics_toggle_btn.width() > w.app_volume_btn.width()
+        assert w.queue_btn.width() == w.app_volume_btn.width()
+
+    def test_the_circles_line_up_vertically_despite_the_size_difference(self, qapp, mocker):
+        from PyQt6.QtWidgets import QApplication
+        w = _widget(mocker)
+        w.resize(300, 250)
+        w.show()
+        QApplication.processEvents()
+
+        def circle_center_y(button):
+            return button.y() + button._top + button._d / 2
+
+        centers = [circle_center_y(b) for b in (w.queue_btn, w.lyrics_toggle_btn, w.app_volume_btn)]
+        assert max(centers) - min(centers) <= 1
+
+    def test_the_dot_follows_the_enabled_state(self, qapp, mocker):
+        w = _widget(mocker)
+        assert w.lyrics_toggle_btn.is_active() is True
+
+        w.lyrics_toggle_btn.click()
+
+        assert w.lyrics_toggle_btn.is_active() is False
 
     def test_clicking_disables_and_notifies_lyrics_display(self, qapp, mocker):
         w = _widget(mocker)
@@ -721,3 +748,550 @@ class TestLyricsToggleButton:
         w.show()
 
         assert w._lyrics_enabled is False
+
+
+class TestShuffleRepeatButtons:
+    """Flank the transport controls. A click flips them optimistically and
+    sends the action; a dashed "pending" ring shows until the player's next
+    status confirms (so a stale status can't flip the button back)."""
+
+    def test_both_start_off(self, qapp, mocker):
+        w = _widget(mocker)
+        assert w.shuffle_btn.is_active() is False
+        assert w.repeat_btn.is_active() is False
+
+    def test_they_sit_in_the_header_right_after_the_badge(self, qapp, mocker):
+        """Where the lyrics toggle used to be; the stretch comes after them."""
+        w = _widget(mocker)
+        badge = w.header_layout.indexOf(w.badge_lbl)
+
+        assert w.header_layout.indexOf(w.shuffle_btn) == badge + 1
+        assert w.header_layout.indexOf(w.repeat_btn) == badge + 2
+
+    def test_the_transport_row_is_just_prev_play_next(self, qapp, mocker):
+        w = _widget(mocker)
+
+        assert w.controls_layout.indexOf(w.shuffle_btn) == -1
+        assert w.controls_layout.indexOf(w.repeat_btn) == -1
+        order = [w.controls_layout.indexOf(b) for b in (w.prev_btn, w.play_btn, w.next_btn)]
+        assert order == sorted(order) and -1 not in order
+
+    def test_clicking_shuffle_turns_it_on_and_sends_the_action(self, qapp, mocker):
+        w = _widget(mocker)
+
+        w.shuffle_btn.click()
+
+        assert w.shuffle_btn.is_active() is True
+        w.router.dispatch.assert_called_with("spotify.control", silent=True, action="shuffle", enabled=True)
+
+    def test_clicking_shuffle_again_turns_it_off(self, qapp, mocker):
+        w = _widget(mocker)
+        w.shuffle_btn.click()
+
+        w.shuffle_btn.click()
+
+        assert w.shuffle_btn.is_active() is False
+        w.router.dispatch.assert_called_with("spotify.control", silent=True, action="shuffle", enabled=False)
+
+    def test_repeat_cycles_off_context_track_off(self, qapp, mocker):
+        w = _widget(mocker)
+        sent = []
+        for _ in range(4):
+            w.repeat_btn.click()
+            sent.append(w.router.dispatch.call_args.kwargs["mode"])
+
+        assert sent == ["context", "track", "off", "context"]
+
+    def test_repeat_track_uses_the_repeat_one_icon(self, qapp, mocker):
+        w = _widget(mocker)
+        w.repeat_btn.click()  # context
+        assert w.repeat_btn._icon_name == "repeat.svg"
+        w.repeat_btn.click()  # track
+        assert w.repeat_btn._icon_name == "repeat_one.svg"
+        assert w.repeat_btn.is_active() is True
+        w.repeat_btn.click()  # off
+        assert w.repeat_btn.is_active() is False
+
+    def test_a_click_marks_the_button_pending_until_confirmed(self, qapp, mocker):
+        w = _widget(mocker)
+        w.shuffle_btn.click()
+        assert w.shuffle_btn._pending is True
+
+        w.update_status({"title": "T", "artist": "A", "shuffle": True})
+
+        assert w.shuffle_btn._pending is False
+        assert w.shuffle_btn.is_active() is True
+
+    def test_a_stale_status_does_not_flip_the_button_back_while_pending(self, qapp, mocker):
+        w = _widget(mocker)
+        w.shuffle_btn.click()  # wants True
+
+        w.update_status({"title": "T", "artist": "A", "shuffle": False})  # a reading from before the click landed
+
+        assert w.shuffle_btn.is_active() is True
+        assert w.shuffle_btn._pending is True
+
+    def test_giving_up_on_a_confirmation_lets_the_next_status_win(self, qapp, mocker):
+        w = _widget(mocker)
+        w.shuffle_btn.click()
+        w._clear_mode_pending()  # what the pending timer does
+
+        w.update_status({"title": "T", "artist": "A", "shuffle": False})
+
+        assert w.shuffle_btn.is_active() is False
+        assert w.shuffle_btn._pending is False
+
+    def test_status_shows_the_players_real_modes(self, qapp, mocker):
+        w = _widget(mocker)
+
+        w.update_status({"title": "T", "artist": "A", "shuffle": True, "repeat": "track"})
+
+        assert w.shuffle_btn.is_active() is True
+        assert w.repeat_btn._icon_name == "repeat_one.svg"
+
+    def test_a_status_without_the_keys_leaves_them_alone(self, qapp, mocker):
+        w = _widget(mocker)
+        w.update_status({"title": "T", "artist": "A", "shuffle": True, "repeat": "context"})
+
+        w.update_status({"title": "T", "artist": "A"})  # e.g. built from the Web API
+
+        assert w.shuffle_btn.is_active() is True
+        assert w.repeat_btn.is_active() is True
+
+
+class TestSeekBar:
+    """The thin progress bar is now clickable: a click seeks, and the new
+    position shows immediately instead of waiting for the next status."""
+
+    def _click_at(self, w, fraction):
+        from PyQt6.QtCore import QPoint, Qt
+        from PyQt6.QtTest import QTest
+        bar = w.progress_bar
+        QTest.mouseClick(bar, Qt.MouseButton.LeftButton, pos=QPoint(int(bar.width() * fraction), bar.height() // 2))
+
+    def _shown(self, mocker, **status):
+        from PyQt6.QtWidgets import QApplication
+        w = _widget(mocker)
+        w.resize(400, 200)
+        w.show()
+        QApplication.processEvents()
+        w.update_status({"title": "T", "artist": "A", "position": 10.0, "duration": 200.0, "status": "Paused", **status})
+        return w
+
+    def test_clicking_seeks_to_that_fraction_of_the_track(self, qapp, mocker):
+        w = self._shown(mocker)
+
+        self._click_at(w, 0.5)
+
+        call = w.router.dispatch.call_args
+        assert call.args == ("spotify.control",)
+        assert call.kwargs["action"] == "seek"
+        assert abs(call.kwargs["position_ms"] - 100_000) <= 2_000
+
+    def test_the_new_position_shows_immediately(self, qapp, mocker):
+        w = self._shown(mocker)
+
+        self._click_at(w, 0.5)
+
+        assert w.position_lbl.text() == "1:40"
+
+    def test_nothing_is_sent_without_a_known_duration(self, qapp, mocker):
+        w = self._shown(mocker, duration=0.0)
+        w.router.dispatch.reset_mock()
+
+        self._click_at(w, 0.5)
+
+        w.router.dispatch.assert_not_called()
+
+    def test_a_player_that_cannot_seek_ignores_clicks(self, qapp, mocker):
+        w = self._shown(mocker, can_seek=False)
+        w.router.dispatch.reset_mock()
+
+        self._click_at(w, 0.5)
+
+        w.router.dispatch.assert_not_called()
+
+    def test_a_missing_can_seek_assumes_it_can(self, qapp, mocker):
+        w = self._shown(mocker)  # no can_seek key at all
+        assert w.progress_bar._seekable is True
+
+    def test_still_reports_its_value_like_a_progress_bar(self, qapp, mocker):
+        w = self._shown(mocker, position=50.0, duration=200.0)
+        assert w.progress_bar.value() == 250
+
+
+class TestBottomButtons:
+    """Lyrics / Up Next / App Volume as small circles under the progress
+    bar; the dot under one marks it on or open. Up Next and App Volume are
+    drawers that share the wrapper-growing logic, one open at a time."""
+
+    def test_up_next_and_app_volume_start_closed(self, qapp, mocker):
+        w = _widget(mocker)
+        assert w.queue_body.isHidden() is True
+        assert w.app_volume_body.isHidden() is True
+        assert w.queue_btn.is_active() is False
+        assert w.app_volume_btn.is_active() is False
+
+    def test_up_next_opens_and_asks_for_the_queue(self, qapp, mocker):
+        w = _widget(mocker)
+
+        w.queue_btn.click()
+
+        assert w.queue_body.isHidden() is False
+        assert w.queue_btn.is_active() is True
+        w.router.dispatch.assert_called_with("spotify.control", action="queue", silent=True)
+
+    def test_up_next_closes_on_a_second_click(self, qapp, mocker):
+        w = _widget(mocker)
+        w.queue_btn.click()
+
+        w.queue_btn.click()
+
+        assert w.queue_body.isHidden() is True
+        assert w.queue_btn.is_active() is False
+
+    def test_opening_app_volume_closes_up_next(self, qapp, mocker):
+        w = _widget(mocker)
+        w.queue_btn.click()
+
+        w.app_volume_btn.click()
+
+        assert w.queue_body.isHidden() is True
+        assert w.app_volume_body.isHidden() is False
+        assert (w.queue_btn.is_active(), w.app_volume_btn.is_active()) == (False, True)
+
+    def test_opening_up_next_closes_app_volume(self, qapp, mocker):
+        w = _widget(mocker)
+        w.app_volume_btn.click()
+
+        w.queue_btn.click()
+
+        assert w.app_volume_body.isHidden() is True
+        assert w.queue_body.isHidden() is False
+        assert (w.queue_btn.is_active(), w.app_volume_btn.is_active()) == (True, False)
+
+    def test_switching_drawers_leaves_the_wrapper_height_consistent(self, qapp, mocker):
+        """Each drawer grows the wrapper by its own delta and shrinks it
+        back; going queue -> apps -> closed must land on the starting height."""
+        import clUI
+        from PyQt6.QtWidgets import QApplication
+        w = _widget(mocker)
+        wrapper = clUI.DraggableWidget("widget_test_media", "Media Controls", w)
+        wrapper.show()
+        wrapper.resize(300, 400)
+        QApplication.processEvents()
+        height_before = wrapper.height()
+
+        w._toggle_queue()
+        QApplication.processEvents()
+        w._toggle_app_volume()
+        QApplication.processEvents()
+        w._toggle_app_volume()
+        QApplication.processEvents()
+
+        assert wrapper.height() == height_before
+        assert w._app_volume_delta == 0
+
+        wrapper.close()
+        QApplication.processEvents()
+
+
+class TestUpNextRows:
+    def _queue(self, count=7):
+        return {"remaining": 18, "queue": [
+            {"title": f"Song {i}", "artist": f"Artist {i}", "duration_ms": 125_000 + i * 1000} for i in range(1, count + 1)
+        ]}
+
+    def test_shows_at_most_five_rows_and_the_total_in_the_caption(self, qapp, mocker):
+        w = _widget(mocker)
+
+        w.update_queue(self._queue(7))
+
+        assert w.queue_rows_layout.count() == 5
+        assert w.queue_caption_lbl.text() == "18 tracks, followed locally"
+
+    def test_the_first_row_is_marked_next(self, qapp, mocker):
+        from PyQt6.QtWidgets import QLabel
+        w = _widget(mocker)
+        w.update_queue(self._queue(3))
+
+        def next_labels(row):
+            return [l for l in row.findChildren(QLabel) if l.text() == "NEXT"]
+
+        rows = [w.queue_rows_layout.itemAt(i).widget() for i in range(3)]
+        assert len(next_labels(rows[0])) == 1
+        assert next_labels(rows[1]) == [] and next_labels(rows[2]) == []
+
+    def test_rows_show_the_duration_as_minutes_and_seconds(self, qapp, mocker):
+        from PyQt6.QtWidgets import QLabel
+        w = _widget(mocker)
+        w.update_queue(self._queue(1))
+
+        texts = [l.text() for l in w.queue_rows_layout.itemAt(0).widget().findChildren(QLabel)]
+
+        assert "2:06" in texts  # 126_000 ms
+
+    def test_an_update_replaces_the_old_rows(self, qapp, mocker):
+        w = _widget(mocker)
+        w.update_queue(self._queue(5))
+
+        w.update_queue(self._queue(2))
+
+        assert w.queue_rows_layout.count() == 2
+
+    def test_an_empty_queue_says_so(self, qapp, mocker):
+        w = _widget(mocker)
+
+        w.update_queue({"remaining": 0, "queue": []})
+
+        assert w.queue_rows_layout.count() == 0
+        assert w.queue_caption_lbl.text() == "Nothing queued."
+
+    def test_before_any_data_the_caption_says_loading(self, qapp, mocker):
+        w = _widget(mocker)
+        assert w.queue_caption_lbl.text() == "Loading..."
+
+    def test_refresh_asks_for_a_fresh_fetch_and_dims_the_rows(self, qapp, mocker):
+        w = _widget(mocker)
+        w.update_queue(self._queue(3))
+
+        w.queue_refresh_btn.click()
+
+        w.router.dispatch.assert_called_with("spotify.control", action="queue_refresh", silent=True)
+        assert w.queue_rows_opacity.opacity() == 0.3
+        assert w.queue_caption_lbl.text() == "refreshing from Spotify..."
+
+    def test_the_answer_ends_the_refresh(self, qapp, mocker):
+        w = _widget(mocker)
+        w.queue_refresh_btn.click()
+
+        w.update_queue(self._queue(3))
+
+        assert w.queue_rows_opacity.opacity() == 1.0
+        assert w.queue_caption_lbl.text() == "18 tracks, followed locally"
+
+
+class TestShuffleRepeatAreBareIcons:
+    """Shuffle/repeat are just an icon with the on-dot under it (no circle);
+    the three bottom buttons keep theirs."""
+
+    def test_shuffle_and_repeat_have_no_circle(self, qapp, mocker):
+        w = _widget(mocker)
+        assert w.shuffle_btn._circle is False
+        assert w.repeat_btn._circle is False
+
+    def test_the_bottom_buttons_keep_their_circles(self, qapp, mocker):
+        w = _widget(mocker)
+        assert all(b._circle for b in (w.lyrics_toggle_btn, w.queue_btn, w.app_volume_btn))
+
+    def test_bare_buttons_paint_without_error_in_every_state(self, qapp, mocker):
+        w = _widget(mocker)
+        w.show()
+        for button in (w.shuffle_btn, w.repeat_btn):
+            for active in (False, True):
+                for pending in (False, True):
+                    button.set_active(active)
+                    button.set_pending(pending)
+                    button.grab()  # forces a paintEvent
+
+
+class TestHeaderAndBottomRowLayout:
+    """Shuffle/repeat live in the header, and the bottom button row has no
+    spare vertical padding of its own."""
+
+    def _narrow(self, mocker):
+        from PyQt6.QtWidgets import QApplication
+        w = _widget(mocker)
+        w.resize(250, 232)
+        w.show()
+        QApplication.processEvents()
+        return w
+
+    def test_the_header_icons_clear_the_fader_on_a_250px_widget(self, qapp, mocker):
+        from PyQt6.QtWidgets import QApplication
+        w = self._narrow(mocker)
+
+        w._on_fader_width_changed(w._fader_width)
+        QApplication.processEvents()
+
+        repeat_right = w.repeat_btn.mapTo(w, w.repeat_btn.rect().topRight()).x()
+        fader_left = w.fader_container.mapTo(w, w.fader_container.rect().topLeft()).x()
+        assert repeat_right < fader_left
+
+    def test_the_transport_row_keeps_its_original_gaps_with_the_fader_open(self, qapp, mocker):
+        w = _widget(mocker)
+        closed = w.controls_layout.spacing()
+
+        w._on_fader_width_changed(w._fader_width)
+
+        assert w.controls_layout.spacing() == closed
+
+    def test_the_bottom_row_has_no_extra_vertical_margin(self, qapp, mocker):
+        w = _widget(mocker)
+        margins = w.bottom_row.contentsMargins()
+        assert (margins.top(), margins.bottom()) == (0, 0)
+
+    def test_bottom_buttons_only_reserve_room_for_the_dot_below(self, qapp, mocker):
+        w = _widget(mocker)
+        for button in (w.lyrics_toggle_btn, w.queue_btn, w.app_volume_btn):
+            assert button.height() < button.width() + button.DOT_ZONE  # no room wasted above the circle
+
+    def test_header_icons_share_a_centre_line_with_the_badge(self, qapp, mocker):
+        from PyQt6.QtWidgets import QApplication
+        w = _widget(mocker)
+        w.resize(300, 250)
+        w.show()
+        QApplication.processEvents()
+
+        badge_center = w.badge_lbl.y() + w.badge_lbl.height() / 2
+        for button in (w.shuffle_btn, w.repeat_btn):
+            assert abs(button.y() + button._top + button._d / 2 - badge_center) <= 1
+
+    def test_the_header_row_stays_compact(self, qapp, mocker):
+        """Icons plus the dot's room, no more: the dots must not make the
+        header taller than the icons themselves need."""
+        w = _widget(mocker)
+        assert w.header_layout.sizeHint().height() <= w.shuffle_btn.height()
+
+    def test_update_scaling_keeps_the_transport_gap(self, qapp, mocker):
+        w = _widget(mocker)
+        before = w.controls_layout.spacing()
+
+        w.update_scaling()  # runs on every window resize
+
+        assert w.controls_layout.spacing() == before
+
+
+class TestSeekBarShowsNoHoverHint:
+    def test_hovering_the_bar_shows_no_tooltip(self, qapp, mocker):
+        from PyQt6.QtCore import QPoint
+        from PyQt6.QtTest import QTest
+        from PyQt6.QtWidgets import QApplication, QToolTip
+        w = _widget(mocker)
+        w.resize(400, 200)
+        w.show()
+        QApplication.processEvents()
+        w.update_status({"title": "T", "artist": "A", "position": 10.0, "duration": 200.0, "status": "Paused"})
+
+        QTest.mouseMove(w.progress_bar, QPoint(w.progress_bar.width() // 2, w.progress_bar.height() // 2))
+        QApplication.processEvents()
+
+        assert QToolTip.isVisible() is False
+        assert w.progress_bar.toolTip() == ""
+
+
+class TestBottomPadding:
+    """The dashboard's wrapper already leaves 15px under every widget, so the
+    media widget adds none of its own beneath the bottom buttons -- only the
+    dot's own room."""
+
+    def test_the_widget_adds_no_bottom_margin_of_its_own(self, qapp, mocker):
+        w = _widget(mocker)
+        assert w.layout.contentsMargins().bottom() == 0
+
+    def test_it_stays_zero_after_a_rescale(self, qapp, mocker):
+        w = _widget(mocker)
+        w.update_scaling()
+        assert w.layout.contentsMargins().bottom() == 0
+
+    def test_the_gap_below_the_bottom_circles_is_just_the_dot_room(self, qapp, mocker):
+        from PyQt6.QtWidgets import QApplication
+        w = _widget(mocker)
+        w.resize(300, 250)
+        w.show()
+        QApplication.processEvents()
+
+        for button in (w.queue_btn, w.lyrics_toggle_btn, w.app_volume_btn):
+            circle_bottom = button.y() + button._top + button._d
+            assert w.height() - circle_bottom <= 8
+
+
+class TestMinimumWidthIsTheWidestOfAllStates:
+    """Opening Up Next or App Volume used to force the widget wider (its rows
+    need more room than the closed widget), and the minimum jumped with the
+    state. The minimum width is now the widest any state needs, so it never
+    changes when a drawer opens. Height deliberately still follows the open
+    drawer: the drawers exist to grow the widget downward."""
+
+    QUEUE = {"remaining": 3, "queue": [{"title": "25 DE ABRIL (feat. Plutonio)", "artist": "LON3R JOHNY, Plutonio", "duration_ms": 172258}]}
+    APPS = [{"id": "spotify", "name": "spotify", "now_playing": "Mizzy Miles - FIM DO NADA", "volume": 100, "muted": False, "media_player": "spotify", "is_playing": True}]
+
+    def _wrapped(self, mocker):
+        import clUI
+        from PyQt6.QtWidgets import QApplication
+        w = _widget(mocker)
+        wrapper = clUI.DraggableWidget("widget_test_media", "Media Controls", w)
+        wrapper.show()
+        wrapper.resize(400, 300)
+        QApplication.processEvents()
+        return wrapper, w
+
+    def test_the_minimum_width_is_the_same_closed_and_with_either_drawer_open(self, qapp, mocker):
+        from PyQt6.QtWidgets import QApplication
+        wrapper, w = self._wrapped(mocker)
+        w.update_queue(self.QUEUE)
+        widths = [w.minimumSizeHint().width()]
+
+        w._toggle_queue()
+        QApplication.processEvents()
+        widths.append(w.minimumSizeHint().width())
+        w._toggle_app_volume()
+        w.update_app_volumes(self.APPS)
+        QApplication.processEvents()
+        widths.append(w.minimumSizeHint().width())
+        w._toggle_app_volume()
+        QApplication.processEvents()
+        widths.append(w.minimumSizeHint().width())
+
+        assert len(set(widths)) == 1
+
+        wrapper.close()
+        QApplication.processEvents()
+
+    def test_it_covers_the_widest_row_of_either_drawer_before_any_data_exists(self, qapp, mocker):
+        """Measured from sample rows, not from whatever rows are loaded, so
+        the first open can't widen the widget."""
+        w = _widget(mocker)
+        before_data = w.minimumSizeHint().width()
+
+        w.update_queue(self.QUEUE)
+        w.update_app_volumes(self.APPS)
+        w.queue_btn.click()
+        w.queue_btn.click()
+
+        assert w.minimumSizeHint().width() == before_data
+
+    def test_opening_a_drawer_never_changes_the_widget_width(self, qapp, mocker):
+        from PyQt6.QtWidgets import QApplication
+        wrapper, w = self._wrapped(mocker)
+        width_before = wrapper.width()
+
+        w._toggle_queue()
+        QApplication.processEvents()
+        assert wrapper.width() == width_before
+        w._toggle_app_volume()
+        w.update_app_volumes(self.APPS)
+        QApplication.processEvents()
+        assert wrapper.width() == width_before
+
+        wrapper.close()
+        QApplication.processEvents()
+
+    def test_the_height_still_follows_the_open_drawer(self, qapp, mocker):
+        from PyQt6.QtWidgets import QApplication
+        wrapper, w = self._wrapped(mocker)
+        closed_min_height = w.minimumSizeHint().height()
+
+        w.update_queue(self.QUEUE)
+        w._toggle_queue()
+        QApplication.processEvents()
+
+        assert w.minimumSizeHint().height() > closed_min_height
+
+        wrapper.close()
+        QApplication.processEvents()
+
+    def test_the_sizing_sample_row_is_discarded(self, qapp, mocker):
+        w = _widget(mocker)
+        assert "__sizing__" not in w.app_volume_rows
+        assert w.app_volume_layout.count() == 1  # just the "no apps" label

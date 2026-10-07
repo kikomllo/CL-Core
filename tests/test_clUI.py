@@ -20,6 +20,17 @@ def fake_state_file(tmp_path):
     return str(tmp_path / "ui_state.json")
 
 
+@pytest.fixture(autouse=True)
+def isolated_state_file(tmp_path):
+    """Any JarvisUI call that saves (spawn/close/set_ui_mode) writes STATE_FILE;
+    tests that only patch it around part of their body used to leave a stray
+    todo widget in the real data/ui_state.json, which the live UI then
+    restored as open on its next restart."""
+    import clUI
+    with patch.object(clUI, "STATE_FILE", str(tmp_path / "isolated_ui_state.json")):
+        yield
+
+
 class TestUiStateRestoreOnStartup:
     """A full ecosystem reboot tears down and respawns clUI.py entirely
     (clJarvis.py's stop_native explicitly saves state via jarvis/sys/ui_control
@@ -1985,3 +1996,46 @@ class TestLyricsDisplayDynamicWidth:
         d.set_playback("Song2", "Artist2", True, 1.0, 30.0)
 
         assert d.width() == 400
+
+
+class TestSpotifyQueueTopic:
+    """jarvis/sys/spotify_queue (retained, published by clSpotify.py) feeds
+    the media widget's Up Next drawer -- both the dashboard widget and the
+    calendar carousel's own MediaWidget copy."""
+
+    def test_the_mqtt_thread_forwards_dict_payloads_only(self, qapp):
+        import clUI
+        thread = clUI.MqttThread()
+        seen = []
+        thread.spotify_queue_signal.connect(seen.append)
+
+        thread._handle_spotify_queue({"queue": [], "remaining": 0})
+        thread._handle_spotify_queue("not a dict")
+
+        assert seen == [{"queue": [], "remaining": 0}]
+
+    def test_on_message_routes_the_topic_to_the_signal(self, qapp):
+        import clUI
+        thread = clUI.MqttThread()
+        seen = []
+        thread.spotify_queue_signal.connect(seen.append)
+        message = MagicMock(topic="jarvis/sys/spotify_queue", payload=json.dumps({"queue": [], "remaining": 3}).encode())
+
+        thread.on_message(None, None, message)
+
+        assert seen == [{"queue": [], "remaining": 3}]
+
+    def test_the_ui_updates_both_media_widget_copies(self, qapp):
+        import clUI
+        from ui.clMediaWidget import MediaWidget
+        dashboard_copy = MagicMock(spec=MediaWidget)
+        carousel_copy = MagicMock()
+        fake_ui = MagicMock()
+        fake_ui.active_widgets = {"widget_media_controls": MagicMock(content_widget=dashboard_copy)}
+        fake_ui.calendar_drawer.carousel.media_widget = carousel_copy
+        data = {"queue": [{"title": "T"}], "remaining": 1}
+
+        clUI.JarvisUI._handle_spotify_queue(fake_ui, data)
+
+        dashboard_copy.update_queue.assert_called_once_with(data)
+        carousel_copy.update_queue.assert_called_once_with(data)

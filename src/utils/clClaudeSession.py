@@ -119,7 +119,12 @@ class ClaudeSessionBase:
         """Per-launch settings (Stop hook -> MQTT) and prompt, passed via CLI flags so they
         only ever apply to this bridged session, never a developer's own claude sessions."""
         hook_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "clClaudeStopHook.py")
-        python = sys.executable.replace("\\", "/")
+        # sys.executable can be a venv launcher stub that spawns the real interpreter as its own
+        # child (e.g. a Microsoft Store Python base) -- the hook's host process (the claude CLI)
+        # waits for the command's stdio to close, which that extra indirection layer never
+        # reliably signals, hanging every turn at "running Stop hook" until the stall watchdog
+        # kills the session. _base_executable is the true interpreter the venv wraps.
+        python = getattr(sys, "_base_executable", sys.executable).replace("\\", "/")
         script = hook_script.replace("\\", "/")
         settings = {"hooks": {
             "Stop": [{"hooks": [{"type": "command", "command": python, "args": [script]}]}],

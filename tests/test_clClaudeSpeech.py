@@ -150,6 +150,18 @@ class TestSessionFiles:
         assert hook["args"][0].endswith("clClaudeStopHook.py")
         assert "\\" not in hook["command"] and "\\" not in hook["args"][0]
 
+    def test_hook_command_uses_the_real_interpreter_not_a_venv_launcher_stub(self, tmp_path, mocker):
+        """Live bug: a venv built from a Microsoft Store Python base makes sys.executable a
+        launcher stub that spawns the real interpreter as its own child. The claude CLI waits
+        for the Stop hook's stdio to close, which that extra process indirection never reliably
+        signals on Windows, hanging every turn until the stall watchdog kills the session.
+        sys._base_executable is the true interpreter the venv wraps and must be preferred."""
+        mocker.patch.object(sys, "_base_executable", "C:/real/python.exe", create=True)
+        settings_path, _ = self._bridge()._write_session_files(str(tmp_path))
+        settings = json.loads(open(settings_path, encoding="utf-8").read())
+        hook = settings["hooks"]["Stop"][0]["hooks"][0]
+        assert hook["command"] == "C:/real/python.exe"
+
     def test_prompt_tells_the_session_not_to_speak_itself(self, tmp_path):
         _, prompt_path = self._bridge()._write_session_files(str(tmp_path))
         assert "Do NOT run the speak" in open(prompt_path, encoding="utf-8").read()

@@ -14,6 +14,7 @@ from PyQt6.QtGui import QPainter, QColor, QPen, QPainterPath, QRadialGradient, Q
 from utils.clActionRouter import ActionRouter
 
 from ui.clMediaWidget import MediaWidget
+from ui.clClockDisplay import ClockDisplay
 from ui.clLightControlWidget import LightControlWidget
 from ui.clReminderWidget import ReminderWidget
 from ui.clTodoWidget import TodoWidget
@@ -69,6 +70,7 @@ class MqttThread(QThread):
     spotify_lyrics_signal = pyqtSignal(dict)
     app_volumes_signal = pyqtSignal(dict)
     app_output_devices_signal = pyqtSignal(dict)
+    spotify_queue_signal = pyqtSignal(dict)
     light_status_signal = pyqtSignal(dict)
     feedback_signal = pyqtSignal(dict)
     todo_status_signal = pyqtSignal(dict)
@@ -138,6 +140,7 @@ class MqttThread(QThread):
         client.subscribe("jarvis/sys/spotify_lyrics")
         client.subscribe("jarvis/sys/app_volumes")
         client.subscribe("jarvis/sys/app_output_devices")
+        client.subscribe("jarvis/sys/spotify_queue")
         client.subscribe("jarvis/sys/light_status")
         client.subscribe("jarvis/feedback")
         client.subscribe("jarvis/sys/todo/status")
@@ -169,6 +172,7 @@ class MqttThread(QThread):
             "jarvis/sys/spotify_lyrics": self._handle_spotify_lyrics,
             "jarvis/sys/app_volumes": self._handle_app_volumes,
             "jarvis/sys/app_output_devices": self._handle_app_output_devices,
+            "jarvis/sys/spotify_queue": self._handle_spotify_queue,
             "jarvis/sys/light_status": self._handle_light_status,
             "jarvis/feedback": self._handle_feedback,
             "jarvis/sys/todo/status": self._handle_todo_status,
@@ -225,6 +229,10 @@ class MqttThread(QThread):
     def _handle_app_output_devices(self, payload):
         if isinstance(payload, dict):
             self.app_output_devices_signal.emit(payload)
+
+    def _handle_spotify_queue(self, payload):
+        if isinstance(payload, dict):
+            self.spotify_queue_signal.emit(payload)
 
     def _handle_feedback(self, payload):
         self.feedback_signal.emit(payload)
@@ -1770,6 +1778,15 @@ class JarvisUI(QWidget):
         self.visualizer.setGeometry(0, 0, self.width(), self.height())
         self.visualizer.show()
 
+        # Date and time above the visualizer's orb (see ClockDisplay), created
+        # right after it so it stacks above it and below every widget made
+        # later. core.json -> settings.clock_settings tunes it (all optional).
+        try:
+            clock_settings = ConfigLoader().load_json("core.json").get("settings", {}).get("clock_settings", {})
+        except Exception:
+            clock_settings = {}
+        self.clock_display = ClockDisplay(self, settings=clock_settings)
+
         # Karaoke-style lyrics, positioned in refresh_layout() between the
         # visualizer and the text input bar -- hidden by default until
         # Spotify is confirmed playing with lyrics found (see LyricsDisplay).
@@ -1878,6 +1895,7 @@ class JarvisUI(QWidget):
         self.mqtt_thread.spotify_lyrics_signal.connect(self._handle_spotify_lyrics)
         self.mqtt_thread.app_volumes_signal.connect(self._handle_app_volumes)
         self.mqtt_thread.app_output_devices_signal.connect(self._handle_app_output_devices)
+        self.mqtt_thread.spotify_queue_signal.connect(self._handle_spotify_queue)
         self.mqtt_thread.light_status_signal.connect(self._handle_light_status)
         self.mqtt_thread.feedback_signal.connect(self._handle_feedback)
         self.mqtt_thread.todo_status_signal.connect(self._handle_todo_status)
@@ -2005,6 +2023,9 @@ class JarvisUI(QWidget):
             lyrics_y = pill_y - lyrics_height - s(80)
             self.lyrics_display.setGeometry(lyrics_x, lyrics_y, lyrics_width, lyrics_height)
             self.lyrics_display.default_width = lyrics_width
+
+        if hasattr(self, 'clock_display'):
+            self.clock_display.place(win_w, win_h)
 
         # Calendar button
         self.btn_calendar.setGeometry(win_w - s(30), int(win_h / 2) - s(40), s(30), s(80))
@@ -2353,6 +2374,15 @@ class JarvisUI(QWidget):
                 wrapper.content_widget.update_output_devices(devices)
         if hasattr(self, 'calendar_drawer'):
             self.calendar_drawer.carousel.media_widget.update_output_devices(devices)
+
+    def _handle_spotify_queue(self, data):
+        widget_id = "widget_media_controls"
+        if widget_id in self.active_widgets:
+            wrapper = self.active_widgets[widget_id]
+            if isinstance(wrapper.content_widget, MediaWidget):
+                wrapper.content_widget.update_queue(data)
+        if hasattr(self, 'calendar_drawer'):
+            self.calendar_drawer.carousel.media_widget.update_queue(data)
 
     def _on_app_state_changed(self, state):
         if not getattr(self, 'is_fullscreen', False) or getattr(self, 'text_input', None) is None:
@@ -2703,6 +2733,7 @@ class JarvisUI(QWidget):
                 # we temporarily hide all widgets and skip drawing the background.
                 self._is_swapping_monitors = True
                 self.visualizer.hide()
+                self.clock_display.hide()
                 for w in self.active_widgets.values():
                     w.hide()
                 
@@ -2773,6 +2804,8 @@ class JarvisUI(QWidget):
                 # until the next sparse media_status/lyrics update, up to
                 # ~10s away, instead of reappearing immediately.
                 self.lyrics_display._refresh_visibility()
+            # Fullscreen only: the small overlay square has no room for it.
+            self.clock_display.show_if_enabled()
             self.btn_calendar.setIcon(Theme.get_icon("chevron_left.svg", 14))
             self.calendar_is_open = False
 
@@ -2925,6 +2958,7 @@ class JarvisUI(QWidget):
             self.reminder_widget.hide()
             if hasattr(self, 'lyrics_display'):
                 self.lyrics_display.hide()
+            self.clock_display.hide()
 
             # Hide all dashboard widgets except options prompts
             for wid, w in self.active_widgets.items():

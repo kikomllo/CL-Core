@@ -75,6 +75,8 @@ scipy==1.17.1
 setuptools==82.0.1
 shellingham==1.5.4
 spotipy==2.26.0
+# Synced lyrics from YouTube Music (no login) -- src/utils/clYtMusicLyrics.py
+ytmusicapi==1.12.3
 tabulate==0.10.0
 tapo==0.9.0
 threadpoolctl==3.6.0

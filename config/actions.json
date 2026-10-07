@@ -174,7 +174,10 @@
         "playlist_name": {"type": "string"},
         "search_query": {"type": "string"},
         "volume": {"type": "integer"},
-        "choice_index": {"type": "integer"}
+        "choice_index": {"type": "integer"},
+        "enabled": {"type": "boolean"},
+        "mode": {"type": "string"},
+        "position_ms": {"type": "integer"}
       }
     }
   },

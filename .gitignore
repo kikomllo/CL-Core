@@ -44,6 +44,7 @@ data/reminders/
 data/alarms/
 data/events/
 data/scratch/
+data/lyrics_cache/
 data/training_capture/
 data/claude_bridge_config/
 data/ui_state.json

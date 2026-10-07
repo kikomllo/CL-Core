@@ -8,10 +8,10 @@
             "en",
             "pt"
         ],
-        "stt_processing_mode": "sequential",
+        "stt_processing_mode": "parallel",
         "audio_settings": {
-            "input_device": "sof-hda-dsp: - (hw:0,7)",
-            "output_device": "System Default"
+            "input_device": "Microphone (Razer Seiren Mini)",
+            "output_device": "Altifalantes (Realtek High Definition Audio)"
         },
         "slm_settings": {
             "enabled": true,
@@ -63,14 +63,14 @@
                 }
             }
         },
-        "hardware": "cpu",
+        "hardware": "cuda",
         "debug_flags": {
             "wakeword_diagnostics": false,
             "capture_wakeword_positive": true,
             "wakeword_debug_saving": false,
             "capture_stt_training_data": true
         },
-        "stt_model": "tiny"
+        "stt_model": "small"
     },
     "nlp_rules": {
         "abort_keywords": [

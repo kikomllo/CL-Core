@@ -3,10 +3,10 @@ from clTheme import Theme
 from utils.clActionRouter import ActionRouter
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSlider, QProgressBar,
-    QStyle, QStyleOptionSlider,
+    QStyle, QStyleOptionSlider, QGraphicsOpacityEffect,
 )
-from PyQt6.QtCore import QTimer, QSize, Qt, QVariantAnimation, QEasingCurve
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import QTimer, QSize, Qt, QVariantAnimation, QEasingCurve, QRectF, pyqtSignal
+from PyQt6.QtGui import QPixmap, QPainter, QColor, QPen, QLinearGradient
 from clUIScaler import UIScaler
 from ui.clMarqueeLabel import MarqueeLabel
 
@@ -130,6 +130,190 @@ class HoverIconButton(QPushButton):
             super().setIcon(self._normal_icon)
         super().leaveEvent(event)
 
+def _fmt_time(secs):
+    secs = max(0, int(secs))
+    return f"{secs // 60}:{secs % 60:02d}"
+
+class DotToggleButton(QPushButton):
+    """A small icon toggle with an "on" dot underneath. Drawn by hand: QSS
+    can't put a dot outside a circular border, and the dot keeps the on
+    state readable without relying on colour alone. circle=True is the same
+    look as the main controls' MediaSmallBtn circles (dark fill, orange
+    ring); circle=False is just the icon and the dot (shuffle/repeat). The
+    widget has room for the dot below the icon (and, when centered, the same
+    amount above so the icon stays vertically centred among its neighbours). Pending (clicked, awaiting
+    confirmation) is a dashed ring (circle) or a dimmed icon with a hollow
+    dot (bare)."""
+
+    DOT_ZONE = 8
+    _DIM_ICON = "#8a7a66"
+
+    def __init__(self, diameter, icon_name, icon_px, circle=True, centered=True, parent=None):
+        super().__init__(parent)
+        self._d = diameter
+        self._icon_name = icon_name
+        self._icon_px = icon_px
+        self._circle = circle
+        self._active = False
+        self._pending = False
+        # centered: room above as well as below, so the icon lines up with
+        # neighbours of other heights. Not centered: icon at the very top
+        # and only the dot's room below -- for a row of its own, where the
+        # extra room above would just be wasted vertical padding.
+        self._top = self.DOT_ZONE / 2 if centered else 0
+        self.setFixedSize(diameter, int(diameter + self._top + self.DOT_ZONE / 2 + (0 if centered else 1)))
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet("background: transparent; border: none;")
+        self._refresh_icon()
+
+    def is_active(self):
+        return self._active
+
+    def set_active(self, active):
+        active = bool(active)
+        if active != self._active:
+            self._active = active
+            self._refresh_icon()
+            self.update()
+
+    def set_pending(self, pending):
+        if bool(pending) != self._pending:
+            self._pending = bool(pending)
+            self.update()
+
+    def set_icon_name(self, icon_name):
+        if icon_name != self._icon_name:
+            self._icon_name = icon_name
+            self._refresh_icon()
+            self.update()
+
+    def _refresh_icon(self):
+        color = Theme.C_PRIMARY if self._active else self._DIM_ICON
+        self.setIcon(Theme.get_icon(self._icon_name, self._icon_px, color))
+        self.setIconSize(QSize(self._icon_px, self._icon_px))
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if self._pending:
+            p.setOpacity(0.55)
+        top = self._top
+        circle = QRectF(0.5, top + 0.5, self._d - 1, self._d - 1)
+
+        if self._circle:
+            if self._active:
+                fill, ring = QColor(255, 170, 0, 51), QColor(Theme.C_PRIMARY)
+            elif self.underMouse():
+                fill, ring = QColor(255, 150, 0, 89), QColor(Theme.C_PRIMARY)
+            else:
+                fill, ring = QColor(35, 18, 5, 204), QColor(255, 160, 0, 71)
+            pen = QPen(ring, 1)
+            if self._pending:
+                pen.setStyle(Qt.PenStyle.DashLine)
+            p.setPen(pen)
+            p.setBrush(fill)
+            p.drawEllipse(circle)
+            pm = self.icon().pixmap(self.iconSize())
+        else:
+            # No circle to light up on hover, so the icon itself brightens.
+            color = Theme.C_PRIMARY if self._active else (Theme.C_PRIMARY_HOVER if self.underMouse() else self._DIM_ICON)
+            pm = Theme.get_icon(self._icon_name, self._icon_px, color).pixmap(self.iconSize())
+        p.drawPixmap(int(circle.center().x() - pm.width() / 2), int(circle.center().y() - pm.height() / 2), pm)
+
+        dot = QRectF(self.width() / 2 - 2, top + self._d + 1, 4, 4)
+        if self._active and not self._pending:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(Theme.C_PRIMARY))
+            p.drawEllipse(dot)
+        elif self._active and not self._circle:  # pending, bare: hollow dot
+            p.setPen(QPen(QColor(Theme.C_PRIMARY), 1))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(dot.adjusted(0.5, 0.5, -0.5, -0.5))
+        p.end()
+
+
+class SeekBar(QProgressBar):
+    """The thin progress bar, now clickable: a taller invisible hit area
+    (so it isn't a 4px target), a thicker track + knob on hover, and a grey
+    fill when the player can't seek. Still a
+    QProgressBar (0-1000), so value()/setValue() work as before."""
+
+    seekRequested = pyqtSignal(float)  # fraction 0..1
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setRange(0, 1000)
+        self.setTextVisible(False)
+        self.setFixedHeight(s(16))
+        self._hover = False
+        self._seekable = True
+
+    def set_seekable(self, seekable):
+        seekable = bool(seekable)
+        if seekable != self._seekable:
+            self._seekable = seekable
+            self.setCursor(Qt.CursorShape.PointingHandCursor if seekable else Qt.CursorShape.ArrowCursor)
+            self.update()
+
+    def _fraction_at(self, x):
+        return max(0.0, min(1.0, x / max(1, self.width())))
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        self._hover = self._seekable
+        self.update()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self._hover = False
+        self.update()
+
+    def mousePressEvent(self, event):
+        if self._seekable and event.button() == Qt.MouseButton.LeftButton:
+            self.seekRequested.emit(self._fraction_at(event.position().x()))
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        thickness = s(6) if self._hover else s(4)
+        track = QRectF(0, (self.height() - thickness) / 2, self.width(), thickness)
+        radius = thickness / 2
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(255, 255, 255, 26))
+        p.drawRoundedRect(track, radius, radius)
+
+        span = self.maximum() - self.minimum()
+        fraction = (self.value() - self.minimum()) / span if span > 0 else 0.0
+        fill_w = track.width() * max(0.0, min(1.0, fraction))
+        if fill_w > 0:
+            if self._seekable:
+                grad = QLinearGradient(track.left(), 0, track.right(), 0)
+                grad.setColorAt(0, QColor("#ff8c00"))
+                grad.setColorAt(1, QColor("#ffcc00"))
+                p.setBrush(grad)
+            else:
+                p.setBrush(QColor("#6f6355"))
+            p.drawRoundedRect(QRectF(track.left(), track.top(), fill_w, thickness), radius, radius)
+
+        if self._hover:
+            knob = s(12)
+            p.setPen(QPen(QColor(Theme.C_PRIMARY), 2))
+            p.setBrush(QColor(Theme.C_TEXT))
+            p.drawEllipse(QRectF(track.left() + fill_w - knob / 2, self.height() / 2 - knob / 2, knob, knob))
+        p.end()
+
+
 class MediaWidget(QWidget):
     def __init__(self, parent=None, grid_mode=False):
         super().__init__(parent)
@@ -147,28 +331,37 @@ class MediaWidget(QWidget):
         self.content_layout.setContentsMargins(0, 0, 0, 0)
         self.content_layout.setSpacing(s(6))
 
-        # Header Badge
+        # Shuffle / repeat sit next to the badge (where the lyrics toggle used
+        # to be; that one lives in the bottom button row now). Their state
+        # comes from the local media session (free) via media_status; a click
+        # flips them optimistically and shows a dimmed "pending" icon until
+        # the next status confirms (or a short timeout gives up).
+        self._shuffle_on = False
+        self._repeat_mode = "off"
+        self._pending_modes = {}
+        self._queue_refreshing = False
+        self.shuffle_btn = DotToggleButton(s(20), "shuffle.svg", s(16), circle=False, centered=False)
+        self.shuffle_btn.setToolTip("Shuffle")
+        self.shuffle_btn.clicked.connect(self._toggle_shuffle)
+        self.repeat_btn = DotToggleButton(s(20), "repeat.svg", s(16), circle=False, centered=False)
+        self.repeat_btn.setToolTip("Repeat")
+        self.repeat_btn.clicked.connect(self._cycle_repeat)
+        self._mode_pending_timer = QTimer(self)
+        self._mode_pending_timer.setSingleShot(True)
+        self._mode_pending_timer.timeout.connect(self._clear_mode_pending)
+
+        # Header: badge, then shuffle and repeat immediately after it -- the
+        # stretch goes after them, not before, or they'd land at the row's far end.
         self.header_layout = header_layout = QHBoxLayout()
         header_layout.setSpacing(s(8))
         self.badge_lbl = QLabel("SPOTIFY PLAYER")
         self.badge_lbl.setStyleSheet(Theme.get_style("BadgeLabel"))
-        header_layout.addWidget(self.badge_lbl)
-
-        # Toggles LyricsDisplay (a sibling of this widget, owned by
-        # JarvisUI, not this one) on/off -- self.window() reaches it the
-        # same way showEvent()/_tick() already reach JarvisUI for other
-        # state, since there's no signal wired between the two widgets.
-        # Sits immediately next to the badge, not pushed to the row's far
-        # right -- the stretch goes after it instead.
-        self._lyrics_enabled = True
-        self.lyrics_toggle_btn = QPushButton()
-        self.lyrics_toggle_btn.setFixedSize(s(24), s(24))
-        self.lyrics_toggle_btn.setStyleSheet(Theme.get_style("MediaSmallBtn", radius=s(12)))
-        self.lyrics_toggle_btn.setToolTip("Toggle lyrics")
-        self.lyrics_toggle_btn.clicked.connect(self._toggle_lyrics)
-        self._set_lyrics_toggle_icon()
-        header_layout.addWidget(self.lyrics_toggle_btn)
-
+        # Same height as the icons' own box, so the text and the icons share
+        # a centre line without the header growing to fit the dots' room.
+        self.badge_lbl.setFixedHeight(s(20))
+        header_layout.addWidget(self.badge_lbl, 0, Qt.AlignmentFlag.AlignTop)
+        header_layout.addWidget(self.shuffle_btn)
+        header_layout.addWidget(self.repeat_btn)
         header_layout.addStretch()
         self.content_layout.addLayout(header_layout)
 
@@ -222,12 +415,8 @@ class MediaWidget(QWidget):
         time_layout.setSpacing(s(8))
         self.position_lbl = QLabel("0:00")
         self.position_lbl.setStyleSheet(Theme.get_style("DimLabel"))
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 1000)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(False)
-        self.progress_bar.setFixedHeight(s(4))
-        self.progress_bar.setStyleSheet(Theme.get_style("MediaProgressBar"))
+        self.progress_bar = SeekBar()
+        self.progress_bar.seekRequested.connect(self._on_seek_requested)
         self.duration_lbl = QLabel("0:00")
         self.duration_lbl.setStyleSheet(Theme.get_style("DimLabel"))
         time_layout.addWidget(self.position_lbl)
@@ -288,12 +477,80 @@ class MediaWidget(QWidget):
         content_row.addWidget(self.fader_container, 0)
         self.layout.addLayout(content_row)
 
+        # Bottom button row: Up Next, lyrics, App Volume -- small circles
+        # under the progress bar. The dot under a button marks it on/open.
+        # Up Next and App Volume are drawers that grow the widget downward;
+        # only one is open at a time.
+        #
+        # The lyrics toggle drives LyricsDisplay (a sibling of this widget,
+        # owned by JarvisUI, not this one) -- self.window() reaches it the
+        # same way showEvent()/_tick() already reach JarvisUI for other
+        # state, since there's no signal wired between the two widgets.
+        self._lyrics_enabled = True
+        # The middle button, a little bigger than its two neighbours.
+        self.lyrics_toggle_btn = DotToggleButton(s(28), "music.svg", s(15), centered=False)
+        self.lyrics_toggle_btn.setToolTip("Toggle lyrics")
+        self.lyrics_toggle_btn.clicked.connect(self._toggle_lyrics)
+        self._set_lyrics_toggle_icon()
+
+        self.queue_btn = DotToggleButton(s(24), "list.svg", s(13), centered=False)
+        self.queue_btn.setToolTip("Up Next")
+        self.queue_btn.clicked.connect(self._toggle_queue)
+
         # App Volume -- collapsible per-app volume/mute mixer, backed by
         # clTerminal.py's pycaw (Windows) / pactl (Linux) session list.
-        self.app_volume_tab = QPushButton("App Volume  ▾")
-        self.app_volume_tab.setStyleSheet(Theme.get_style("MediaAppVolumeTab"))
-        self.app_volume_tab.clicked.connect(self._toggle_app_volume)
-        self.layout.addWidget(self.app_volume_tab)
+        self.app_volume_btn = DotToggleButton(s(24), "speaker.svg", s(13), centered=False)
+        self.app_volume_btn.setToolTip("App Volume")
+        self.app_volume_btn.clicked.connect(self._toggle_app_volume)
+
+        self.bottom_row = QHBoxLayout()
+        self.bottom_row.setContentsMargins(0, 0, 0, 0)
+        self.bottom_row.setSpacing(s(50))
+        self.bottom_row.addStretch()
+        # Different heights, so centre each vertically: the circles line up.
+        center = Qt.AlignmentFlag.AlignVCenter
+        self.bottom_row.addWidget(self.queue_btn, 0, center)
+        self.bottom_row.addWidget(self.lyrics_toggle_btn, 0, center)
+        self.bottom_row.addWidget(self.app_volume_btn, 0, center)
+        self.bottom_row.addStretch()
+        self.layout.addLayout(self.bottom_row)
+
+        # Up Next -- the upcoming tracks, fetched from the Spotify API once
+        # (clSpotify.py's `queue` action) and then followed locally; the
+        # retained jarvis/sys/spotify_queue message feeds update_queue().
+        self.queue_body = QWidget()
+        self.queue_layout = QVBoxLayout(self.queue_body)
+        self.queue_layout.setContentsMargins(0, 8, 0, 8)
+        self.queue_layout.setSpacing(s(8))
+        queue_header = QHBoxLayout()
+        queue_header.setContentsMargins(0, 0, 0, 0)
+        self.queue_caption_lbl = QLabel("Loading...")
+        self.queue_caption_lbl.setStyleSheet(Theme.get_style("DimLabel"))
+        self.queue_refresh_btn = QPushButton()
+        self.queue_refresh_btn.setFixedSize(s(22), s(22))
+        self.queue_refresh_btn.setIcon(Theme.get_icon("refresh.svg", s(11)))
+        self.queue_refresh_btn.setIconSize(QSize(s(11), s(11)))
+        self.queue_refresh_btn.setStyleSheet(Theme.get_style("MediaSmallBtn", radius=s(11)))
+        self.queue_refresh_btn.setToolTip("Refresh from Spotify")
+        self.queue_refresh_btn.clicked.connect(self._refresh_queue)
+        queue_header.addWidget(self.queue_caption_lbl, 1)
+        queue_header.addWidget(self.queue_refresh_btn)
+        self.queue_layout.addLayout(queue_header)
+        self.queue_rows_widget = QWidget()
+        self.queue_rows_layout = QVBoxLayout(self.queue_rows_widget)
+        self.queue_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self.queue_rows_layout.setSpacing(s(8))
+        self.queue_rows_opacity = QGraphicsOpacityEffect(self.queue_rows_widget)
+        self.queue_rows_opacity.setOpacity(1.0)
+        self.queue_rows_widget.setGraphicsEffect(self.queue_rows_opacity)
+        self.queue_layout.addWidget(self.queue_rows_widget)
+        self.queue_body.hide()
+        self.layout.addWidget(self.queue_body)
+        self._queue_loaded = False
+        self._queue_total = 0
+        self._queue_refresh_timer = QTimer(self)
+        self._queue_refresh_timer.setSingleShot(True)
+        self._queue_refresh_timer.timeout.connect(self._end_queue_refresh)
 
         self.app_volume_body = QWidget()
         self.app_volume_layout = QVBoxLayout(self.app_volume_body)
@@ -320,6 +577,8 @@ class MediaWidget(QWidget):
         self.duration = 0.0
         self.status = "Paused"
         self._waiting_for_status = False
+        self._drawers_min_width = 0
+        self._measure_drawers_min_width()
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
@@ -338,20 +597,53 @@ class MediaWidget(QWidget):
         # back down on close).
         base = super().minimumSizeHint()
         base_height = base.height()
-        if self.app_volume_body.isVisible():
-            base_height -= self.app_volume_body.minimumSizeHint().height() + self.layout.spacing()
+        open_body = self._open_drawer_body()
+        if open_body is not None:
+            base_height -= open_body.minimumSizeHint().height() + self.layout.spacing()
 
         min_height = base_height + self._app_volume_room()
-        return QSize(base.width(), min_height)
+        # Width is the widest any state needs (closed, Up Next, App Volume),
+        # so opening a drawer never widens the widget and the minimum doesn't
+        # jump with the state. Height is the opposite on purpose: the drawers
+        # exist to grow the widget downward.
+        return QSize(max(base.width(), self._drawers_min_width), min_height)
+
+    def _measure_drawers_min_width(self):
+        """The widget width each drawer needs, measured from real sample rows
+        (the widest a row of either drawer can be) rather than from whatever
+        rows happen to exist now -- so the answer is the same before any data
+        arrives and the first drawer open can't widen the widget. Called once
+        at construction and again on rescale, never from inside a layout pass
+        (it builds and discards a throwaway App Volume row)."""
+        queue_row = self._create_queue_row(1, {"title": "x", "artist": "x", "duration_ms": 1000})
+        app_row = self._create_app_volume_row({"id": "__sizing__", "name": "x", "media_player": "x"})
+        widest_row = max(queue_row.minimumSizeHint().width(), app_row["widget"].minimumSizeHint().width())
+        queue_row.deleteLater()
+        self.app_volume_layout.removeWidget(app_row["widget"])
+        app_row["widget"].hide()
+        app_row["widget"].deleteLater()
+        margins = self.layout.contentsMargins()
+        self._drawers_min_width = widest_row + margins.left() + margins.right()
+
+    def _open_drawer_body(self):
+        """The Up Next or App Volume drawer that's currently open, if any."""
+        # isHidden(), not isVisible(): that's the flag QLayout itself uses to
+        # decide whether an item counts, and it doesn't depend on the whole
+        # widget having been shown yet.
+        for body in (self.app_volume_body, self.queue_body):
+            if not body.isHidden():
+                return body
+        return None
 
     def _app_volume_room(self):
-        # Height the open drawer needs, or 0 when closed. Layouts skip
-        # spacing around a hidden widget, so showing app_volume_body also
-        # opens up one more gap (between it and app_volume_tab) that wasn't
-        # there before.
-        if not self.app_volume_body.isVisible():
+        # Height the open drawer (either one) needs, or 0 when both are
+        # closed. Layouts skip spacing around a hidden widget, so showing a
+        # drawer also opens up one more gap (between it and the button row)
+        # that wasn't there before.
+        body = self._open_drawer_body()
+        if body is None:
             return 0
-        return self.app_volume_body.sizeHint().height() + self.layout.spacing()
+        return body.sizeHint().height() + self.layout.spacing()
 
     def update_scaling(self):
         self._base_right_margin = s(15)
@@ -362,7 +654,7 @@ class MediaWidget(QWidget):
         if self.fader_container.width() > 0:
             self.fader_container.setFixedWidth(self._fader_width)
         if hasattr(self, 'progress_bar'):
-            self.progress_bar.setFixedHeight(s(4))
+            self.progress_bar.setFixedHeight(s(16))
         if hasattr(self, 'controls_layout'):
             self.controls_layout.setSpacing(s(18))
         if hasattr(self, 'prev_btn'):
@@ -371,6 +663,8 @@ class MediaWidget(QWidget):
             self.next_btn.setFixedSize(32, 32)
         if hasattr(self, 'volume_slider'):
             self.volume_slider.setFixedHeight(s(98))
+        if hasattr(self, '_drawers_min_width'):
+            self._measure_drawers_min_width()
 
     def enterEvent(self, event):
         super().enterEvent(event)
@@ -419,6 +713,20 @@ class MediaWidget(QWidget):
         self._dispatch_volume()
 
     def _toggle_app_volume(self):
+        self._toggle_drawer(self.app_volume_body)
+
+    def _toggle_queue(self):
+        self._toggle_drawer(self.queue_body)
+
+    def _toggle_drawer(self, body):
+        # Shared by the App Volume and Up Next drawers: only one is open at
+        # a time, so opening one first closes the other (each close/open
+        # grows or shrinks the wrapper by its own delta, below).
+        if body.isHidden():
+            other = self.queue_body if body is self.app_volume_body else self.app_volume_body
+            if not other.isHidden():
+                self._toggle_drawer(other)
+
         # Opening used to just reveal the label in-place, which stole space
         # from content_layout's flexible gap instead of growing the widget
         # -- since the wrapper's overall size didn't change, that
@@ -437,7 +745,7 @@ class MediaWidget(QWidget):
         # height as the baseline, silently swallowing part of the real
         # delta into a "before" that was never actually the closed-drawer
         # height. Capturing it first avoids that entirely.
-        opening = not self.app_volume_body.isVisible()
+        opening = body.isHidden()
         wrapper = self.parentWidget()
         height_before = wrapper.height() if wrapper is not None else 0
 
@@ -455,33 +763,41 @@ class MediaWidget(QWidget):
             wrapper.setMinimumSize(0, 0)
 
         if opening:
-            self.app_volume_body.setVisible(True)
+            body.setVisible(True)
             self.updateGeometry()
             if wrapper is not None:
                 room = self._app_volume_room()
                 self._app_volume_delta = room
                 if room > 0:
                     wrapper.resize(wrapper.width(), height_before + room)
-            self._request_app_volumes()
-            self._request_output_devices()
+            if body is self.app_volume_body:
+                self._request_app_volumes()
+                self._request_output_devices()
+            else:
+                self._request_queue()
         else:
-            self.app_volume_body.setVisible(False)
+            body.setVisible(False)
             self.updateGeometry()
             delta = getattr(self, '_app_volume_delta', 0)
             if wrapper is not None and delta > 0:
                 wrapper.resize(wrapper.width(), height_before - delta)
             self._app_volume_delta = 0
+        self._sync_drawer_buttons()
+
+    def _sync_drawer_buttons(self):
+        self.queue_btn.set_active(not self.queue_body.isHidden())
+        self.app_volume_btn.set_active(not self.app_volume_body.isHidden())
 
     def _sync_app_volume_drawer_size(self):
-        """Re-applies the app-volume drawer's height delta after its
-        content changes while it's already open (e.g. the per-app list
+        """Re-applies the open drawer's height delta after its content
+        changes while it's already open (e.g. the per-app list or the queue
         refreshing) -- grows/shrinks the wrapper by the difference from
         what was already added, not by the drawer's full new height, so
         repeated refreshes don't compound. Safe to read wrapper.height()
-        live here (unlike _toggle_app_volume's open branch): no
+        live here (unlike _toggle_drawer's open branch): no
         setVisible() call happens in this path, so there's no implicit
         Qt auto-grow to get contaminated by."""
-        if not self.app_volume_body.isVisible():
+        if self._open_drawer_body() is None:
             return
         wrapper = self.parentWidget()
         if wrapper is None:
@@ -751,9 +1067,7 @@ class MediaWidget(QWidget):
             self._set_lyrics_toggle_icon()
 
     def _set_lyrics_toggle_icon(self):
-        color = Theme.C_PRIMARY if self._lyrics_enabled else Theme.C_TEXT_DIM
-        self.lyrics_toggle_btn.setIcon(Theme.get_icon("music.svg", s(14), color))
-        self.lyrics_toggle_btn.setIconSize(QSize(s(14), s(14)))
+        self.lyrics_toggle_btn.set_active(self._lyrics_enabled)
 
     def _toggle_lyrics(self):
         self._lyrics_enabled = not self._lyrics_enabled
@@ -801,6 +1115,9 @@ class MediaWidget(QWidget):
         self.position = data.get("position", 0.0)
         self.duration = data.get("duration", 0.0)
         self.status = data.get("status", "Paused")
+        # Absent can_seek (e.g. a status built from the Web API) means "assume yes".
+        self.progress_bar.set_seekable(data.get("can_seek") is not False)
+        self._apply_incoming_modes(data)
 
         self.title_lbl.setText(title)
         self.artist_lbl.setText(artist)
@@ -817,6 +1134,160 @@ class MediaWidget(QWidget):
             _set_hover_icon(self.mute_btn, "speaker_mute.svg" if volume == 0 else "speaker.svg", s(16))
             if volume > 0:
                 self._last_nonzero_volume = volume
+
+    # --- SHUFFLE / REPEAT / SEEK ---
+    _REPEAT_CYCLE = {"off": "context", "context": "track", "track": "off"}
+    _REPEAT_ICONS = {"off": "repeat.svg", "context": "repeat.svg", "track": "repeat_one.svg"}
+    _MODE_PENDING_MS = 2500
+
+    def _dispatch_control(self, **payload):
+        try:
+            self.router.dispatch("spotify.control", silent=True, **payload)
+        except Exception as e:
+            logging.error(f"MQTT Publish failed: {e}")
+
+    def _show_modes(self, shuffle=None, repeat=None):
+        """Reflects the player's shuffle/repeat on their buttons; None leaves that one alone."""
+        if shuffle is not None:
+            self._shuffle_on = bool(shuffle)
+            self.shuffle_btn.set_active(self._shuffle_on)
+        if repeat in self._REPEAT_CYCLE:
+            self._repeat_mode = repeat
+            self.repeat_btn.set_icon_name(self._REPEAT_ICONS[repeat])
+            self.repeat_btn.set_active(repeat != "off")
+            self.repeat_btn.setToolTip(f"Repeat: {repeat}")
+
+    def _expect_mode(self, key, value, button):
+        # Until the player confirms (its next status carries this value), a
+        # status still showing the old value must not flip the button back.
+        self._pending_modes[key] = value
+        button.set_pending(True)
+        self._mode_pending_timer.start(self._MODE_PENDING_MS)
+
+    def _clear_mode_pending(self):
+        """Gives up waiting for a confirmation; the next status shows the truth."""
+        self._pending_modes.clear()
+        self.shuffle_btn.set_pending(False)
+        self.repeat_btn.set_pending(False)
+
+    def _apply_incoming_modes(self, data):
+        buttons = {"shuffle": self.shuffle_btn, "repeat": self.repeat_btn}
+        for key, button in buttons.items():
+            value = data.get(key)
+            if value is None:
+                continue
+            if key in self._pending_modes:
+                if value != self._pending_modes[key]:
+                    continue  # stale reading from before our click landed
+                del self._pending_modes[key]
+                button.set_pending(False)
+            self._show_modes(**{key: value})
+
+    def _toggle_shuffle(self):
+        enabled = not self._shuffle_on
+        self._show_modes(shuffle=enabled)
+        self._expect_mode("shuffle", enabled, self.shuffle_btn)
+        self._dispatch_control(action="shuffle", enabled=enabled)
+
+    def _cycle_repeat(self):
+        mode = self._REPEAT_CYCLE[self._repeat_mode]
+        self._show_modes(repeat=mode)
+        self._expect_mode("repeat", mode, self.repeat_btn)
+        self._dispatch_control(action="repeat", mode=mode)
+
+    def _on_seek_requested(self, fraction):
+        if self.duration <= 0:
+            return
+        self.position = fraction * self.duration
+        self._update_time_label()
+        self._dispatch_control(action="seek", position_ms=int(self.position * 1000))
+
+    # --- UP NEXT ---
+    QUEUE_VISIBLE_ROWS = 5
+
+    def _request_queue(self):
+        # Free when clSpotify.py already follows the queue locally; only the
+        # first request after it (re)starts costs one Web API call.
+        self.send_cmd("queue", silent=True)
+
+    def _refresh_queue(self):
+        self._set_queue_refreshing(True)
+        self.send_cmd("queue_refresh", silent=True)
+        self._queue_refresh_timer.start(4000)
+
+    def _end_queue_refresh(self):
+        self._set_queue_refreshing(False)
+
+    def _set_queue_refreshing(self, refreshing):
+        self._queue_refreshing = refreshing
+        self.queue_rows_opacity.setOpacity(0.3 if refreshing else 1.0)
+        if refreshing:
+            self.queue_caption_lbl.setText("refreshing from Spotify...")
+        elif not self._queue_loaded:
+            self.queue_caption_lbl.setText("Loading...")
+        elif self._queue_total:
+            self.queue_caption_lbl.setText(f"{self._queue_total} tracks, followed locally")
+        else:
+            self.queue_caption_lbl.setText("Nothing queued.")
+
+    def update_queue(self, data):
+        """Rebuilds the Up Next rows from jarvis/sys/spotify_queue (see
+        clSpotify.py's queue_payload). Called for every message, open or not,
+        so it's ready the moment the drawer opens."""
+        items = data.get("queue", [])
+        self._queue_loaded = True
+        self._queue_total = data.get("remaining", len(items))
+
+        while self.queue_rows_layout.count():
+            row = self.queue_rows_layout.takeAt(0).widget()
+            if row is not None:
+                row.setParent(None)
+                row.deleteLater()
+        for index, item in enumerate(items[:self.QUEUE_VISIBLE_ROWS], start=1):
+            row = self._create_queue_row(index, item)
+            self.queue_rows_layout.addWidget(row)
+            # Same as the App Volume rows: a fresh widget reports invisible
+            # until shown, and QLayout leaves invisible items out of sizeHint().
+            row.show()
+
+        self._queue_refresh_timer.stop()
+        self._set_queue_refreshing(False)
+        self._sync_app_volume_drawer_size()
+
+    def _create_queue_row(self, index, item):
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(s(8))
+
+        number_lbl = QLabel(str(index))
+        number_lbl.setFixedWidth(s(20))
+        number_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        number_lbl.setStyleSheet(Theme.get_style("DimLabel"))
+
+        title_lbl = MarqueeLabel(item.get("title") or "Unknown", force_single_line=True)
+        title_lbl.setStyleSheet(f"color: {Theme.C_TEXT_TITLE}; font-size: {Theme.F_NORMAL}; font-weight: bold; border: none; background: transparent;")
+        artist_lbl = MarqueeLabel(item.get("artist") or "", force_single_line=True)
+        artist_lbl.setStyleSheet(Theme.get_style("DimLabel"))
+        info_col = QVBoxLayout()
+        info_col.setContentsMargins(0, 0, 0, 0)
+        info_col.setSpacing(0)
+        info_col.addWidget(title_lbl)
+        info_col.addWidget(artist_lbl)
+
+        duration_lbl = QLabel(_fmt_time((item.get("duration_ms") or 0) / 1000.0))
+        duration_lbl.setMinimumWidth(s(32))
+        duration_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        duration_lbl.setStyleSheet(Theme.get_style("DimLabel"))
+
+        row_layout.addWidget(number_lbl)
+        row_layout.addLayout(info_col, 1)
+        if index == 1:
+            next_lbl = QLabel("NEXT")
+            next_lbl.setStyleSheet(f"color: {Theme.C_PRIMARY}; font-size: 10px; letter-spacing: 1px; border: 1px solid rgba(255,140,0,128); border-radius: 9px; padding: 1px 7px; background: transparent;")
+            row_layout.addWidget(next_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+        row_layout.addWidget(duration_lbl)
+        return row
 
     def get_standalone_min_size(self):
         w = self.minimumSizeHint().width()
