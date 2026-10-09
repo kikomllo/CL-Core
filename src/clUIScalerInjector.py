@@ -2,6 +2,7 @@ from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import QSize
 from PyQt6.QtGui import QFont
 from clUIScaler import UIScaler
+import clSmoothBorders as smooth_borders
 
 def inject_scaler():
     # Style Sheet
@@ -10,8 +11,9 @@ def inject_scaler():
         if not isinstance(css, str):
             return _orig_setStyleSheet(self, css)
         self._unscaled_css = css
-        _orig_setStyleSheet(self, UIScaler.get().scale_css(css))
+        _orig_setStyleSheet(self, smooth_borders.process(self, UIScaler.get().scale_css(css)))
     QWidget.setStyleSheet = _scaled_setStyleSheet
+    smooth_borders.install(_orig_setStyleSheet)
 
     # Fixed Size
     _orig_setFixedSize = QWidget.setFixedSize

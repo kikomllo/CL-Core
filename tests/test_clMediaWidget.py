@@ -72,23 +72,34 @@ class TestVolumeFaderHoverReveal:
 
         assert w.fader_container.width() == w._fader_width
 
-    def test_fader_fits_flush_to_the_top_at_minimum_size_and_stays_fixed(self, qapp, mocker):
-        """The fader's slider has a fixed height (see __init__) so it never
-        grows taller as the widget itself grows (e.g. the App Volume drawer
-        opening) -- it's pinned to the bottom of its own column instead,
-        with the stretch above it absorbing any extra room."""
+    def test_the_slider_runs_from_the_title_down_to_the_mute_button(self, qapp, mocker):
+        """The fader column starts below the header, so the slider spans
+        title -> progress bar at any widget height, and a drawer opening
+        (which grows the widget by exactly its own height) doesn't stretch it."""
         from PyQt6.QtWidgets import QApplication
         w = _widget(mocker)
         w.show()
 
-        w.resize(300, 200)
-        QApplication.processEvents()
-        slider_height_at_200 = w.volume_slider.height()
+        def y_in_widget(child):
+            return child.mapTo(w, child.rect().topLeft()).y()
 
-        w.resize(300, 600)
-        QApplication.processEvents()
+        for height in (200, 320):
+            w.resize(300, height)
+            QApplication.processEvents()
+            # starts at the title's cap height: a few px below its label box, never above it
+            assert 0 <= y_in_widget(w.volume_slider) - y_in_widget(w.title_lbl) <= 6
+            assert y_in_widget(w.mute_btn) + w.mute_btn.height() >= y_in_widget(w.progress_bar) + w.progress_bar.height() - 1
 
-        assert w.volume_slider.height() == slider_height_at_200
+        import clUI
+        w2 = _widget(mocker)
+        frame = clUI.DraggableWidget("w", "Media", w2)
+        frame.resize(300, 320)
+        frame.show()
+        QApplication.processEvents()
+        before = w2.volume_slider.height()
+        w2.queue_btn.click()    # the wrapper grows by the drawer's own height
+        QApplication.processEvents()
+        assert w2.volume_slider.height() == before
 
     def test_dragging_a_resize_handle_does_not_compound_into_runaway_growth(self, qapp, mocker):
         """Simulates the actual bug report: dragging a resize handle fires
@@ -760,13 +771,14 @@ class TestShuffleRepeatButtons:
         assert w.shuffle_btn.is_active() is False
         assert w.repeat_btn.is_active() is False
 
-    def test_they_sit_in_the_header_right_after_the_badge(self, qapp, mocker):
-        """Where the lyrics toggle used to be; the stretch comes after them."""
+    def test_they_sit_at_the_right_end_of_the_header(self, qapp, mocker):
+        """Badge on the left, then the stretch, then shuffle and repeat."""
         w = _widget(mocker)
         badge = w.header_layout.indexOf(w.badge_lbl)
 
-        assert w.header_layout.indexOf(w.shuffle_btn) == badge + 1
-        assert w.header_layout.indexOf(w.repeat_btn) == badge + 2
+        assert w.header_layout.indexOf(w.shuffle_btn) == w.header_layout.count() - 2
+        assert w.header_layout.indexOf(w.repeat_btn) == w.header_layout.count() - 1
+        assert w.header_layout.itemAt(badge + 1).spacerItem() is not None
 
     def test_the_transport_row_is_just_prev_play_next(self, qapp, mocker):
         w = _widget(mocker)
@@ -1107,16 +1119,19 @@ class TestHeaderAndBottomRowLayout:
         QApplication.processEvents()
         return w
 
-    def test_the_header_icons_clear_the_fader_on_a_250px_widget(self, qapp, mocker):
+    def test_the_header_icons_stay_put_when_the_fader_opens(self, qapp, mocker):
+        """The header lives above the content/fader row, so the fader opening
+        doesn't narrow it or push shuffle/repeat left."""
         from PyQt6.QtWidgets import QApplication
         w = self._narrow(mocker)
+        before = [b.mapTo(w, b.rect().topLeft()).x() for b in (w.shuffle_btn, w.repeat_btn)]
 
         w._on_fader_width_changed(w._fader_width)
         QApplication.processEvents()
 
-        repeat_right = w.repeat_btn.mapTo(w, w.repeat_btn.rect().topRight()).x()
-        fader_left = w.fader_container.mapTo(w, w.fader_container.rect().topLeft()).x()
-        assert repeat_right < fader_left
+        after = [b.mapTo(w, b.rect().topLeft()).x() for b in (w.shuffle_btn, w.repeat_btn)]
+        assert after == before
+        assert w.repeat_btn.mapTo(w, w.repeat_btn.rect().topRight()).x() >= w.width() - w.layout.contentsMargins().right() - 2
 
     def test_the_transport_row_keeps_its_original_gaps_with_the_fader_open(self, qapp, mocker):
         w = _widget(mocker)

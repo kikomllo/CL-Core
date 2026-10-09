@@ -350,8 +350,9 @@ class MediaWidget(QWidget):
         self._mode_pending_timer.setSingleShot(True)
         self._mode_pending_timer.timeout.connect(self._clear_mode_pending)
 
-        # Header: badge, then shuffle and repeat immediately after it -- the
-        # stretch goes after them, not before, or they'd land at the row's far end.
+        # Header: the badge on the left, shuffle and repeat at the far right.
+        # It sits above the content/fader row (added to self.layout below), so
+        # opening the volume fader never narrows it or pushes the icons.
         self.header_layout = header_layout = QHBoxLayout()
         header_layout.setSpacing(s(8))
         self.badge_lbl = QLabel("SPOTIFY PLAYER")
@@ -360,10 +361,9 @@ class MediaWidget(QWidget):
         # a centre line without the header growing to fit the dots' room.
         self.badge_lbl.setFixedHeight(s(20))
         header_layout.addWidget(self.badge_lbl, 0, Qt.AlignmentFlag.AlignTop)
+        header_layout.addStretch()
         header_layout.addWidget(self.shuffle_btn)
         header_layout.addWidget(self.repeat_btn)
-        header_layout.addStretch()
-        self.content_layout.addLayout(header_layout)
 
         # Zero spacing keeps title/artist tight against each other; the
         # stretch below is a flexible gap so resizing the widget taller
@@ -430,20 +430,14 @@ class MediaWidget(QWidget):
         self.fader_container = QWidget()
         self.fader_container.setFixedWidth(0)
         fader_layout = QVBoxLayout(self.fader_container)
-        fader_layout.setContentsMargins(0, 0, 0, 0)
+        # The top margin starts the bar at the title's cap height instead of
+        # its label box, which has a few px of leading above the glyphs.
+        fader_layout.setContentsMargins(0, s(4), 0, 0)
         fader_layout.setSpacing(s(6))
 
         self.volume_slider = ClickToPositionSlider(Qt.Orientation.Vertical)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(100)
-        # Fixed to exactly the room it has at the widget's own minimum size
-        # (the natural title-to-progress-bar span, minus the mute button and
-        # the spacing above it) -- measured, not guessed, so it fits snugly
-        # against the top with no leftover gap at minimum size but never
-        # grows taller as the widget itself grows (e.g. the App Volume
-        # drawer opening); the stretch above it (see fader_layout.addStretch
-        # below) absorbs any extra room instead.
-        self.volume_slider.setFixedHeight(s(98))
         self.volume_slider.setStyleSheet(Theme.get_style("MediaVolumeSlider"))
         _sync_slider_extreme_state(self.volume_slider)
         self.volume_slider.valueChanged.connect(self._on_volume_changed)
@@ -453,23 +447,26 @@ class MediaWidget(QWidget):
         self.volume_slider.sliderReleased.connect(self._dispatch_volume)
 
         self.mute_btn = HoverIconButton()
-        self.mute_btn.setFixedSize(s(22), s(22))
+        # 2px shorter than it is wide: the column is bottom-anchored, so the
+        # icon (centred in the box) and the slider above it both sit lower,
+        # putting the speaker's bottom level with the time labels' digits.
+        self.mute_btn.setFixedSize(s(22), s(20))
         _set_hover_icon(self.mute_btn, "speaker.svg", s(16))
         self.mute_btn.setIconSize(QSize(s(16), s(16)))
         self.mute_btn.setStyleSheet("background: transparent; border: none;")
         self.mute_btn.clicked.connect(self._toggle_mute)
 
-        # Stretch first, un-stretched slider+mute below it -- pins both to
-        # the bottom of fader_container with any extra height showing as
-        # empty space above them, instead of the slider itself stretching.
-        fader_layout.addStretch(1)
-        fader_layout.addWidget(self.volume_slider, 0, alignment=Qt.AlignmentFlag.AlignHCenter)
+        # The column only spans the content below the header, so the slider
+        # stretches from the title down to the mute button beside the progress
+        # bar -- title-to-progress at any widget height.
+        fader_layout.addWidget(self.volume_slider, 1, alignment=Qt.AlignmentFlag.AlignHCenter)
         fader_layout.addWidget(self.mute_btn, 0, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         # Pairs the main content column with the fader as ordinary layout
         # siblings -- narrowing the column when the fader opens is just
         # normal reflow, and the fader's own (fixed) width never feeds back
         # into anything live.
+        self.layout.addLayout(self.header_layout)
         content_row = QHBoxLayout()
         content_row.setContentsMargins(0, 0, 0, 0)
         content_row.setSpacing(0)
@@ -661,8 +658,6 @@ class MediaWidget(QWidget):
             self.prev_btn.setFixedSize(32, 32)
             self.play_btn.setFixedSize(40, 40)
             self.next_btn.setFixedSize(32, 32)
-        if hasattr(self, 'volume_slider'):
-            self.volume_slider.setFixedHeight(s(98))
         if hasattr(self, '_drawers_min_width'):
             self._measure_drawers_min_width()
 

@@ -212,6 +212,14 @@ def _perform_full_reboot() -> None:
     finally:
         _reboot_lock.release()
 
+# Crash-loop guard for the resurrect loop: this many deaths inside the window
+# delays the next respawn.
+DEATH_TIMES = {}
+RESPAWN_HOLD = {}
+CRASH_LOOP_DEATHS = 3
+CRASH_LOOP_WINDOW = 120
+CRASH_LOOP_BACKOFF = 60
+
 def start_native(desc, filename, is_reboot=False):
     print(f"[SUPERVISOR] Launching {filename}...")
     env = os.environ.copy()
@@ -501,7 +509,20 @@ def main():
                     continue
                 proc = PROCESSES.get(filename)
                 if proc and proc.poll() is not None:
-                    print(f"[SUPERVISOR] FATAL: {filename} died unexpectedly! Resurrecting...")
+                    now = time.time()
+                    if now < RESPAWN_HOLD.get(filename, 0):
+                        continue
+                    deaths = [t for t in DEATH_TIMES.get(filename, []) if now - t < CRASH_LOOP_WINDOW]
+                    deaths.append(now)
+                    DEATH_TIMES[filename] = deaths
+                    print(f"[SUPERVISOR] FATAL: {filename} died unexpectedly (exit code {proc.returncode})! Resurrecting...")
+                    if len(deaths) >= CRASH_LOOP_DEATHS:
+                        # A UI that dies on every launch otherwise opens a new
+                        # fullscreen window every few seconds.
+                        print(f"[SUPERVISOR] {filename} died {len(deaths)}x in {CRASH_LOOP_WINDOW}s -- holding the next respawn for {CRASH_LOOP_BACKOFF}s.")
+                        RESPAWN_HOLD[filename] = now + CRASH_LOOP_BACKOFF
+                        DEATH_TIMES[filename] = []
+                        continue
                     start_native(desc, filename, is_reboot=True)
     except KeyboardInterrupt:
         print("\n[SUPERVISOR] Manual shutdown triggered (Ctrl+C).")

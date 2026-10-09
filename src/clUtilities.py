@@ -18,6 +18,7 @@ if sys.platform == 'win32':
 
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..' if 'src' in __file__ else 'src'))
 from utils.clLogging import setup_logging
+from utils import clCalendarEvents as calendar_events
 setup_logging('CLUTILITIES')
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -637,7 +638,8 @@ class JarvisUtilities:
                 "timeZone": "Local"
             },
             "description": "",
-            "colorId": "1"
+            "colorId": "1",
+            "source": calendar_events.SOURCE_LOCAL
         }
 
         with open(os.path.join(EVENTS_DIR, f"{event_id}.json"), "w", encoding="utf-8") as f:
@@ -646,7 +648,7 @@ class JarvisUtilities:
         # Broadcast UI refresh with updated events array
         await self.handle_calendar_list()
 
-        display_time = dt.strftime('%B %-d at %I:%M %p') if dt.date() != datetime.now().date() else dt.strftime('%I:%M %p')
+        display_time = f"{dt.strftime('%B')} {dt.day} at {dt.strftime('%I:%M %p')}" if dt.date() != datetime.now().date() else dt.strftime('%I:%M %p')
         await self.mqtt_client.publish("jarvis/sys/speak", json.dumps({"text": f"Event '{event_title}' scheduled for {display_time}.", "skip_ducking": True}))
 
     async def handle_calendar_delete(self, event_id):
@@ -669,7 +671,7 @@ class JarvisUtilities:
                 except Exception as e:
                     logging.error(f"Failed to read event {file}: {e}")
                     
-        events.sort(key=lambda x: x.get('start', {}).get('dateTime', ''))
+        events.sort(key=calendar_events.sort_key)
         await self.mqtt_client.publish("jarvis/sys/calendar/status", json.dumps({
             "status": "success",
             "events": events
@@ -684,26 +686,26 @@ class JarvisUtilities:
                 try:
                     with open(os.path.join(EVENTS_DIR, file), 'r', encoding='utf-8') as f:
                         ev = json.load(f)
-                        dt = datetime.fromisoformat(ev['start']['dateTime'])
-                        if dt.date() == now.date():
+                        if calendar_events.starts_on(ev, now.date()):
                             today_events.append(ev)
                 except Exception as e:
                     logging.error(f"Failed to read event {file}: {e}")
-                    
-        today_events.sort(key=lambda x: datetime.fromisoformat(x['start']['dateTime']))
-        
+
+        today_events.sort(key=calendar_events.sort_key)
+
+        def when(ev):
+            return "all day" if calendar_events.is_all_day(ev) else f"at {calendar_events.time_label(ev)}"
+
         if not today_events:
             msg = "Good morning sir. You have no events on your calendar for today."
         else:
             msg = f"Good morning sir. You have {len(today_events)} events today. "
             if len(today_events) == 1:
                 ev = today_events[0]
-                dt = datetime.fromisoformat(ev['start']['dateTime'])
-                msg += f"Your only event is '{ev['summary']}' at {dt.strftime('%I:%M %p')}."
+                msg += f"Your only event is '{ev['summary']}' {when(ev)}."
             else:
                 first_ev = today_events[0]
-                dt = datetime.fromisoformat(first_ev['start']['dateTime'])
-                msg += f"Your first event is '{first_ev['summary']}' at {dt.strftime('%I:%M %p')}."
+                msg += f"Your first event is '{first_ev['summary']}' {when(first_ev)}."
 
         await self.mqtt_client.publish("jarvis/sys/speak", json.dumps({"text": msg, "skip_ducking": True}))
 

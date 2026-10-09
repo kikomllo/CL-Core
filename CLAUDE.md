@@ -11,7 +11,7 @@ CL-Core ("JARVIS Smart Home OS") is an async, local-first home-automation and NL
 - **Boot the full ecosystem**: `python boot.py` — creates/updates the venv from `requirements.txt`, takes a single-instance lock on port 64000 (killing any stale ecosystem processes), then execs `clJarvis.py`. `python clJarvis.py` runs the supervisor directly if the venv is already set up.
 - **Run one microservice standalone** (for debugging): `python src/clDaemon.py`, `python src/clWhisper.py`, `python src/clControl.py`, etc. — run from the repo root; each service path-hacks `sys.path` to reach `src/utils` and `src/nlp`.
 - **Bypass the microphone** for text-only NLP testing: `python src/clDebug.py`.
-- **Tests**: `pytest` from the repo root. Single test: `pytest tests/test_clDaemon.py::TestClass::test_name -v` or `pytest -k pattern`. `tests/conftest.py` provides `mock_mqtt` (mocks `aiomqtt.Client` — no real broker needed) and `message_stream`. Async tests are marked explicitly with `@pytest.mark.asyncio`.
+- **Tests**: `pytest` from the repo root. Widget windows are never put on screen (`tests/conftest.py` flags them `WA_DontShowOnScreen`, so they keep real geometry and `grab()` but don't flash up and freeze the desktop; `JARVIS_TEST_GUI=1` to watch them). The full suite takes ~5 minutes: while iterating run just the touched files (`pytest tests/test_clX.py`), and the whole suite once at the end. Single test: `pytest tests/test_clDaemon.py::TestClass::test_name -v` or `pytest -k pattern`. `tests/conftest.py` provides `mock_mqtt` (mocks `aiomqtt.Client` — no real broker needed) and `message_stream`. Async tests are marked explicitly with `@pytest.mark.asyncio`.
 - **Bundle source for external LLM review**: `python clBundler.py [file ...]` → `outputs/jarvis_ai_review.txt` (defaults to the root runner + everything under `src/`, `src/utils/`, `src/nlp/`, `config/*.json`).
 
 ## Architecture (overview)
@@ -30,6 +30,7 @@ Detailed notes live in separate files so they're only loaded when relevant:
 | `clDaemon.py`, intent routing, follow-ups, `ActionRouter`/`actions.json`, config loading, actuators, Redis state | `docs/context/daemon-routing.md` |
 | OS-specific code: volume/media/eco mode, alarms, WiFi SSID, PTT keys, Spotify wakeup, process sweeps, Windows two-process note | `docs/context/cross-platform.md` |
 | `clUI.py`, `src/ui/*Widget.py`, window flags, widget geometry | `docs/context/ui.md` |
+| Calendar: `clCalendarWidget.py`, the side-panel layout, event schema/`clCalendarEvents.py`, Google Calendar prep | `docs/context/calendar.md` |
 | Presence monitor: `clMonitor.py`, `utils/clBeacon.py`, beacon pairing, the Settings Presence tab | `docs/context/monitor.md` |
 | Automation engine: `clAutomation.py`, presence lights, `settings.automation_settings` | `docs/context/automation.md` |
 | Claude bridge: backends, config dir, `--continue`, requirements | `docs/context/claude-bridge-core.md` |

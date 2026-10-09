@@ -74,3 +74,39 @@ class TestWidgetSizeSourceOfTruth:
         w.update_scaling()
 
         adjust_spy.assert_not_called()
+
+
+class TestNetworkUnderTheTitle:
+    def test_the_title_stays_plain_and_the_network_goes_below_it(self, qapp, mocker):
+        w = _widget(mocker)
+        w.resize(340, 300)
+        w.show()
+        w.update_status({"network": "MEO-76C2D0", "lights": [{"name": "Lamp", "is_on": True, "offline": False}]})
+        qapp.processEvents()
+
+        assert w.title_lbl.text() == "Smart Lights"
+        assert w.network_lbl.text() == "MEO-76C2D0"
+        assert w.network_lbl.y() >= w.title_lbl.y() + w.title_lbl.height() - 1
+        assert w.network_lbl.height() < w.title_lbl.height()
+
+    def test_the_network_line_stays_hidden_until_a_network_is_known(self, qapp, mocker):
+        w = _widget(mocker)
+        w.update_status({"network": "", "lights": []})
+        assert w.network_lbl.isHidden()
+        w.update_status({"network": "Home", "lights": []})
+        assert not w.network_lbl.isHidden()
+
+
+class TestStatusDotGlowHasRoom:
+    def test_the_dot_is_centred_in_a_holder_wider_than_the_dot(self, qapp, mocker):
+        """The dot used to sit flush against its holder's left edge, so its glow was cut off hard there."""
+        from PyQt6.QtCore import Qt
+        w = _widget(mocker)
+        w.update_status({"network": "N", "lights": [{"name": "Lamp", "is_on": True, "offline": False}]})
+        row = w.light_rows["lamp"]
+        indicator, holder = row["indicator"], row["indicator_holder"]
+
+        assert indicator.alignment() & Qt.AlignmentFlag.AlignHCenter
+        assert indicator._glow_halo.alignment() & Qt.AlignmentFlag.AlignHCenter
+        assert holder.width() >= indicator.fontMetrics().horizontalAdvance("●") + 2 * 6
+

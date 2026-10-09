@@ -2,7 +2,7 @@ import json
 import logging
 from clTheme import Theme
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGraphicsDropShadowEffect, QStackedLayout
-from PyQt6.QtCore import QTimer, QSize
+from PyQt6.QtCore import QTimer, QSize, Qt
 from PyQt6.QtGui import QColor
 from utils.clActionRouter import ActionRouter
 from clUIScaler import UIScaler
@@ -11,6 +11,11 @@ def s(val):
     return UIScaler.get().scale(val)
 
 class LightControlWidget(QWidget):
+    # The status dot's glow is painted inside its holder, so the holder needs
+    # room on every side or the glow is cut off hard at the widget's left edge.
+    INDICATOR_WIDTH = 28
+    HALO_BLUR = 12
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.router = ActionRouter()
@@ -22,6 +27,16 @@ class LightControlWidget(QWidget):
         top_layout = QHBoxLayout()
         self.title_lbl = QLabel("Smart Lights")
         self.title_lbl.setStyleSheet(Theme.get_style("TitleLabel"))
+        # The Wi-Fi network sits under the title, smaller and dim; hidden
+        # until the first status names one.
+        self.network_lbl = QLabel("")
+        self.network_lbl.setStyleSheet(f"color: {Theme.C_TEXT_DIM}; font-size: {Theme.F_TINY}; border: none; background: transparent;")
+        self.network_lbl.hide()
+        title_column = QVBoxLayout()
+        title_column.setContentsMargins(0, 0, 0, 0)
+        title_column.setSpacing(0)
+        title_column.addWidget(self.title_lbl)
+        title_column.addWidget(self.network_lbl)
         
         self.refresh_btn = QPushButton()
         self.refresh_btn.setFixedSize(30, 30)
@@ -30,7 +45,7 @@ class LightControlWidget(QWidget):
         self.refresh_btn.setStyleSheet(Theme.get_style("RefreshButton"))
         self.refresh_btn.clicked.connect(lambda: self.send_cmd("refresh_lights", "all"))
         
-        top_layout.addWidget(self.title_lbl)
+        top_layout.addLayout(title_column)
         top_layout.addStretch()
         top_layout.addWidget(self.refresh_btn)
         self.layout.addLayout(top_layout)
@@ -69,7 +84,7 @@ class LightControlWidget(QWidget):
             if "layout" in row_data:
                 row_data["layout"].setSpacing(s(6))
             if "indicator_holder" in row_data:
-                row_data["indicator_holder"].setFixedWidth(22)
+                row_data["indicator_holder"].setFixedWidth(self.INDICATOR_WIDTH)
             if "toggle_btn" in row_data:
                 row_data["toggle_btn"].setFixedSize(26, 26)
             if "delete_btn" in row_data:
@@ -130,6 +145,8 @@ class LightControlWidget(QWidget):
         stack.setContentsMargins(0, 0, 0, 0)
         halo = QLabel("●")
         front = QLabel("●")
+        for dot in (halo, front):
+            dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
         stack.addWidget(halo)
         stack.addWidget(front)
         front._glow_halo = halo
@@ -161,7 +178,7 @@ class LightControlWidget(QWidget):
         if is_on and not is_offline:
             self._set_glow(indicator, 6, QColor(80, 255, 80, 191))
             if halo is not None:
-                self._set_glow(halo, 16, QColor(80, 255, 80, 107))
+                self._set_glow(halo, self.HALO_BLUR, QColor(80, 255, 80, 107))
         else:
             indicator.setGraphicsEffect(None)
             if halo is not None:
@@ -170,7 +187,8 @@ class LightControlWidget(QWidget):
     def update_status(self, data):
         network_name = data.get("network", "")
         if network_name:
-            self.title_lbl.setText(f"Smart Lights ({network_name})")
+            self.network_lbl.setText(network_name)
+            self.network_lbl.show()
             
         lights = data.get("lights", [])
         
@@ -216,7 +234,7 @@ class LightControlWidget(QWidget):
                 row_layout.setSpacing(s(6))
                 
                 indicator_holder, indicator = self._make_indicator()
-                indicator_holder.setFixedWidth(22)
+                indicator_holder.setFixedWidth(self.INDICATOR_WIDTH)
                 indicator.setStyleSheet("color: rgba(100, 100, 100, 255); font-size: 16pt;")
                 self._update_indicator(indicator, is_on, is_offline)
                 

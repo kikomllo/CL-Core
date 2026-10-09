@@ -243,7 +243,7 @@ class ReminderWidget(QWidget):
         if not self.reminders:
             painter.setPen(QColor(255, 170, 0, 150))
             font = painter.font()
-            font.setFamily("Courier New")
+            font.setFamilies([Theme.FONT_NAME] + Theme.FONT_FALLBACKS)
             font.setPointSize(10)
             font.setItalic(True)
             painter.setFont(font)
@@ -283,7 +283,7 @@ class ReminderWidget(QWidget):
                 
             painter.setPen(QColor(255, 170, 0, 255))
             font = painter.font()
-            font.setFamily("Courier New")
+            font.setFamilies([Theme.FONT_NAME] + Theme.FONT_FALLBACKS)
             font.setPointSize(15)
             font.setBold(True)
             painter.setFont(font)
@@ -351,7 +351,7 @@ class ReminderWidget(QWidget):
                     
                 painter.setPen(QColor(255, 170, 0, 255))
                 font = painter.font()
-                font.setFamily("Courier New")
+                font.setFamilies([Theme.FONT_NAME] + Theme.FONT_FALLBACKS)
                 font_pt = max(7, min(11, int(arc_size * 0.17)))
                 font.setPointSize(font_pt)
                 font.setBold(True)

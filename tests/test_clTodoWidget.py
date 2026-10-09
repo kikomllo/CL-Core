@@ -329,3 +329,67 @@ class TestStatusRefreshDoesNotBounceBackToTheFirstList:
 
         assert w.current_list_name == "List B"
         assert w.tabs.tabText(w.tabs.currentIndex()) == "List B"
+
+
+class TestCheckboxIsACircle:
+    """The task checkbox is a hand-painted ring when open and a filled disc when
+    done (Qt's stylesheet border-radius drew it lopsided and faceted)."""
+
+    def _image(self, qapp, checked):
+        from ui.clRingCheckBox import RingCheckBox
+        chk = RingCheckBox()
+        chk.setChecked(checked)
+        chk.show()
+        qapp.processEvents()
+        return chk.grab().toImage()
+
+    @staticmethod
+    def _is_orange(c):
+        return c.red() > 200 and 100 < c.green() < 220 and c.blue() < 100
+
+    def _bbox(self, img):
+        pts = [(x, y) for x in range(img.width()) for y in range(img.height()) if self._is_orange(img.pixelColor(x, y))]
+        xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+        return min(xs), min(ys), max(xs), max(ys)
+
+    @pytest.mark.parametrize("checked", [False, True])
+    def test_the_indicator_is_round(self, qapp, checked):
+        img = self._image(qapp, checked)
+        x0, y0, x1, y1 = self._bbox(img)
+
+        assert abs((x1 - x0) - (y1 - y0)) <= 1
+        # A square's corner is painted; a circle's isn't, but its edge midpoints are.
+        assert not self._is_orange(img.pixelColor(x0, y0))
+        assert self._is_orange(img.pixelColor((x0 + x1) // 2, y0))
+
+    @pytest.mark.parametrize("checked", [False, True])
+    def test_the_edge_is_symmetric_not_lopsided(self, qapp, checked):
+        # The stylesheet circle peaked at different pixels on opposite sides.
+        img = self._image(qapp, checked)
+        x0, y0, x1, y1 = self._bbox(img)
+
+        for y in range(y0, y1 + 1):
+            left, right = img.pixelColor(x0, y).red(), img.pixelColor(x1, y).red()
+            assert abs(left - right) <= 12, (y, left, right)
+        for x in range(x0, x1 + 1):
+            top, bottom = img.pixelColor(x, y0).red(), img.pixelColor(x, y1).red()
+            assert abs(top - bottom) <= 12, (x, top, bottom)
+
+    def test_an_open_task_is_hollow_and_a_done_one_is_filled(self, qapp):
+        open_img, done_img = self._image(qapp, False), self._image(qapp, True)
+        ox0, oy0, ox1, oy1 = self._bbox(open_img)
+        dx0, dy0, dx1, dy1 = self._bbox(done_img)
+
+        assert not self._is_orange(open_img.pixelColor((ox0 + ox1) // 2, (oy0 + oy1) // 2))
+        assert done_img.pixelColor((dx0 + dx1) // 2, (dy0 + dy1) // 2).red() > 200
+
+    def test_clicking_it_toggles_it_like_a_normal_checkbox(self, qapp):
+        from ui.clRingCheckBox import RingCheckBox
+        chk = RingCheckBox()
+        seen = []
+        chk.stateChanged.connect(seen.append)
+
+        chk.click()
+        chk.click()
+
+        assert seen == [2, 0]

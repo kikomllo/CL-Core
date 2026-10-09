@@ -451,3 +451,49 @@ class TestNoteHandlers:
 
         payload = json.loads(self._status_calls(utilities)[-1].args[1])
         assert [n["id"] for n in payload["notes"]] == ["2", "3", "1"]
+
+
+class TestCalendarHandlersAcceptGoogleShapedEvents:
+    """Events can arrive in Google Calendar's shape (all-day ones have start.date, not
+    start.dateTime). EVENTS_DIR is redirected to a tmp_path -- it normally points at live
+    per-user data/events."""
+
+    @pytest.fixture
+    def events_dir(self, tmp_path, mocker):
+        d = tmp_path / "events"
+        d.mkdir()
+        mocker.patch("clUtilities.EVENTS_DIR", str(d))
+        return d
+
+    def _write(self, events_dir, ev):
+        (events_dir / f"{ev['id']}.json").write_text(json.dumps(ev))
+
+    @pytest.mark.asyncio
+    async def test_list_sorts_mixed_and_unreadable_events_without_raising(self, utilities, events_dir):
+        self._write(events_dir, {"id": "late", "summary": "Late", "start": {"dateTime": "2026-10-12T18:00:00"}})
+        self._write(events_dir, {"id": "allday", "summary": "Holiday", "start": {"date": "2026-10-12"}})
+        self._write(events_dir, {"id": "broken", "summary": "Broken"})
+
+        await utilities.handle_calendar_list()
+
+        payload = json.loads(utilities.mqtt_client.publish.call_args.args[1])
+        assert [e["id"] for e in payload["events"]] == ["allday", "late", "broken"]
+
+    @pytest.mark.asyncio
+    async def test_briefing_announces_an_all_day_event_as_all_day(self, utilities, events_dir):
+        today = datetime.now().date().isoformat()
+        self._write(events_dir, {"id": "h", "summary": "Holiday", "start": {"date": today}})
+
+        await utilities.handle_calendar_briefing()
+
+        spoken = json.loads(utilities.mqtt_client.publish.call_args.args[1])["text"]
+        assert "Holiday' all day" in spoken
+
+    @pytest.mark.asyncio
+    async def test_created_events_are_marked_local(self, utilities, events_dir, mocker):
+        mocker.patch("clUtilities.dateparser.search.search_dates", return_value=[("x", datetime(2026, 10, 12, 9, 0))])
+
+        await utilities.handle_calendar_create({"event": "Dentist", "time_str": "2026-10-12 09:00"})
+
+        saved = json.loads(next(events_dir.glob("*.json")).read_text())
+        assert saved["source"] == "local"

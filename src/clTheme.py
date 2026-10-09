@@ -15,13 +15,19 @@ class Theme:
     C_TEXT = "#ffe6cc"
     C_TEXT_DIM = "#a89a8c"
     C_TEXT_TITLE = "#ff7700"
+    C_CREAM_BRIGHT = "#fff4e6"
     
     C_SUCCESS = "#88ff88"
     C_SUCCESS_BG = "rgba(50, 150, 50, 60)"
     C_SUCCESS_BORDER = "rgba(50, 150, 50, 100)"
     
     # Fonts
-    FONT_FAMILY = "'DejaVu Sans Mono', 'Courier New', monospace"
+    # Bundled in assets/fonts/ and registered by clUI._load_bundled_fonts(); the rest is the fallback chain.
+    FONT_NAME = "JetBrains Mono"
+    FONT_FILES = ["JetBrainsMono-Regular.ttf", "JetBrainsMono-Italic.ttf", "JetBrainsMono-Bold.ttf",
+                  "JetBrainsMono-BoldItalic.ttf", "JetBrainsMono-ExtraBold.ttf"]
+    FONT_FALLBACKS = ["DejaVu Sans Mono", "Courier New", "monospace"]
+    FONT_FAMILY = "'JetBrains Mono', 'DejaVu Sans Mono', 'Courier New', monospace"
     F_TINY = "11px"
     F_SMALL = "12px"
     F_NORMAL = "14px"
@@ -346,50 +352,8 @@ class Theme:
                 QPushButton {{ text-align: center; padding-bottom: 4px; background-color: rgba(30, 20, 5, 180); color: #ffbb44; border: 1px solid rgba(255, 170, 0, 60); border-radius: 4px; font-size: {cls.F_SMALL}; }}
                 QPushButton:hover {{ background-color: rgba(60, 40, 10, 220); color: #ffffff; border: 1px solid {cls.C_PRIMARY}; }}
             """
-        elif component == "DrawerBackButton":
-            return f"QPushButton {{ color: {cls.C_PRIMARY}; background: transparent; border: none; font-weight: bold; font-size: 10px; }} QPushButton:hover {{ color: #ffffff; }}"
-        elif component == "EventCard":
-            return f"QFrame {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(50, 25, 8, 0.85), stop:1 rgba(30, 14, 3, 0.85)); border-left: 4px solid #ff8c00; border-top: 1px solid rgba(255, 160, 0, 0.3); border-right: 1px solid rgba(255, 160, 0, 0.3); border-bottom: 1px solid rgba(255, 160, 0, 0.3); border-radius: 8px; }}"
-        elif component == "EventTitleLabel":
-            return f"color: #ffffff; font-weight: 800; font-size: 12px; border: none; background: transparent;"
-        elif component == "CarouselNav":
-            return f"QFrame {{ background: rgba(35, 17, 4, 0.85); border: 1px solid rgba(255, 160, 0, 0.35); border-radius: 15px; }}"
         elif component == "DashboardDrawer":
             return f"#DashboardDrawer {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #180a02, stop:0.5 #120601, stop:1 #0c0400); border-left: 2px solid qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffaa00, stop:0.5 #ff7700, stop:1 #ffbb33); }}"
-        elif component == "UpNextContainer":
-            return f"QFrame#UpNextContainer {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(45, 22, 6, 0.75), stop:1 rgba(25, 11, 2, 0.75)); border: 1px solid rgba(255, 160, 0, 0.3); border-radius: 12px; }}"
-        elif component == "DrawerDivider":
-            return f"background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 transparent, stop:0.5 rgba(255, 170, 0, 0.4), stop:1 transparent); border: none;"
-        elif component == "CalendarNavBtn":
-            return f"QPushButton {{ text-align: center; padding-bottom: 4px; color: {cls.C_PRIMARY}; background: rgba(255, 150, 0, 0.12); border-radius: 6px; padding: 4px 8px; border: 1px solid rgba(255, 150, 0, 0.35); font-weight: bold; font-size: {cls.F_SMALL}; }} QPushButton:hover {{ background: rgba(255, 150, 0, 0.3); border: 1px solid {cls.C_PRIMARY}; color: #ffffff; }}"
-        elif component == "CalendarTitle":
-            return f"color: #ffbb33; font-size: {cls.F_LARGE}; font-weight: 800; border: none; background: transparent; letter-spacing: 0.5px;"
-        elif component == "CalendarYearBtnActive":
-            return f"background: rgba(255, 150, 0, 60); color: white; border-radius: 5px; font-weight: bold; border: 1px solid {cls.C_PRIMARY}; font-size: {cls.F_NORMAL};"
-        elif component == "CalendarYearBtnInactive":
-            return f"background: rgba(255, 150, 0, 10); color: {cls.C_PRIMARY}; border-radius: 5px; border: 1px solid rgba(255, 150, 0, 30); font-size: {cls.F_NORMAL};"
-        elif component == "CalendarDayLabel":
-            return f"color: #ff9900; font-weight: 700; font-size: {cls.F_TINY}; border: none; background: transparent;"
-        elif component == "CalendarBtnSelected":
-            return f"QPushButton {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ff8c00, stop:1 #e65c00); border-radius: 6px; border: 1px solid #ffcc66; }} QPushButton:hover {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ffa01a, stop:1 #ff701a); }}"
-        elif component == "CalendarBtnToday":
-            return f"QPushButton {{ background: rgba(255, 150, 0, 0.2); border-radius: 6px; border: 1px solid rgba(255, 170, 0, 0.5); }} QPushButton:hover {{ background: rgba(255, 150, 0, 0.4); border: 1px solid {cls.C_PRIMARY}; }}"
-        elif component == "CalendarBtnDefault":
-            return f"QPushButton {{ background: rgba(35, 18, 5, 0.75); border-radius: 6px; border: 1px solid rgba(255, 170, 0, 0.25); }} QPushButton:hover {{ background: rgba(255, 150, 0, 0.4); border: 1px solid {cls.C_PRIMARY}; }}"
-        elif component == "CalendarLblSelected":
-            return f"background: transparent; border: none; color: #ffffff; font-size: {cls.F_NORMAL}; font-weight: 900;"
-        elif component == "CalendarLblToday":
-            return f"background: transparent; border: none; color: {cls.C_PRIMARY}; font-size: {cls.F_NORMAL}; font-weight: 900;"
-        elif component == "CalendarLblDefault":
-            return f"background: transparent; border: none; color: #ffffff; font-size: {cls.F_NORMAL}; font-weight: 700;"
-        elif component == "CalendarWeekCol":
-            return f"background: rgba(255, 150, 0, 5); border: 1px solid rgba(255, 150, 0, 20); border-radius: 5px;"
-        elif component == "CalendarWeekLblToday":
-            return f"background: rgba(255, 150, 0, 60); color: white; border-radius: 3px; padding: 2px; font-weight: bold; border: none; font-size: {cls.F_TINY};"
-        elif component == "CalendarWeekLblDefault":
-            return f"color: {cls.C_PRIMARY}; font-weight: bold; border: none; background: transparent; font-size: {cls.F_TINY};"
-        elif component == "CalendarWeekEventBtn":
-            return f"background: rgba(255, 150, 0, 40); color: white; border-left: 2px solid {cls.C_PRIMARY}; border-radius: 2px; font-size: {cls.F_TINY}; text-align: left; padding: 2px;"
         elif component == "EventDialogBase":
             return f"""
                 #BgFrame {{ background-color: rgba(20, 10, 0, 240); border: 1px solid rgba(255, 120, 0, 100); border-radius: 12px; }}
@@ -448,10 +412,62 @@ class Theme:
             # widget it's actually set on (see _create_note_row's
             # setObjectName("NoteCard")).
             return f"#NoteCard {{ background: transparent; border: 1px solid rgba(255, 170, 0, 60); border-radius: 8px; }}"
-        elif component == "TodoCheckbox":
-            return f"""
-                QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 4px; border: 1px solid rgba(255, 170, 0, 0.5); background: rgba(35, 18, 5, 0.8); }}
-                QCheckBox::indicator:hover {{ border: 1px solid {cls.C_PRIMARY}; background: rgba(255, 150, 0, 0.3); }}
-                QCheckBox::indicator:checked {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ff8c00, stop:1 #e65c00); border: 1px solid #ffbb33; }}
-            """
+
+        # --- Dashboard drawer ("U3" design: calendar + day sheet + dock + media pill) ---
+        elif component == "DrawerMonthTitle":
+            return f"QPushButton {{ color: {cls.C_CREAM_BRIGHT}; background: transparent; border: none; font-size: 30px; font-weight: 800; text-align: left; padding: 0; }} QPushButton:hover {{ color: #ffffff; }}"
+        elif component == "DrawerMonthTitleSmall":
+            return f"QPushButton {{ color: {cls.C_CREAM_BRIGHT}; background: transparent; border: none; font-size: 22px; font-weight: 800; text-align: left; padding: 0; }} QPushButton:hover {{ color: #ffffff; }}"
+        elif component == "DrawerYearLabel":
+            return f"color: {cls.C_TEXT_DIM}; font-size: 13px; background: transparent; border: none; padding-bottom: 5px;"
+        elif component == "DrawerSyncLabel":
+            return f"color: {cls.C_TEXT_DIM}; font-size: 10px; background: transparent; border: none;"
+        elif component == "DrawerChevron":
+            return "QPushButton { background: transparent; border: none; border-radius: 13px; } QPushButton:hover { background: rgba(255, 150, 0, 0.18); }"
+        elif component == "DrawerPillButton":
+            return f"QPushButton {{ color: {cls.C_PRIMARY}; font-size: 12px; font-weight: 700; padding: 0 12px; background: rgba(255, 150, 0, 0.12); border: 1px solid rgba(255, 150, 0, 0.35); border-radius: 6px; }} QPushButton:hover {{ background: rgba(255, 150, 0, 0.3); border: 1px solid {cls.C_PRIMARY}; color: #ffffff; }}"
+        elif component == "SegmentPill":
+            return "QFrame#SegmentPill { background: rgba(35, 17, 4, 0.85); border: 1px solid rgba(255, 160, 0, 0.35); border-radius: 17px; }"
+        elif component == "SegmentButton":
+            return f"QPushButton {{ color: {cls.C_TEXT_DIM}; background: transparent; border: none; border-radius: 14px; font-size: 10px; font-weight: 800; padding: 0; }} QPushButton:hover {{ color: {cls.C_TEXT}; }} QPushButton:checked {{ background: {cls.C_PRIMARY}; color: #180a02; }}"
+        elif component == "DowLabel":
+            return f"color: {cls.C_TEXT_DIM}; font-size: 10px; font-weight: 700; background: transparent; border: none;"
+        elif component in ("DayCell", "DayCellToday", "DayCellSelected"):
+            border = {"DayCell": "rgba(255, 170, 0, 0.22)", "DayCellToday": "rgba(255, 170, 0, 0.6)", "DayCellSelected": "#ffcc66"}[component]
+            bg = ("qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ff8c00, stop:1 #e65c00)" if component == "DayCellSelected"
+                  else "rgba(35, 18, 5, 0.75)")
+            hover = ("qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ffa01a, stop:1 #ff701a)" if component == "DayCellSelected"
+                     else "rgba(255, 150, 0, 0.3)")
+            return f"QPushButton {{ background: {bg}; border: 1px solid {border}; border-radius: 9px; padding: 0; }} QPushButton:hover {{ background: {hover}; border: 1px solid {cls.C_PRIMARY}; }}"
+        elif component in ("DayNum", "DayNumToday", "DayNumSelected"):
+            color = "#ffffff" if component == "DayNumSelected" else cls.C_TEXT
+            weight = 700 if component == "DayNum" else 900
+            return f"background: transparent; border: none; color: {color}; font-size: 15px; font-weight: {weight};"
+        elif component == "DaySheet":
+            return ("QFrame#DaySheet { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(55, 27, 8, 0.95), stop:1 rgba(25, 11, 2, 0.97));"
+                    " border-top: 1px solid rgba(255, 170, 0, 0.45); border-top-left-radius: 28px; border-top-right-radius: 28px; }")
+        elif component == "SheetTitle":
+            return "color: #ffffff; font-size: 20px; font-weight: 800; background: transparent; border: none;"
+        elif component == "SheetCount":
+            return f"color: {cls.C_TEXT_DIM}; font-size: 10px; font-weight: 800; background: transparent; border: none;"
+        elif component == "SheetRow":
+            return "QFrame#SheetRow { background: transparent; border: none; border-top: 1px solid rgba(255, 170, 0, 0.12); } QFrame#SheetRow:hover { background: rgba(255, 170, 0, 0.05); }"
+        elif component == "SheetRowStatic":
+            return "QFrame#SheetRow { background: transparent; border: none; border-top: 1px solid rgba(255, 170, 0, 0.12); }"
+        elif component == "SheetTime":
+            return f"color: {cls.C_TEXT}; font-size: 12px; font-weight: 600; background: transparent; border: none;"
+        elif component == "SheetEventTitle":
+            return "color: #ffffff; font-size: 13px; font-weight: 700; background: transparent; border: none;"
+        elif component == "SheetDim":
+            return f"color: {cls.C_TEXT_DIM}; font-size: 11px; background: transparent; border: none;"
+        elif component == "GoogleTag":
+            return f"color: {cls.C_TEXT_DIM}; font-size: 9px; font-weight: 800; padding: 1px 6px; background: transparent; border: 1px solid rgba(255, 230, 204, 0.3); border-radius: 5px;"
+        elif component == "SheetDivider":
+            return "background: rgba(255, 170, 0, 0.25); border: none;"
+        elif component == "DockLabel":
+            return f"color: {cls.C_TEXT_DIM}; font-size: 10px; font-weight: 800; background: transparent; border: none;"
+        elif component == "MediaPill":
+            return "QFrame#MediaPill { background: rgba(35, 17, 4, 0.9); border: 1px solid rgba(255, 160, 0, 0.35); border-radius: 32px; }"
+        elif component == "MediaPillTitle":
+            return "color: #ffffff; font-size: 12px; font-weight: 800; background: transparent; border: none;"
         return ""

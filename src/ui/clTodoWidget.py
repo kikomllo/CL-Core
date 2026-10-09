@@ -3,15 +3,18 @@ from clTheme import Theme
 from utils.clActionRouter import ActionRouter
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QFrame, 
-    QLineEdit, QPushButton, QCheckBox, QTabWidget, QInputDialog, QStackedWidget, QSizePolicy
+    QLineEdit, QPushButton, QTabWidget, QInputDialog, QStackedWidget, QSizePolicy
 )
 from clUIScaler import UIScaler
-from PyQt6.QtCore import Qt, QPoint, QSize, QTimer
+from ui.clRingCheckBox import RingCheckBox
+from PyQt6.QtCore import Qt, QPoint, QSize, QTimer, pyqtSignal
 
 def s(val):
     return UIScaler.get().scale(val)
 
 class TodoWidget(QWidget):
+    open_count_changed = pyqtSignal(int)   # tasks not yet completed, across every list
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.router = ActionRouter()
@@ -307,7 +310,8 @@ class TodoWidget(QWidget):
 
     def update_status(self, data):
         todos = data.get("todos", [])
-        
+        self.open_count_changed.emit(sum(1 for t in todos if not t.get("completed", False)))
+
         # Group todos by list_name
         grouped_todos = {}
         for t in todos:
@@ -349,8 +353,7 @@ class TodoWidget(QWidget):
                 task_layout.setContentsMargins(0, 0, 0, 0)
                 task_layout.setSpacing(s(8))
                 
-                chk = QCheckBox()
-                chk.setStyleSheet(Theme.get_style("TodoCheckbox"))
+                chk = RingCheckBox()
                 
                 lbl = QLabel(t["task"])
                 lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)

@@ -766,7 +766,7 @@ class SettingsWidget(QWidget):
         holder.value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         holder.value.setWordWrap(True)
         holder.value.setStyleSheet(
-            f"color: {Theme.C_PRIMARY}; font-family: monospace; font-size: 11pt; font-weight: bold;")
+            f"color: {Theme.C_PRIMARY}; font-family: {Theme.FONT_FAMILY}; font-size: 11pt; font-weight: bold;")
         row.addWidget(holder.value, 1)
         copy = QPushButton("Copy")
         copy.setStyleSheet(Theme.get_style("SecondaryButton"))

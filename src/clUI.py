@@ -891,7 +891,7 @@ class _AnimatedLyricLabel(QWidget):
         self.scale_factor = 1.0
         self.y_offset = 0.0
         self._base_font = QFont()
-        self._base_font.setFamily("DejaVu Sans Mono")
+        self._base_font.setFamilies([Theme.FONT_NAME] + Theme.FONT_FALLBACKS)
 
     @property
     def font_px(self):
@@ -1872,8 +1872,7 @@ class JarvisUI(QWidget):
         self.btn_calendar.hide()
         
         # Persistent Dashboard Drawer (hidden off-screen right initially)
-        s = UIScaler.get().scale
-        drawer_width = s(380)
+        drawer_width = self._calendar_drawer_width(screen_geom.width())
         self.calendar_drawer = DashboardDrawer(self)
         self.calendar_drawer.setGeometry(screen_geom.width(), 0, drawer_width, screen_geom.height())
         self.calendar_drawer.hide()
@@ -2030,7 +2029,7 @@ class JarvisUI(QWidget):
         # Calendar button
         self.btn_calendar.setGeometry(win_w - s(30), int(win_h / 2) - s(40), s(30), s(80))
 
-        drawer_width = s(400) if win_w >= 1920 else s(350)
+        drawer_width = self._calendar_drawer_width(win_w)
         if hasattr(self, 'calendar_drawer'):
             self.calendar_drawer.setGeometry(win_w, 0, drawer_width, win_h)
             if hasattr(self.calendar_drawer, 'update_scaling'):
@@ -2208,13 +2207,19 @@ class JarvisUI(QWidget):
             else:
                 self.close_draggable_widget(widget_id)
 
+    @staticmethod
+    def _calendar_drawer_width(win_w):
+        """The side drawer is 400 px at 1080p (the width its day squares and sheet are designed for)."""
+        s = UIScaler.get().scale
+        return s(400) if win_w >= 1920 else s(350)
+
     def _toggle_calendar(self):
         if not getattr(self, 'is_fullscreen', False):
             return
             
         geom = self.geometry()
         s = UIScaler.get().scale
-        drawer_width = s(380)
+        drawer_width = self._calendar_drawer_width(geom.width())
         
         # Stop existing animation
         if hasattr(self, 'calendar_animation') and self.calendar_animation.state() == QPropertyAnimation.State.Running:
@@ -2331,6 +2336,7 @@ class JarvisUI(QWidget):
                 wrapper.content_widget.update_status(data)
         if hasattr(self, 'calendar_drawer'):
             self.calendar_drawer.carousel.media_widget.update_status(data)
+            self.calendar_drawer.media_pill.update_status(data)
         if hasattr(self, 'lyrics_display'):
             self.lyrics_display.set_playback(
                 data.get("title", "Unknown"),
@@ -2465,10 +2471,10 @@ class JarvisUI(QWidget):
         
         from PyQt6.QtGui import QFont, QFontMetrics
         
-        opt_font = QFont("Courier New", 10, QFont.Weight.Bold)
+        opt_font = QFont(Theme.FONT_NAME, 10, QFont.Weight.Bold)
         fm = QFontMetrics(opt_font)
-        
-        title_font = QFont("Courier New", 9, QFont.Weight.Bold)
+
+        title_font = QFont(Theme.FONT_NAME, 9, QFont.Weight.Bold)
         title_fm = QFontMetrics(title_font)
         
         # Calculate target width based on title and options
@@ -3088,6 +3094,8 @@ class JarvisUI(QWidget):
     def closeEvent(self, event):
         self.save_ui_state()
         super().closeEvent(event)
+        if event.isAccepted():
+            QApplication.instance().quit()
 
     def save_ui_state(self):
         try:
@@ -3314,13 +3322,13 @@ class JarvisUI(QWidget):
 
 
 def _load_bundled_fonts():
-    """DejaVu Sans Mono isn't preinstalled on Windows, so it's bundled here
+    """JetBrains Mono isn't preinstalled on either OS, so it's bundled here
     (assets/fonts/) and registered via Qt's font database -- guarantees the
     same font renders identically on both machines regardless of what's
     already installed on either."""
     from PyQt6.QtGui import QFontDatabase
     fonts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "fonts")
-    for filename in ["DejaVuSansMono.ttf", "DejaVuSansMono-Bold.ttf", "DejaVuSansMono-Oblique.ttf", "DejaVuSansMono-BoldOblique.ttf"]:
+    for filename in Theme.FONT_FILES:
         path = os.path.join(fonts_dir, filename)
         if os.path.exists(path):
             QFontDatabase.addApplicationFont(path)
@@ -3328,10 +3336,47 @@ def _load_bundled_fonts():
             logging.warning(f"Bundled font not found: {path}")
 
 
+def _install_exit_tracing():
+    """Records why the UI process ends. A native crash leaves a Python stack in
+    logs/ui_fault.log; a Qt-initiated quit logs who was closing what, so the
+    supervisor's bare "died unexpectedly" isn't the only evidence."""
+    import faulthandler
+    import traceback
+    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs")
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        # Kept open for the process's life -- faulthandler writes to the fd.
+        global _FAULT_LOG
+        _FAULT_LOG = open(os.path.join(log_dir, "ui_fault.log"), "a", buffering=1)
+        _FAULT_LOG.write(f"\n--- UI start pid={os.getpid()} {time.strftime('%H:%M:%S')} ---\n")
+        faulthandler.enable(file=_FAULT_LOG, all_threads=True)
+    except OSError:
+        pass
+
+    def _hook(exc_type, exc, tb):
+        logging.error("[UI EXIT] Unhandled exception:\n" + "".join(traceback.format_exception(exc_type, exc, tb)))
+    sys.excepthook = _hook
+
+    app = QApplication.instance()
+    def _on_last_window_closed():
+        wins = ", ".join(f"{type(w).__name__}#{w.objectName()}(visible={w.isVisible()})"
+                         for w in QApplication.topLevelWidgets())
+        logging.error(f"[UI EXIT] lastWindowClosed -- Qt will quit. Top-levels: {wins}")
+    app.lastWindowClosed.connect(_on_last_window_closed)
+    app.aboutToQuit.connect(lambda: logging.error("[UI EXIT] aboutToQuit"))
+
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     _load_bundled_fonts()
+    # The supervisor owns this process's lifetime. Qt's default quits when no
+    # top-level window is visible, which includes the moment set_ui_mode() hides
+    # the main window to swap modes -- an explicit close (closeEvent) still quits.
+    app.setQuitOnLastWindowClosed(False)
+    _install_exit_tracing()
     app.installEventFilter(ActivityReporter(app))
     window = JarvisUI()
     window.show()
-    sys.exit(app.exec())
+    code = app.exec()
+    logging.error(f"[UI EXIT] app.exec() returned {code}")
+    sys.exit(code)

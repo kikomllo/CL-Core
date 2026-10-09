@@ -7,6 +7,7 @@ from PyQt6.QtCore import QRectF, Qt, QTimer
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QImage, QLinearGradient, QPainter
 from PyQt6.QtWidgets import QWidget
 
+from clTheme import Theme
 from clUIScaler import UIScaler
 
 # Defaults for core.json -> settings.clock_settings (any key may be left out).
@@ -183,7 +184,7 @@ class ClockDisplay(QWidget):
     @staticmethod
     def _font(pixels: int, spacing_em: float = 0.0) -> QFont:
         font = QFont()
-        font.setFamilies(["DejaVu Sans Mono", "Courier New", "monospace"])
+        font.setFamilies([Theme.FONT_NAME] + Theme.FONT_FALLBACKS)
         font.setStyleHint(QFont.StyleHint.Monospace)
         font.setPixelSize(pixels)
         if spacing_em:
