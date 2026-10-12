@@ -37,6 +37,9 @@ import sys, os
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..' if 'src' in __file__ else 'src'))
 from utils.clLogging import setup_logging
 setup_logging('MIC')
+from utils.clEndpointer import Endpointer
+from utils.clEcho import ReferenceBuffer, EchoCanceller
+from utils.clEchoGuard import EchoGuard
 
 @contextmanager
 def silence_c_errors():
@@ -114,6 +117,9 @@ class VoiceSensor:
         self.native_chunk: int = self.CHUNK
         self._resample_tail: Optional[np.ndarray] = None  # trailing raw samples carried into the next _read_chunk resample call
         self.oww_model = self._init_wakeword()
+        self.vad_cfg = self._load_vad_settings()
+        self.vad = self._init_vad()
+        self._init_barge_in()
         self.mqtt: mqtt_client.Client = self._init_mqtt()
 
     def _load_attention_multiplier(self) -> float:
@@ -123,6 +129,129 @@ class VoiceSensor:
                 return float(json.load(f).get("vad_settings", {}).get("attention_mode_multiplier", 1.50))
         except Exception:
             return 1.50
+
+    def _init_barge_in(self) -> None:
+        """Interrupting JARVIS while it speaks: the TTS service publishes what it plays, an echo canceller
+        removes it from the mic, and the wake word is listened for over the rest. `EchoGuard` lowers
+        JARVIS's own voice when the speaker is too loud for any canceller to cope (auto_limit)."""
+        cfg = {"enabled": True, "auto_limit": True, "wake_threshold": 0.6, "hits": 1, "target_esr_db": 4.0}
+        try:
+            with open(os.path.join(self.base_dir, "..", "config", "core.json"), "r", encoding="utf-8") as f:
+                stored = json.load(f).get("settings", {}).get("barge_in", {})
+            for key, default in cfg.items():
+                if key in stored:
+                    cfg[key] = type(default)(stored[key])
+        except Exception:
+            pass
+        self.barge_cfg = cfg
+        self.ref = ReferenceBuffer()
+        self.aec = EchoCanceller() if cfg["enabled"] else None
+        state_path = os.path.abspath(os.path.join(self.base_dir, "..", "data", "barge_in_state.json"))
+        self.guard = EchoGuard(target_esr_db=cfg["target_esr_db"], state_path=state_path)
+        self.tts_gain: float = self.guard.gain
+        self._barge_hits: int = 0
+        self._barge_ring: Deque[np.ndarray] = collections.deque(maxlen=19)   # ~1.5s of cleaned audio before the trigger
+        self._echo_samples: list = []
+        self._forced_wake: Optional[list] = None   # cleaned audio handed to the next recording after a barge-in
+        self.bargein_hold_until: float = 0.0       # stale tts_state/request_reply from the interrupted reply are ignored until then
+        self._interrupted: bool = False
+        self.ambient_plain: float = 0.003          # room noise rms (fraction of full scale), tracked while idle
+        self._notified_limit: bool = False
+        if cfg["enabled"] and self.aec is not None and not self.aec.available:
+            logging.warning("pyaec is not installed: interrupting JARVIS will rely on the wake word alone (no echo cancellation).")
+
+    @staticmethod
+    def _plain_rms(chunk: np.ndarray) -> float:
+        return float(np.sqrt(np.mean((chunk.astype(np.float32) / 32768.0) ** 2)))
+
+    def _clean(self, raw: np.ndarray) -> np.ndarray:
+        """The mic chunk with JARVIS's own playback removed (while it is, or just was, speaking)."""
+        if self.aec is not None and self.aec.available and self.ref.active(time.time(), tail=0.6):
+            far = self.ref.get(time.time() - len(raw) / self.RATE, len(raw))
+            return self.aec.process(raw, far)
+        return raw
+
+    def _barge_in_step(self) -> bool:
+        """One 80ms listening step while JARVIS speaks. True when the user said the wake word over it:
+        speech is stopped and the next recording starts from the cleaned audio around the trigger."""
+        raw = np.frombuffer(self._read_chunk(), dtype=np.int16)
+        self._echo_samples.append(self._plain_rms(raw))
+        clean = self._clean(raw)
+        self._barge_ring.append(clean)
+        self.oww_model.predict(clean)
+        score = max((list(buf)[-1] for buf in self.oww_model.prediction_buffer.values()), default=0.0)
+        # A bit stricter than the normal 0.5 (the echo of JARVIS's own voice must never stop JARVIS), but a
+        # single chunk is enough: the wake word's score peaks briefly, and measured on recordings
+        # requiring two chunks in a row missed most interruptions without preventing any false stop.
+        self._barge_hits = self._barge_hits + 1 if score > self.barge_cfg["wake_threshold"] else 0
+        if self._barge_hits < self.barge_cfg["hits"]:
+            return False
+
+        logging.info(f"BARGE-IN: wake word heard over JARVIS (score {score:.2f}) -> stopping speech.")
+        self._interrupt_speech()
+        self._forced_wake = list(self._barge_ring)
+        self._barge_ring.clear()
+        self._barge_hits = 0
+        self.oww_model.reset()
+        return True
+
+    def _interrupt_speech(self) -> None:
+        """Stop JARVIS talking now (wake word over it, or the push-to-talk key)."""
+        self._publish("jarvis/sys/tts_stop", "stop")
+        self.tts_busy = False
+        self._interrupted = True
+        self.bargein_hold_until = time.time() + 2.0
+
+    def _finish_echo_measurement(self) -> None:
+        """After an uninterrupted reply: how loud was JARVIS's voice at the mic? If the speaker is so loud
+        that interrupting couldn't work, lower JARVIS's own level (EchoGuard decides how far)."""
+        samples, self._echo_samples = self._echo_samples, []
+        interrupted, self._interrupted = self._interrupted, False
+        if interrupted or not self.barge_cfg["auto_limit"] or len(samples) < 16:
+            return
+        loud = float(np.percentile(samples[5:-3], 75))
+        echo = max(loud ** 2 - self.ambient_plain ** 2, 0.0) ** 0.5
+        new_gain = self.guard.note_echo(echo, self.tts_gain)
+        logging.debug(f"[ECHO] level {echo:.4f} at gain {self.tts_gain:.2f}; echo/voice {self.guard.esr_db()}")
+        if new_gain is None:
+            return
+        direction = "Lowering" if new_gain < self.tts_gain else "Raising"
+        logging.info(f"[ECHO] {direction} JARVIS's voice {self.tts_gain:.2f} -> {new_gain:.2f} "
+                     f"(echo/voice {self.guard.esr_db():.1f} dB; keeps interrupting possible).")
+        self.tts_gain = new_gain
+        self._publish("jarvis/sys/tts_control", {"action": "set_gain", "gain": new_gain})
+        if new_gain < 0.95 and not self._notified_limit:
+            self._notified_limit = True
+            self._publish("jarvis/sys/speak", {"text": "I've lowered my voice a little, so I can still hear you if you interrupt me."})
+
+    def _load_vad_settings(self) -> Dict[str, Any]:
+        """core.json -> vad_settings. engine: "silero" (neural endpointing) or "rms" (volume thresholds);
+        end_silence_ms: non-speech that ends a command; speech_threshold: Silero score counted as speech."""
+        cfg = {"engine": "silero", "end_silence_ms": 700, "speech_threshold": 0.5}
+        config_path = os.path.abspath(os.path.join(self.base_dir, "..", "config", "core.json"))
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                stored = json.load(f).get("vad_settings", {})
+            for key, default in cfg.items():
+                if key in stored:
+                    cfg[key] = type(default)(stored[key])
+        except Exception:
+            pass
+        return cfg
+
+    def _init_vad(self) -> Optional[Any]:
+        """Silero VAD for endpointing; None (volume thresholds) when disabled or it can't load."""
+        if self.vad_cfg["engine"] != "silero":
+            logging.info("Endpointing: volume thresholds (vad_settings.engine = rms).")
+            return None
+        try:
+            from utils.clVad import SileroVad
+            vad = SileroVad()
+            logging.info(f"Endpointing: Silero VAD (command ends after {self.vad_cfg['end_silence_ms']}ms of silence).")
+            return vad
+        except Exception as e:
+            logging.warning(f"Silero VAD unavailable ({e}); falling back to volume-threshold endpointing.")
+            return None
 
     def _load_initial_input_device(self) -> Optional[str]:
         config_path = os.path.abspath(os.path.join(self.base_dir, "..", "config", "core.json"))
@@ -177,6 +306,7 @@ class VoiceSensor:
             client.subscribe("jarvis/sys/tts_state") 
             client.subscribe("jarvis/sys/whisper_state")
             client.subscribe("jarvis/sys/audio_process")
+            client.subscribe("jarvis/sys/tts_ref")
             client.subscribe("jarvis/sys/debug_control")
             client.loop_start()
             return client
@@ -194,6 +324,14 @@ class VoiceSensor:
             payload = {"action": payload_str}
 
         action = payload.get("action")
+
+        if msg.topic == "jarvis/sys/tts_ref":
+            try:
+                import base64
+                self.ref.add(float(payload["t0"]), int(payload["off"]), np.frombuffer(base64.b64decode(payload["pcm"]), dtype=np.int16))
+            except Exception as e:
+                logging.debug(f"Bad echo reference message: {e}")
+            return
 
         if msg.topic == "jarvis/sys/debug_control":
             flag = payload.get("flag")
@@ -217,18 +355,30 @@ class VoiceSensor:
             if state == "active":
                 self.tts_busy = True
                 self.tts_lock_time = time.time()
+                if self.bargein_hold_until <= time.time():
+                    self._echo_samples = []
+                    self._barge_ring.clear()
+                    self._barge_hits = 0
             elif state == "idle":
                 self.tts_busy = False
-                self.oww_model.reset()
-                self.pre_speech_buffer.clear()
-                self.vad_hangtime = 0
+                if time.time() < self.bargein_hold_until:
+                    # The user interrupted: a recording is already starting from the cleaned audio, so
+                    # don't reset the wake word model or drain the mic stream underneath it.
+                    logging.info("TTS stopped by the user. Listening.")
+                    self._echo_samples = []
+                    self._interrupted = False
+                else:
+                    self._finish_echo_measurement()
+                    self.oww_model.reset()
+                    self.pre_speech_buffer.clear()
+                    self.vad_hangtime = 0
 
-                try:
-                    available = self.mic_stream.get_read_available()
-                    if available > 0: self.mic_stream.read(available, exception_on_overflow=False)
-                except Exception: pass
+                    try:
+                        available = self.mic_stream.get_read_available()
+                        if available > 0: self.mic_stream.read(available, exception_on_overflow=False)
+                    except Exception: pass
 
-                logging.info("TTS pipeline clear. Releasing microphone lock.")
+                    logging.info("TTS pipeline clear. Releasing microphone lock.")
         
         elif msg.topic == "jarvis/sys/whisper_state":
             if payload.get("state") == "ready":
@@ -239,6 +389,8 @@ class VoiceSensor:
             self.pending_active_window = True
             
         elif action == "ptt_start":
+            if self.tts_busy:
+                self._interrupt_speech()          # pressing the key while JARVIS talks cuts it off
             self.ptt_active = True
             self.pending_active_window = True
             logging.info("PTT Started - Forcing active listening.")
@@ -250,11 +402,16 @@ class VoiceSensor:
         elif action == "ptt_toggle":
             self.ptt_active = not self.ptt_active
             if self.ptt_active:
+                if self.tts_busy:
+                    self._interrupt_speech()
                 self.pending_active_window = True
                 logging.info("PTT Toggled ON - Forcing active listening.")
             else:
                 logging.info("PTT Toggled OFF.")
             
+        elif action == "request_reply" and time.time() < self.bargein_hold_until:
+            logging.info("Follow-up window skipped: the user interrupted the reply.")
+
         elif action == "request_reply":
             self.tts_busy = False
             self.awaiting_reply = True
@@ -354,10 +511,23 @@ class VoiceSensor:
         started_speaking = is_already_speaking
         
         last_rms = 0
+        last_voice_t = None  # last chunk at/above the silence cutoff, for the latency trace
         flatline_counter = 0
         FLATLINE_LIMIT_CHUNKS = int(self.RATE / self.CHUNK * 1.5)
         was_ptt = getattr(self, "ptt_active", False)
-        
+
+        # Neural endpointing (Silero) when available: the command ends after `end_silence_ms` of
+        # non-speech, instead of waiting for the volume to stay under a threshold for ~2s.
+        endpointer, ep_state = None, None
+        speech_levels: list = []
+        if self.vad is not None:
+            self.vad.reset()
+            thr = self.vad_cfg["speech_threshold"]
+            endpointer = Endpointer(chunk_s=self.CHUNK / self.RATE,
+                                    end_silence_s=self.vad_cfg["end_silence_ms"] / 1000.0,
+                                    wait_s=wait_limit, speech_on=thr, speech_off=max(0.1, thr - 0.15),
+                                    already_speaking=is_already_speaking)
+
         try:
             available = self.mic_stream.get_read_available()
             if available > 0: self.mic_stream.read(available, exception_on_overflow=False)
@@ -370,7 +540,7 @@ class VoiceSensor:
                 return ""
 
             data = self._read_chunk()
-            audio_chunk = np.frombuffer(data, dtype=np.int16)
+            audio_chunk = self._clean(np.frombuffer(data, dtype=np.int16))
             frames.append(audio_chunk)
             
             audio_float = audio_chunk.astype(np.float32)
@@ -386,7 +556,21 @@ class VoiceSensor:
                 "status": "RECORDING"
             })
             
-            if not started_speaking:
+            if endpointer is not None:
+                prob = self.vad.process(audio_chunk)
+                if getattr(self, "ptt_active", False):
+                    endpointer.hold()
+                    ep_state = Endpointer.SPEAKING
+                else:
+                    ep_state = endpointer.update(prob)
+                if endpointer.started and not started_speaking:
+                    started_speaking = True
+                    if not self.attention_mode:
+                        self._publish("jarvis/sys/mic_state", {"state": "recording"})
+                if endpointer.in_speech:
+                    last_voice_t = time.time()
+                    speech_levels.append(self._plain_rms(audio_chunk))
+            elif not started_speaking:
                 if rms > act_thresh:
                     started_speaking = True
                     silence_window.clear()
@@ -403,6 +587,8 @@ class VoiceSensor:
                     flatline_counter = 0
 
                 silence_window.append(1 if rms < sil_thresh else 0)
+                if rms >= sil_thresh:
+                    last_voice_t = time.time()
 
             if getattr(self, "ptt_active", False):
                 started_speaking, flatline_counter = True, 0
@@ -414,17 +600,25 @@ class VoiceSensor:
 
             last_rms = rms
 
-            is_silent = (
-                len(silence_window) >= silence_limit_chunks
-                and (sum(silence_window) / len(silence_window)) >= self.SILENCE_RATIO_THRESHOLD
-            )
-            if started_speaking and (is_silent or flatline_counter >= FLATLINE_LIMIT_CHUNKS):
+            if endpointer is not None:
+                command_ended = ep_state == Endpointer.END
+                timed_out = ep_state == Endpointer.TIMEOUT
+                reason = "Silence (VAD)"
+            else:
+                is_silent = (
+                    len(silence_window) >= silence_limit_chunks
+                    and (sum(silence_window) / len(silence_window)) >= self.SILENCE_RATIO_THRESHOLD
+                )
+                command_ended = started_speaking and (is_silent or flatline_counter >= FLATLINE_LIMIT_CHUNKS)
+                timed_out = not started_speaking and wait_counter >= wait_limit_chunks
+                reason = "Silence" if is_silent else "Volume Flatline"
+
+            if command_ended:
                 if not self.attention_mode:
-                    reason = "Silence" if is_silent else "Volume Flatline"
                     logging.info(f"{reason} Detected! Audio captured.")
                 break
-                
-            if not started_speaking and wait_counter >= wait_limit_chunks:
+
+            if timed_out:
                 if frames and wakeword_triggered:
                     if not self.attention_mode: 
                         logging.info("Standalone wake word timeout. BYPASSING WHISPER.")
@@ -436,11 +630,16 @@ class VoiceSensor:
                     self._publish("jarvis/sys/mic_state", {"state": "idle"})
                     return ""
                 
+        if len(speech_levels) >= 4:
+            self.guard.note_voice(float(np.median(speech_levels)))   # how loud this user's commands are
+
         final_audio = np.concatenate(frames).astype(np.float32) / 32768.0
         audio_b64 = base64.b64encode(final_audio.tobytes()).decode('utf-8')
         
+        t_dispatch = time.time()
         self._publish("jarvis/sys/audio_process", {
-            "audio_b64": audio_b64
+            "audio_b64": audio_b64,
+            "trace": {"t_speech_end": last_voice_t or t_dispatch, "t_dispatch": t_dispatch},
         })
         logging.info("Audio buffer dispatched to Inference Engine.")
         
@@ -593,10 +792,20 @@ class VoiceSensor:
                 continue
 
             if self.tts_busy:
-                if hasattr(self, 'tts_lock_time') and (time.time() - self.tts_lock_time) > 15.0:
+                # The lock is a safety net for a lost "idle"; a long reply that is still playing keeps it.
+                if hasattr(self, 'tts_lock_time') and (time.time() - self.tts_lock_time) > 15.0 \
+                        and not self.ref.active(time.time(), tail=1.0):
                     self.tts_busy = False
                     self.tts_queue_count = 0
                     continue
+
+                if self.barge_cfg["enabled"] and not self.ptt_active:
+                    try:
+                        self._barge_in_step()
+                        continue
+                    except Exception as e:
+                        logging.warning(f"Barge-in listening failed ({e}); not listening while JARVIS speaks.")
+                        self.barge_cfg["enabled"] = False
 
                 try:
                     available = self.mic_stream.get_read_available()
@@ -641,6 +850,8 @@ class VoiceSensor:
             elif time.time() < self.active_window_end: status_tag = "ACTIVE_WIN"
             
             b_noise, a_thresh, s_thresh = self._calculate_thresholds()
+            if current_rms <= a_thresh:
+                self.ambient_plain = 0.98 * self.ambient_plain + 0.02 * self._plain_rms(audio_data)
 
             # Fallback: Unlock if Whisper/Daemon crashes and never responds for 15 seconds
             if self.is_processing and (time.time() - self.processing_timer > 15.0):
@@ -717,6 +928,10 @@ class VoiceSensor:
                             self._wakeword_debug_frames = []
                             break
             
+            forced, self._forced_wake = self._forced_wake, None
+            if forced is not None:
+                wakeword_triggered = True
+
             if wakeword_triggered or voice_triggered:
                 if not self.attention_mode: logging.info("\n")
                 
@@ -727,7 +942,7 @@ class VoiceSensor:
                 if self.awaiting_reply: self.awaiting_reply = False
                 if is_active_window: self.active_window_end = 0.0
                 
-                if len(self.ambient_noise_buffer) < 5:
+                if forced is None and len(self.ambient_noise_buffer) < 5:   # (never eat the start of an interrupting command)
                     try:
                         available = self.mic_stream.get_read_available()
                         if available > 0: self.mic_stream.read(available, exception_on_overflow=False)
@@ -749,7 +964,8 @@ class VoiceSensor:
                 is_already_speaking = False
                 
                 if wakeword_triggered or current_rms > a_thresh:
-                    pass_pre_frames = list(self.ring_buffer)
+                    # After an interruption: the cleaned audio around the trigger, plus the chunk just read.
+                    pass_pre_frames = (list(forced) + [self._clean(audio_data)]) if forced is not None else list(self.ring_buffer)
                     
                     # If they are actively talking right now, tell the recorder not to wait for new audio
                     if current_rms > a_thresh:

@@ -46,6 +46,20 @@ class TestWhisperFilters:
         assert result == expected_output, f"Failed filtering on: '{transcribed_text}'"
 
 
+class TestWhisperDecoding:
+    def test_single_greedy_pass_without_temperature_fallback(self, whisper_engine):
+        """The default temperature ladder re-decodes up to 6 times on low confidence; live, that
+        turned some short commands into 2-4s waits."""
+        segment = MagicMock()
+        segment.text = "turn on the lights"
+        whisper_engine.model.transcribe.return_value = ([segment], None)
+
+        whisper_engine.transcribe(np.zeros(16000, dtype=np.float32))
+
+        for call in whisper_engine.model.transcribe.call_args_list:
+            assert call.kwargs.get("temperature") == 0.0
+
+
 class TestWhisperLanguageHandling:
     """A non-English pass exists specifically to capture foreign proper nouns
     (e.g. Portuguese song/artist names) accurately -- it must transcribe them

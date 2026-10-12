@@ -52,3 +52,88 @@ class TestEnsureGgufExists:
 
         assert result is False
         assert not model_path.exists()
+
+
+class FakeLlm:
+    """Records each call's grammar and returns scripted completions."""
+    def __init__(self, *texts):
+        self.texts, self.calls = list(texts), []
+
+    def __call__(self, prompt, max_tokens, stop, grammar, temperature):
+        self.calls.append(grammar)
+        return {"choices": [{"text": self.texts[len(self.calls) - 1]}]}
+
+
+def make_engine(llm, fast_decode=True):
+    from nlp.clSLM import SLMInferenceEngine
+    eng = SLMInferenceEngine({"settings": {"slm_settings": {"enabled": False, "fast_decode": fast_decode}}})
+    eng.enabled, eng.llm, eng.grammar = True, llm, "GRAMMAR"
+    return eng
+
+
+VALID = '{"actions": [{"action_id": "spotify.control", "action": "pause"}]}'
+
+
+class TestFastDecode:
+    """Grammar-constrained decoding is ~4x slower per token, so the model decodes freely and the grammar
+    is only the fallback for output that isn't exactly what it would have allowed."""
+
+    def test_valid_free_output_is_used_without_the_grammar(self):
+        llm = FakeLlm(VALID)
+        eng = make_engine(llm)
+
+        assert eng._infer_sync("p") == {"actions": [{"action_id": "spotify.control", "action": "pause"}]}
+        assert llm.calls == [None]
+        assert (eng.fast_hits, eng.fast_fallbacks) == (1, 0)
+
+    def test_invalid_output_is_redone_under_the_grammar(self):
+        llm = FakeLlm('{"actions": [{"action_id": "spotify.control", "action": "post"}]}', VALID)
+        eng = make_engine(llm)
+
+        assert eng._infer_sync("p") == {"actions": [{"action_id": "spotify.control", "action": "pause"}]}
+        assert llm.calls == [None, "GRAMMAR"]
+        assert (eng.fast_hits, eng.fast_fallbacks) == (0, 1)
+
+    def test_prose_instead_of_json_falls_back(self):
+        llm = FakeLlm("Sure, pausing the music.", VALID)
+        eng = make_engine(llm)
+        assert eng._infer_sync("p")["actions"][0]["action"] == "pause"
+        assert llm.calls == [None, "GRAMMAR"]
+
+    def test_a_crash_in_the_free_pass_falls_back(self):
+        class Boom(FakeLlm):
+            def __call__(self, prompt, max_tokens, stop, grammar, temperature):
+                if grammar is None:
+                    self.calls.append(grammar)
+                    raise RuntimeError("cuda hiccup")
+                return super().__call__(prompt, max_tokens, stop, grammar, temperature)
+        llm = Boom("unused", VALID)
+        llm.calls = []
+        eng = make_engine(llm)
+        assert eng._infer_sync("p") is not None
+
+    def test_can_be_switched_off(self):
+        llm = FakeLlm(VALID)
+        eng = make_engine(llm, fast_decode=False)
+
+        eng._infer_sync("p")
+
+        assert llm.calls == ["GRAMMAR"] and eng.fast_decode is False
+
+    def test_without_a_readable_grammar_it_stays_on_the_old_path(self):
+        from nlp.clSLM import SLMInferenceEngine
+        with patch("nlp.clSLM.IntentSchema.from_gbnf", return_value=None):
+            eng = SLMInferenceEngine({"settings": {"slm_settings": {"enabled": False}}})
+        assert eng.fast_decode is False
+
+        eng.enabled, eng.llm, eng.grammar = True, FakeLlm(VALID), "GRAMMAR"
+        eng._infer_sync("p")
+        assert eng.llm.calls == ["GRAMMAR"]
+
+    def test_the_constrained_path_still_reports_bad_json(self):
+        eng = make_engine(FakeLlm("nope", "still not json"))
+        assert eng._infer_sync("p") is None
+
+    def test_no_model_means_no_result(self):
+        eng = make_engine(None)
+        assert eng._infer_sync("p") is None

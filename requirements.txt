@@ -43,6 +43,11 @@ onnxruntime==1.26.0
 openwakeword==0.4.0
 packaging==26.2
 paho-mqtt==2.1.0
+pathvalidate==3.3.1
+# Echo cancellation for interrupting JARVIS mid-sentence (src/utils/clEcho.py); ~100KB, wheels for Windows and Linux
+pyaec==1.0.1
+# Local speech (src/clTTS.py, src/utils/clTTSEngines.py): Piper, ~300MB while speaking, no PyTorch
+piper-tts==1.8.0
 pluggy==1.6.0
 propcache==0.5.2
 protobuf==7.35.0

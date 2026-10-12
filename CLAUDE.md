@@ -28,6 +28,7 @@ Detailed notes live in separate files so they're only loaded when relevant:
 | Working on | Read |
 |---|---|
 | `clDaemon.py`, intent routing, follow-ups, `ActionRouter`/`actions.json`, config loading, actuators, Redis state | `docs/context/daemon-routing.md` |
+| `clMic.py`, `clWhisper.py`, endpointing/VAD, voice-command latency (`[LATENCY]` log lines) | `docs/context/voice-pipeline.md` |
 | OS-specific code: volume/media/eco mode, alarms, WiFi SSID, PTT keys, Spotify wakeup, process sweeps, Windows two-process note | `docs/context/cross-platform.md` |
 | `clUI.py`, `src/ui/*Widget.py`, window flags, widget geometry | `docs/context/ui.md` |
 | Calendar: `clCalendarWidget.py`, the side-panel layout, event schema/`clCalendarEvents.py`, Google Calendar prep | `docs/context/calendar.md` |
@@ -49,7 +50,7 @@ Detailed notes live in separate files so they're only loaded when relevant:
 - `data/ui_state.json` is one shared file; don't point test instances of the UI at it.
 - Never use broad `pkill -f` patterns; they can match the user's live session.
 
-The bridge plan and status is in `docs/claude_bridge_plan.md`.
+The bridge plan and status is in `docs/claude_bridge_plan.md`. The voice latency / local TTS / barge-in plan and status (including what is mid-flight) is in `docs/voice_latency_plan.md`.
 
 **Standing instruction for any Claude Code session working in this repo**: when the JARVIS ecosystem is running live, speak a short, one-sentence summary of what you did or what's needed next at the end of every turn by publishing to `jarvis/sys/speak`, unconditionally — not only when reached through the voice bridge. The one exception: if your system prompt says the host application already reads your answers aloud (the bridged voice session), do not run this; the bridge speaks every final answer itself and would double it:
   ```q

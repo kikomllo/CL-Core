@@ -257,6 +257,68 @@ class TestDaemonMQTTIntegration:
         mock_speak.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_an_action_without_a_followup_does_not_reopen_the_mic(self, daemon, mock_mqtt, message_stream, mocker):
+        """Live bug: every action published mic_control open_window (a silent 7s no-wake-word
+        window), so the mic opened by itself even when no follow-up question was spoken."""
+        mocker.patch.object(daemon, "_speak_natural_reply", new=AsyncMock())
+        mocker.patch.object(daemon, "_roll_followup", return_value=(False, None))
+        mock_mqtt.messages = message_stream([("jarvis/sensor/voice", "turn the lights off")])
+
+        await daemon.run()
+
+        mic_calls = [json.loads(c[0][1]) for c in mock_mqtt.publish.call_args_list if c[0][0] == "jarvis/sys/mic_control"]
+        assert not any(c.get("action") == "open_window" for c in mic_calls)
+        assert daemon.pending_mic_request is False
+
+    @pytest.mark.asyncio
+    async def test_a_followup_that_fires_is_spoken_with_the_reply(self, daemon, mock_mqtt, message_stream, mocker):
+        """The percentage roll still decides: when it fires, the question rides on the confirmation
+        and the speak message asks the mic to reopen after it."""
+        mocker.patch.object(daemon, "_roll_followup", return_value=(True, "Shall I put some music on?"))
+        daemon.reply_slm.enabled = True
+        daemon.reply_slm.generate_reply_async = AsyncMock(return_value="Done sir.")
+        mock_mqtt.messages = message_stream([("jarvis/sensor/voice", "turn the lights off")])
+
+        await daemon.run()
+        await asyncio.sleep(0.1)          # the reply is generated in a background task
+
+        speaks = [json.loads(c[0][1]) for c in mock_mqtt.publish.call_args_list if c[0][0] == "jarvis/sys/speak"]
+        assert any(s["request_reply"] is True and "Shall I put some music on?" in s["text"] for s in speaks)
+
+    @pytest.mark.asyncio
+    async def test_the_mic_reopens_for_the_answer_once_the_followup_has_been_spoken(self, daemon, mock_mqtt, message_stream):
+        mock_mqtt.messages = message_stream([
+            ("jarvis/sys/speak", json.dumps({"text": "Done sir. Anything else?", "request_reply": True})),
+            ("jarvis/sys/tts_state", json.dumps({"state": "idle"})),
+        ])
+
+        await daemon.run()
+
+        mic = [json.loads(c[0][1]).get("action") for c in mock_mqtt.publish.call_args_list if c[0][0] == "jarvis/sys/mic_control"]
+        assert mic == ["request_reply"]
+
+    @pytest.mark.asyncio
+    async def test_template_reply_with_a_followup_reopens_the_mic_after_it_is_spoken(self, daemon, mock_mqtt):
+        """The static-template fallback speaks its follow-up via tts_request, which never goes
+        through the speak handler that arms pending_mic_request -- it must arm it itself."""
+        daemon.reply_slm.enabled = False
+        payload = {"target_topic": "home/room/all/set", "command": {"action": "off"}, "followup_text": "Anything else?"}
+
+        await daemon._speak_natural_reply(mock_mqtt, "light.set", {}, "turn the lights off", True, "Anything else?", payload)
+
+        assert daemon.pending_mic_request is True
+        assert any(c[0][0] == "jarvis/sys/tts_request" for c in mock_mqtt.publish.call_args_list)
+
+    @pytest.mark.asyncio
+    async def test_template_reply_without_a_followup_leaves_the_mic_alone(self, daemon, mock_mqtt):
+        daemon.reply_slm.enabled = False
+        payload = {"target_topic": "home/room/all/set", "command": {"action": "off"}, "followup_text": None}
+
+        await daemon._speak_natural_reply(mock_mqtt, "light.set", {}, "turn the lights off", False, None, payload)
+
+        assert daemon.pending_mic_request is False
+
+    @pytest.mark.asyncio
     async def test_spotify_play_by_track_never_gets_a_followup(self, daemon, mock_mqtt, message_stream, mocker):
         """A search-driven Spotify play (track/artist/search_query given) can
         turn into a CONFIDENCE_LOW 'please choose one of these' prompt once
@@ -708,3 +770,117 @@ class TestScratchAudioCleanup:
         await daemon.run()
 
         assert audio_src.exists()
+
+class TestComplexRequestGate:
+    """Whisper ends nearly every transcript with a period, so punctuation alone must not send a
+    simple command down the ~1s SLM path (live: even 'play music.' was routed to it)."""
+
+    @pytest.mark.parametrize("transcript, clean", [
+        ("play music.", "play music"),
+        ("Turn the lights on.", "turn the lights on"),
+        ("play my playlist, cartooning.", "play my playlist cartooning"),   # one natural pause
+        ("What time is it?", "what time is it"),
+        ("pause the music!", "pause the music"),
+        ("turn off the desk light, please.", "turn off the desk light please"),
+    ])
+    def test_plain_commands_take_the_fast_path(self, daemon, transcript, clean):
+        assert daemon._is_complex_request(clean, transcript) is False
+
+    @pytest.mark.parametrize("transcript, clean", [
+        ("Hm? Internal error, man. It's an over put.", "hm internal error man its an over put"),
+        ("turn off the light... no, the other one", "turn off the light no the other one"),
+        ("turn off the light, no, the other one, please", "turn off the light no the other one please"),
+        ("Set the light to red, actually blue.", "set the light to red actually blue"),
+        ("turn the lights on and play some music.", "turn the lights on and play some music"),   # two actions
+        ("turn on the kitchen light and the bedroom light and the desk light.",
+         "turn on the kitchen light and the bedroom light and the desk light"),                 # long
+        ("Play jazz. Actually, pause.", "play jazz actually pause"),
+    ])
+    def test_hesitation_corrections_and_compound_requests_still_use_the_slm(self, daemon, transcript, clean):
+        assert daemon._is_complex_request(clean, transcript) is True
+
+
+class TestWakeWordMishearings:
+    """Real transcripts where Whisper mangled 'Hey Jarvis' sent simple commands down the ~1s SLM path."""
+
+    def cleaned(self, daemon, raw):
+        return daemon.strip_wake_word(daemon.sanitize_transcription(raw))
+
+    @pytest.mark.parametrize("raw, expected", [
+        ("Hey tervis pause music", "pause music"),                     # live
+        ("HRVS, pause music.", "pause music."),                        # live
+        ("No Jarvis change the light color to white", "change the light color to white"),   # live
+        ("New Jarvis post music", "post music"),                       # live
+        ("Hey, Jarvis. play music", "play music"),
+        ("Okay jarvis turn off the lights", "turn off the lights"),
+        ("Um, jarvis, pause", "pause"),
+        ("Hey jarvs turn it off", "turn it off"),
+        ("hey jervis play something", "play something"),
+        ("Jarvis, turn on the lights", "turn on the lights"),
+    ])
+    def test_mangled_wake_words_are_still_stripped(self, daemon, raw, expected):
+        stripped, present = self.cleaned(daemon, raw)
+        assert present is True and stripped.lower() == expected.lower()
+
+    @pytest.mark.parametrize("raw", [
+        "No, Jarvis.",                    # an answer to a question, not a wake word
+        "no jarvis",
+        "New Jarvis",
+    ])
+    def test_a_bare_no_jarvis_stays_a_decline(self, daemon, raw):
+        stripped, present = self.cleaned(daemon, raw)
+        assert present is False and "jarvis" in stripped.lower()
+
+    @pytest.mark.parametrize("raw", [
+        "play something by travis scott",       # the name only counts at the start
+        "turn on the light and play the music",
+        "harvest moon by neil young",
+        "what is the service status",
+        "nervous breakdown",
+        "set the desk light to red",
+        "turn on the light, jarvis",            # name at the end is not a wake word to strip
+    ])
+    def test_ordinary_commands_are_left_alone(self, daemon, raw):
+        stripped, present = self.cleaned(daemon, raw)
+        assert present is False and stripped.lower() == daemon.sanitize_transcription(raw).lower()
+        assert "jarvis" not in stripped.lower().split()[:1] or raw.lower().startswith("jarvis")
+
+    @pytest.mark.parametrize("raw, expected", [
+        ("turn the light on hey jarvis turn the light on", "turn the light on"),                    # live
+        ("Hey Jarvis turn the light on hey jarvis turn the light on", "turn the light on"),
+        ("turn the light on jarvis turn the light on", "turn the light on"),
+        ("turn on the kitchen light turn on the kitchen light", "turn on the kitchen light"),
+        ("Turn the light on. Hey Jarvis, turn the light on.", "turn the light on."),
+    ])
+    def test_a_command_caught_twice_is_collapsed(self, daemon, raw, expected):
+        assert daemon.sanitize_transcription(raw).strip() == expected.lower()
+
+    @pytest.mark.parametrize("raw", [
+        "turn the light on hey jarvis turn the music off",      # two different commands
+        "turn on the light and turn on the music",
+        "play jazz play jazz",                                   # too short to be sure it is a stutter
+    ])
+    def test_different_or_short_phrases_are_not_collapsed(self, daemon, raw):
+        assert daemon.sanitize_transcription(raw) == raw.lower()
+
+    def test_wake_token_matcher(self, daemon):
+        for word in ("jarvis", "jervis", "tervis", "hrvs", "jarvs", "garvis"):
+            assert daemon._is_wake_token(word), word
+        for word in ("travel", "service", "harvest", "mars", "javascript", "just", "pause", "play", "ask", "hey"):
+            assert not daemon._is_wake_token(word), word
+
+    @pytest.mark.parametrize("raw, action", [
+        ("hey tervis pause music", "pause"),
+        ("HRVS, pause music.", "pause"),
+        ("No Jarvis play music", "play"),
+    ])
+    @pytest.mark.asyncio
+    async def test_these_commands_now_take_the_fast_path(self, daemon, raw, action, mocker):
+        """No SLM call: the fuzzy matcher answers once the wake word is gone."""
+        slm = mocker.patch.object(daemon.slm, "parse_intent_async", new=AsyncMock(return_value=None))
+        stripped, _ = self.cleaned(daemon, raw)
+
+        intents, _ = await daemon.route_voice_command(stripped)
+
+        slm.assert_not_called()
+        assert [(c.get("action"), t) for c, t in intents] == [(action, "spotify.control")]

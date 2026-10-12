@@ -68,6 +68,60 @@ class TestPlayArtistFuzzy:
         mock_start.assert_not_called()
 
 
+class TestPlayPlaylist:
+    """Live failure: 'play my playlist cartooning' (Whisper's hearing of the
+    user's 'CarTuning') matched no personal playlist, then Spotify's global
+    search returned 'items': [None] and items[0]['uri'] raised
+    "'NoneType' object is not subscriptable" -> spoken as an internal error."""
+
+    @pytest.fixture
+    def mgr(self, spotify_manager, mocker):
+        mocker.patch.object(spotify_manager, '_ensure_active_device', return_value="device")
+        spotify_manager.start = mocker.patch.object(spotify_manager.sp, 'start_playback')
+        return spotify_manager
+
+    def _own(self, mocker, mgr, names):
+        mocker.patch.object(mgr.sp, 'current_user_playlists', return_value={
+            "items": [{"name": n, "uri": f"spotify:playlist:{i}"} for i, n in enumerate(names)]
+        })
+
+    def test_misheard_name_finds_the_personal_playlist_by_sound(self, mgr, mocker):
+        self._own(mocker, mgr, ["RAPing", "CarTuning", "Jazzyvibing"])
+        search = mocker.patch.object(mgr.sp, 'search')
+
+        success, msg = mgr.execute_command("play", playlist_name="cartooning")
+
+        assert success is True and "CarTuning" in msg
+        mgr.start.assert_called_once_with(device_id="device", context_uri="spotify:playlist:1")
+        search.assert_not_called()
+
+    def test_unrelated_name_is_not_fuzzy_matched(self, mgr, mocker):
+        self._own(mocker, mgr, ["RAPing", "Jazzyvibing"])
+        mocker.patch.object(mgr.sp, 'search', return_value={"playlists": {"items": []}})
+
+        success, msg = mgr.execute_command("play", playlist_name="cartooning")
+
+        assert success is False and "not found" in msg
+        mgr.start.assert_not_called()
+
+    def test_null_entry_in_global_search_is_not_an_internal_error(self, mgr, mocker):
+        self._own(mocker, mgr, ["RAPing"])
+        mocker.patch.object(mgr.sp, 'search', return_value={"playlists": {"items": [None]}})
+
+        success, msg = mgr.execute_command("play", playlist_name="zzzz unknown mix")
+
+        assert success is False and "Internal Error" not in msg and "not found" in msg
+
+    def test_global_search_skips_null_entries_and_plays_the_first_real_one(self, mgr, mocker):
+        self._own(mocker, mgr, ["RAPing"])
+        mocker.patch.object(mgr.sp, 'search', return_value={"playlists": {"items": [None, {"uri": "spotify:playlist:g"}]}})
+
+        success, msg = mgr.execute_command("play", playlist_name="zzzz unknown mix")
+
+        assert success is True
+        mgr.start.assert_called_once_with(device_id="device", context_uri="spotify:playlist:g")
+
+
 class TestSpotify:
     def test_duck(self, spotify_manager, mocker):
         mock_vol = mocker.patch.object(spotify_manager.sp, 'volume')

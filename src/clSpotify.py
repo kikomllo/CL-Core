@@ -819,16 +819,33 @@ class SpotifyManager:
                     best_score = current_score
                     target_uri, target_actual_name = item['uri'], item['name']
                     
+        # 3: Misheard name -- Whisper hears "CarTuning" as "cartooning", which no
+        # substring matches. Same sound (metaphone) or near-identical spelling.
+        if not target_uri and len(compressed_query) >= 4:
+            best_sim = 0.0
+            query_phonetic = jellyfish.metaphone(compressed_query)
+            for item in user_playlists.get('items', []):
+                if not item: continue
+                name = re.sub(r'\W+', '', item['name']).lower()
+                sim = jellyfish.jaro_winkler_similarity(compressed_query, name)
+                if name and jellyfish.metaphone(name) == query_phonetic:
+                    sim = max(sim, 1.0)
+                if sim >= 0.9 and sim > best_sim:
+                    best_sim = sim
+                    target_uri, target_actual_name = item['uri'], item['name']
+
         if target_uri:
             self.sp.start_playback(device_id=device, context_uri=target_uri)
             self._local_playing_state = True
             self._last_state_change_time = time.time()
             return True, f"Playing your personal playlist: {target_actual_name}"
-        
-        # 3: Global Fallback
+
+        # 4: Global Fallback -- Spotify's playlist search can return null entries
+        # (live: 'items': [None]), so drop them before indexing.
         results = self.sp.search(q=playlist_name, type='playlist', limit=1)
-        if results['playlists']['items']:
-            self.sp.start_playback(device_id=device, context_uri=results['playlists']['items'][0]['uri'])
+        found = [p for p in results['playlists']['items'] if p]
+        if found:
+            self.sp.start_playback(device_id=device, context_uri=found[0]['uri'])
             self._local_playing_state = True
             self._last_state_change_time = time.time()
             return True, f"Playing global playlist: {playlist_name}"

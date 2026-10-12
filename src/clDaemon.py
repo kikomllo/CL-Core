@@ -18,6 +18,7 @@ from utils.clConfigLoader import ConfigLoader
 from nlp.clIntentEngine import IntentEngine
 from nlp.clSLM import SLMInferenceEngine, ReplySLMEngine
 from utils.clActionRouter import ActionRouter
+from utils.clLatency import LatencyTrace
 
 # --- LOGGING SETUP ---
 import sys, os
@@ -60,6 +61,7 @@ class CentralDaemon:
 
         self.tts_state: str = "idle"
         self.mic_state: str = "idle"
+        self._trace: Optional[LatencyTrace] = None  # current voice command's latency stamps
         self.is_ducked: bool = False
         self.attention_mode: bool = False
         self.pending_mic_request: bool = False
@@ -224,6 +226,7 @@ class CentralDaemon:
         The daemon (via _roll_followup) now fully owns whether/what to ask as
         a follow-up, so the model is always asked for just the base
         confirmation and the chosen suggestion_text is appended afterward."""
+        trace = self._trace
         reply_text = None
         if self.reply_slm.enabled:
             try:
@@ -236,6 +239,9 @@ class CentralDaemon:
             except Exception as e:
                 logging.error(f"[DAEMON] Reply generation failed: {e}")
 
+        if trace:
+            trace.mark("t_reply_ready")
+
         if reply_text:
             final_reply = f"{reply_text} {suggestion_text}" if suggestion_text else reply_text
             await client.publish("jarvis/sys/speak", json.dumps({
@@ -244,14 +250,25 @@ class CentralDaemon:
             }))
             self._update_dialogue_history("assistant", final_reply)
         else:
+            if fallback_payload.get("followup_text"):
+                # A template reply carrying a follow-up question: reopen the mic once it has been spoken
+                # (the speak handler does this for request_reply; this path bypasses it).
+                self.pending_mic_request = True
             await client.publish("jarvis/sys/tts_request", json.dumps(fallback_payload))
 
     def _is_complex_request(self, text: str, original_transcript: str) -> bool:
         """Evaluates sentence structure rather than relying on hardcoded dictionaries."""
-        # 1. Hesitation / Punctuation check (Whisper adds commas/question marks when people stumble)
-        if any(p in original_transcript for p in [',', '?', '.', '...']):
+        # 1. Hesitation / multi-clause check. Whisper ends nearly every transcript with a period
+        # ("play music.") and often adds one comma at a natural pause ("play my playlist, x."), so
+        # those alone say nothing -- treating them as "complex" sent almost every command down the
+        # ~1s SLM path. What does signal a stumble or a compound/corrective request is an ellipsis,
+        # a second sentence, several clauses, or a correction word.
+        spoken = original_transcript.strip().rstrip(".!? ")
+        if "..." in spoken or re.search(r"[.!?]\s", spoken) or spoken.count(",") >= 2:
             return True
-            
+        if re.search(r"\b(actually|instead|rather|i mean|scratch that|no wait|wait no)\b", text):
+            return True
+
         # 2. Length check (Simple commands rarely exceed 6-7 words)
         words = text.split()
         if len(words) > 8:
@@ -293,25 +310,72 @@ class CentralDaemon:
                 cleaned_text = re.sub(rf'\b{re.escape(hallucination)}\b', correction, cleaned_text, flags=re.IGNORECASE)
                 logging.info(f"[STT INTERCEPTOR] Replaced hallucination '{hallucination}' -> '{correction}'")
 
-        # 2. Phonetic fuzzy replacement for wake words
+        # 2. Phonetic fuzzy replacement for wake words: the name only counts at the start, after at most
+        # a couple of greeting/hesitation words ("hey", "no", "um"), so a command's own words are safe.
         words = cleaned_text.split()
         for i, w in enumerate(words[:3]):
             clean_w = re.sub(r'[^\w]', '', w)
-            if len(clean_w) >= 4 and fuzz.ratio(clean_w, "jarvis") >= 75:
+            if self._is_wake_token(clean_w):
                 words[i] = w.replace(clean_w, "jarvis")
+                break
+            if clean_w not in self._WAKE_PREFIXES:
+                break
 
-        return " ".join(words)
+        return self._collapse_repeat(" ".join(words))
+
+    # What Whisper turns "Hey" into before the name ("No Jarvis", "New Jarvis"), plus hesitations.
+    _WAKE_PREFIXES = ("hey", "hi", "ok", "okay", "a", "uh", "ha", "eh", "oh", "yo", "hay", "no", "new", "now", "so", "um", "well")
+    # Prefixes that, with nothing after the name, are really a decline ("No, Jarvis.") rather than a wake word.
+    _DECLINE_PREFIXES = ("no", "new", "now")
+
+    @staticmethod
+    def _is_wake_token(word: str) -> bool:
+        """True if `word` is Whisper's rendering of 'jarvis': close in spelling (ratio >= 75), the same
+        metaphone, or the same consonants give or take one ('tervis', 'hrvs', 'jarvs') ending in s."""
+        from rapidfuzz import fuzz
+        import jellyfish
+        if len(word) < 4:
+            return False
+        if word == "jarvis" or fuzz.ratio(word, "jarvis") >= 75:
+            return True
+        if jellyfish.metaphone(word) == jellyfish.metaphone("jarvis"):
+            return True
+        # The loose consonant match also needs a first sound Whisper confuses with "j" (t/h/g/d/c/y/j) so an
+        # ordinary word with the same consonants ("nervous", "serves") is never mistaken for the name.
+        skeleton = re.sub(r'[aeiouy]', '', word)
+        return (word[0] in "jhtgdcy" and word.endswith(("s", "z")) and len(skeleton) >= 3
+                and jellyfish.levenshtein_distance(skeleton, "jrvs") <= 1)
+
+    @staticmethod
+    def _collapse_repeat(text: str) -> str:
+        """The mic sometimes catches a command twice around the wake word ('turn the light on hey jarvis
+        turn the light on') or stutters it ('X X'); keep one copy. Only a near-exact repeat is collapsed."""
+        from rapidfuzz import fuzz
+        norm = lambda s: re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', ' ', s.lower())).strip()
+        wake_head = r'^(?:(?:hey|hi|ok|okay)[.,!?\s]+)?jarvis\b[.,!?]*\s*'
+        for m in re.finditer(r'\s(?:(?:hey|hi|ok|okay)[.,!?\s]+)?jarvis\b[.,!?]*\s+', text):
+            before, after = norm(re.sub(wake_head, '', text[:m.start()].strip())), norm(text[m.end():])
+            if before and after and (before == after or fuzz.ratio(before, after) >= 90):
+                return text[m.end():].strip()
+        words = text.split()
+        half = len(words) // 2
+        if len(words) >= 6 and len(words) % 2 == 0 and norm(" ".join(words[:half])) == norm(" ".join(words[half:])):
+            return " ".join(words[half:])
+        return text
 
     def strip_wake_word(self, text: str) -> Tuple[str, bool]:
         """Strips a leading 'hey/hi/ok/... jarvis' wake word. [.,!?\\s]+
         (not \\s+) tolerates Whisper punctuating a speech pause as
         'Hey, Jarvis.' -- \\s+ alone doesn't span the comma. Returns
         (stripped_text, wakeword_was_present)."""
-        ww_pattern = r'^(?:(?:hey|hi|ok|a|uh|ha|eh)[.,!?\s]+)?jarvis\b[.,!?]*\s*'
-        is_wakeword_present = bool(re.search(ww_pattern, text, flags=re.IGNORECASE))
-        if is_wakeword_present:
-            text = re.sub(ww_pattern, '', text, flags=re.IGNORECASE).strip()
-        return text, is_wakeword_present
+        ww_pattern = r'^(?:(?P<pre>' + '|'.join(self._WAKE_PREFIXES) + r')[.,!?\s]+)?jarvis\b[.,!?]*\s*'
+        match = re.search(ww_pattern, text, flags=re.IGNORECASE)
+        if not match:
+            return text, False
+        rest = text[match.end():].strip()
+        if not rest and (match.group('pre') or '').lower() in self._DECLINE_PREFIXES:
+            return text, False          # "No, Jarvis." answers a question; it is not a wake word
+        return rest, True
 
     # -------------------------------------------------------------------------
     # HYBRID ROUTING SWITCHBOARD
@@ -581,7 +645,8 @@ class CentralDaemon:
                     await client.subscribe("jarvis/sys/light_status")
                     await client.subscribe("jarvis/sys/daemon_control")
                     await client.subscribe("jarvis/sys/debug_control")
-                    
+                    await client.subscribe("jarvis/sys/trace")
+
                     logging.info("--- DAEMON READY: Listening for commands ---")
                     await client.publish("jarvis/sys/module_ready", json.dumps({"module": "brain"}))
                     
@@ -725,16 +790,37 @@ class CentralDaemon:
                             except json.JSONDecodeError:
                                 pass
 
+                        elif topic == "jarvis/sys/trace":
+                            # TTS reports when reply audio actually starts; only a trace
+                            # opened by a voice command in the last 30s is closed by it.
+                            try:
+                                ev = json.loads(payload_data)
+                                trace = self._trace
+                                if trace and not trace.closed and time.time() - trace.created < 30.0:
+                                    for k in ("t_tts_req", "t_synth_done", "t_audio"):
+                                        if isinstance(ev.get(k), (int, float)):
+                                            trace.t[k] = float(ev[k])
+                                    trace.cached = ev.get("cached")
+                                    trace.closed = True
+                                    logging.info(f"[LATENCY] {trace.summary()}")
+                            except (json.JSONDecodeError, AttributeError):
+                                pass
+
                         elif topic == "jarvis/sensor/voice":
+                            carried_trace = None
                             try:
                                 data = json.loads(payload_data)
                                 if not isinstance(data, dict):
                                     raise ValueError("not a JSON object")
                                 text_payload = data.get("text", "")
                                 audio_path = data.get("audio_path", "")
+                                carried_trace = data.get("trace")
                             except (json.JSONDecodeError, ValueError):
                                 text_payload = payload_data
                                 audio_path = ""
+
+                            self._trace = LatencyTrace(carried_trace)
+                            self._trace.mark("t_daemon_recv")
 
                             captured_actions: List[Dict[str, Any]] = []
                             raw_payload = self.sanitize_transcription(text_payload)
@@ -751,10 +837,13 @@ class CentralDaemon:
                                 intents = [({"text": response_text, "request_reply": True, "skip_ducking": True, "ignore_silent": True}, "system.speak")]
                             else:
                                 intents, _ = await self.route_voice_command(raw_payload)
-                            
-                            if intents:
-                                final_mic_state = "open_window" if (self.followups_enabled and not self.silent_mode) else None
+                            self._trace.mark("t_routed")
 
+                            if intents:
+                                # The mic only reopens by itself when a follow-up question was actually spoken
+                                # (speak -> request_reply -> tts idle -> mic_control request_reply). It used to also
+                                # open a silent 7s no-wake-word window after every action, which looked like a
+                                # random mic-open when no follow-up was asked.
                                 for command, action_id in intents:
                                     if audio_path and "audio_path" not in command:
                                         command["audio_path"] = audio_path
@@ -763,7 +852,6 @@ class CentralDaemon:
                                         logging.info("[SYSTEM] Abort sequence initiated via voice command.")
                                         await client.publish("jarvis/sys/abort", json.dumps({"action": "abort"}))
                                         await self.evaluate_ducking(client)
-                                        final_mic_state = None  
                                         break
 
                                     elif action_id == "system.speak" and command.get("action") == "speak":
@@ -772,7 +860,6 @@ class CentralDaemon:
                                             "text": command.get("text"),
                                             "request_reply": False
                                         }))
-                                        final_mic_state = None 
                                         continue
 
                                     elif action_id:
@@ -801,7 +888,10 @@ class CentralDaemon:
 
                                         logging.info(f"Routing intent -> {action_id} on {topic_out}: {payload_out}")
                                         await client.publish(topic_out, json.dumps(payload_out))
-                                        
+                                        if "t_action" not in self._trace.t:
+                                            self._trace.mark("t_action")
+                                            logging.info(f"[LATENCY] {self._trace.summary()}")
+
                                         # Voice synthesis trigger
                                         if action_id != "system.speak":
                                             # 1. Roll whether -- and what -- to proactively ask as a
@@ -858,12 +948,7 @@ class CentralDaemon:
                                                 asyncio.create_task(self._speak_natural_reply(
                                                     client, action_id, args_for_reply, clean_text, should_followup, suggestion_text, fallback_payload
                                                 ))
-                                        
-                                        if self.active_context["type"] is not None and not self.silent_mode:
-                                            final_mic_state = "request_reply"
 
-                                if final_mic_state and final_mic_state != "request_reply":
-                                    await client.publish("jarvis/sys/mic_control", json.dumps({"action": final_mic_state}))
 
                                 if self.capture_stt_training_data and captured_actions and audio_path:
                                     self._capture_stt_training_example(raw_payload, captured_actions, audio_path)

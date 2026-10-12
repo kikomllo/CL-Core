@@ -1,5 +1,6 @@
 import sys
 import json
+import time
 import base64
 import numpy as np
 import logging
@@ -96,6 +97,11 @@ class InferenceEngine:
                 "beam_size": 2,
                 "vad_filter": True,
                 "condition_on_previous_text": False, # Hallucination prevention parameter
+                # One greedy pass. The default [0.0, 0.2 ... 1.0] ladder re-decodes up to six times when
+                # confidence is low (a short command after a wake word often is), which is what made some
+                # commands take 2-4s. A bad pass here is cheap anyway: the other language's pass is a
+                # second opinion and the Daemon's matcher rejects garbage.
+                "temperature": 0.0,
                 "initial_prompt": "",
                 "vad_parameters": dict(min_silence_duration_ms=500),
                 "language": lang,
@@ -216,7 +222,9 @@ async def main():
                         
                         audio_bytes = base64.b64decode(payload["audio_b64"])
                         audio_array = np.frombuffer(audio_bytes, dtype=np.float32)
-                        await audio_queue.put(audio_array)
+                        trace = dict(payload.get("trace") or {})
+                        trace["t_stt_recv"] = time.time()
+                        await audio_queue.put((audio_array, trace))
             except Exception as e:
                 delay = min(60, 2 ** attempt)
                 logging.error(f"MQTT Listener Error: {e}. Retrying in {delay}s...")
@@ -225,7 +233,8 @@ async def main():
 
     async def inference_worker():
         while True:
-            audio_array = await audio_queue.get()
+            audio_array, trace = await audio_queue.get()
+            trace["t_stt_start"] = time.time()
             engine.abort_flag = False
             
             # Save the latest audio buffer for commands that need it (like reminders)
@@ -257,8 +266,10 @@ async def main():
                 wav_path = ""
             
             # Run inference safely in the background
+            trace["t_stt_infer"] = time.time()
             text = await asyncio.to_thread(engine.transcribe, audio_array)
-            
+            trace["t_stt_done"] = time.time()
+
             if engine.abort_flag:
                 logging.info("Inference aborted mid-way. Discarding result.")
                 continue
@@ -267,7 +278,7 @@ async def main():
                 async with aiomqtt.Client("localhost") as publish_client:
                     if text:
                         logging.info(f"Transcription: '{text}'")
-                        payload = json.dumps({"text": text, "audio_path": wav_path})
+                        payload = json.dumps({"text": text, "audio_path": wav_path, "trace": trace})
                         await publish_client.publish("jarvis/sensor/voice", payload)
                     else:
                         logging.info(f"Transcription: ''")
