@@ -5,7 +5,6 @@ import os
 import uuid
 import hashlib
 import random
-import edge_tts
 import av
 import numpy as np
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
@@ -15,6 +14,7 @@ from typing import Dict, Any
 import sys
 
 from utils.clConfigLoader import ConfigLoader
+from utils.clVoice import VoiceSynth, merge_settings
 
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -40,6 +40,14 @@ class TTSManager:
         self.silent_mode = core_data.get("settings", {}).get("silent_mode", False)
         output_device = core_data.get("settings", {}).get("audio_settings", {}).get("output_device")
 
+        self.tts_settings = merge_settings(core_data.get("settings", {}).get("tts_settings"))
+        self.synth = VoiceSynth(self.tts_settings)
+        # Piper takes a few seconds to load; do it at boot, not on the first spoken phrase.
+        try:
+            self.synth._load()
+        except Exception as e:
+            logging.error(f"[TTS] Could not load the Piper voice: {e}")
+
         if output_device and output_device != "System Default":
             try:
                 mixer.init(devicename=output_device)
@@ -52,11 +60,11 @@ class TTSManager:
         self.clean_old_cache(max_files=200)
 
     def clean_old_cache(self, max_files: int = 30) -> None:
-        """Removes oldest cached tts_*.mp3 files to prevent assets folder bloat."""
+        """Removes oldest cached tts_* audio to prevent assets folder bloat (also ages out the old edge-tts .mp3s)."""
         try:
             tts_files = []
             for f in os.listdir(self.assets_dir):
-                if f.startswith("tts_") and f.endswith(".mp3"):
+                if f.startswith("tts_") and f.endswith((".wav", ".mp3")):
                     full_path = os.path.join(self.assets_dir, f)
                     tts_files.append((full_path, os.path.getmtime(full_path)))
             
@@ -93,34 +101,28 @@ class TTSManager:
                 logging.error(f"Failed to extract RMS: {e}")
             return []
 
-    async def generate_and_play(self, client, text, voice="en-GB-RyanNeural", ignore_silent=False, abort_count=0) -> None:
+    async def generate_and_play(self, client, text, ignore_silent=False, abort_count=0) -> None:
         if self.silent_mode and not ignore_silent and not ("alarm" in text.lower()):
             logging.info("[TTS] Silent mode active. Skipping TTS playback.")
             return
             
-        file_hash = hashlib.md5(f"{text}_{voice}".encode()).hexdigest()
-        temp_file = os.path.join(self.assets_dir, f"tts_{file_hash}.mp3")
+        # The hash covers the voice settings, so changing the voice or effects re-renders old phrases.
+        voice_tag = json.dumps(self.tts_settings, sort_keys=True)
+        file_hash = hashlib.md5(f"{text}_{voice_tag}".encode()).hexdigest()
+        temp_file = os.path.join(self.assets_dir, f"tts_{file_hash}.wav")
 
         if not os.path.exists(temp_file):
-            # edge-tts needs live internet access for every phrase -- retry once
-            # on a transient network/DNS blip before giving up. On total failure,
-            # still emit the tts_state:idle the daemon waits on to reopen the mic
-            # for a pending follow-up, so a dropped connection can't strand it
-            # waiting for a completion signal that would otherwise never arrive.
-            for attempt in range(2):
-                try:
-                    communicate = edge_tts.Communicate(text, voice, rate="+27%", pitch="-5Hz")
-                    await communicate.save(temp_file)
-                    break
-                except Exception as e:
-                    logging.error(f"[TTS] edge-tts request failed (attempt {attempt + 1}/2): {e}")
-                    if attempt == 0:
-                        await asyncio.sleep(0.5)
-                    else:
-                        if client:
-                            await client.publish("jarvis/sys/tts_state", json.dumps({"state": "idle"}))
-                            await client.publish("jarvis/sys/tts_done", "1")
-                        return
+            # On failure, still emit the tts_state:idle the daemon waits on to reopen the mic
+            # for a pending follow-up, so a failed render can't strand it waiting for a
+            # completion signal that would otherwise never arrive.
+            try:
+                await asyncio.to_thread(self.synth.synthesize_to_file, text, temp_file)
+            except Exception as e:
+                logging.error(f"[TTS] Piper synthesis failed: {e}")
+                if client:
+                    await client.publish("jarvis/sys/tts_state", json.dumps({"state": "idle"}))
+                    await client.publish("jarvis/sys/tts_done", "1")
+                return
         else:
             try:
                 os.utime(temp_file, None)

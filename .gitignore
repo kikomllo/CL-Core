@@ -72,3 +72,9 @@ training/jarvis-reply-v1_gguf/
 training/train_all_log.txt
 training/reply_train_log.txt
 unsloth_compiled_cache/
+
+# Voice dataset (training/tools/collect_voice.py)
+training/data/voice_dataset/
+training/data/voice_ref/
+training/data/voice_export/
+training/data/ultron_lines/

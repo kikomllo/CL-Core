@@ -431,10 +431,12 @@ class JarvisUtilities:
         if not copied_user_audio:
             logging.info(f"[TTS FALLBACK] Generating TTS for reminder. Reason: {fallback_reason}")
             try:
-                import edge_tts
+                from utils.clConfigLoader import ConfigLoader
+                from utils.clVoice import VoiceSynth, merge_settings
+                tts_settings = ConfigLoader().load_json("core.json").get("settings", {}).get("tts_settings")
+                audio_dest = os.path.join(REMINDERS_DIR, f"{reminder_id}.wav")
                 tts_text = f"Sir, reminder: {reminder_text}"
-                communicate = edge_tts.Communicate(tts_text, "en-GB-RyanNeural", rate="+15%", pitch="-5Hz")
-                await communicate.save(audio_dest)
+                await asyncio.to_thread(VoiceSynth(merge_settings(tts_settings)).synthesize_to_file, tts_text, audio_dest)
             except Exception as e:
                 logging.error(f"Failed to generate TTS audio for reminder: {e}")
                 audio_dest = ""

@@ -19,48 +19,43 @@ def manager(tmp_path):
     return m
 
 
-class TestGenerateAndPlayNetworkFailure:
-    """A dropped edge-tts connection must not strand the daemon waiting on a
-    tts_state:idle signal that would otherwise never arrive (see clDaemon.py's
+class TestGenerateAndPlaySynthesisFailure:
+    """A failed render must not strand the daemon waiting on a tts_state:idle
+    signal that would otherwise never arrive (see clDaemon.py's
     pending_mic_request handling)."""
 
     @pytest.mark.asyncio
-    async def test_retries_once_then_emits_idle_without_raising(self, manager):
+    async def test_emits_idle_without_raising(self, manager):
         client = AsyncMock()
-        with patch('clTTS.edge_tts.Communicate') as MockCommunicate:
-            MockCommunicate.return_value.save = AsyncMock(side_effect=Exception("DNS failure"))
-            await manager.generate_and_play(client, "unique network failure test phrase", abort_count=0)
-
-        assert MockCommunicate.return_value.save.call_count == 2
+        with patch.object(manager.synth, 'synthesize_to_file', side_effect=RuntimeError("model missing")):
+            await manager.generate_and_play(client, "unique synthesis failure test phrase", abort_count=0)
 
         idle_calls = [
             c for c in client.publish.call_args_list
             if c.args[0] == "jarvis/sys/tts_state" and json.loads(c.args[1])["state"] == "idle"
         ]
-        assert idle_calls, "generate_and_play must publish tts_state:idle even when edge-tts fails entirely"
+        assert idle_calls, "generate_and_play must publish tts_state:idle even when synthesis fails"
 
     @pytest.mark.asyncio
-    async def test_succeeds_after_one_retry(self, manager, tmp_path):
+    async def test_renders_once_and_reuses_the_cache(self, manager):
         client = AsyncMock()
         calls = {"count": 0}
 
-        async def fake_save(path):
+        def fake_synth(text, path):
             calls["count"] += 1
-            if calls["count"] == 1:
-                raise Exception("transient DNS failure")
             with open(path, "wb") as f:
                 f.write(b"\x00")
 
-        # Mock the playback pipeline entirely -- it's unrelated to this fix,
-        # and this just needs to prove the retry lets generation proceed.
-        with patch('clTTS.edge_tts.Communicate') as MockCommunicate, \
+        # Mock the playback pipeline entirely -- this only needs to prove the render
+        # happens once per phrase and the cached file is reused afterwards.
+        with patch.object(manager.synth, 'synthesize_to_file', side_effect=fake_synth), \
              patch('clTTS.mixer') as mock_mixer, \
-             patch.object(manager, 'get_audio_rms', return_value=[]):
-            MockCommunicate.return_value.save = fake_save
+             patch.object(manager, 'get_audio_rms', return_value=[0.1]):
             mock_mixer.music.get_busy.return_value = False
-            await manager.generate_and_play(client, "unique retry success test phrase", abort_count=0)
+            await manager.generate_and_play(client, "unique cache reuse test phrase", abort_count=0)
+            await manager.generate_and_play(client, "unique cache reuse test phrase", abort_count=0)
 
-        assert calls["count"] == 2, "a transient failure must be retried, not just once, before giving up"
+        assert calls["count"] == 1
 
 
 class TestSetOutputDevice:

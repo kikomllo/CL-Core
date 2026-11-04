@@ -4,9 +4,15 @@
         "enable_followup": true,
         "silent_mode": false,
         "debug_mqtt": false,
+        "tts_settings": {
+            "piper_model": "models/piper/actor_voice.onnx",
+            "denoise": 0.0,
+            "fx": {
+                "vocoder_mix": 0.0
+            }
+        },
         "languages": [
-            "en",
-            "pt"
+            "en"
         ],
         "stt_processing_mode": "parallel",
         "audio_settings": {
@@ -63,14 +69,14 @@
                 }
             }
         },
-        "hardware": "cuda",
+        "hardware": "cpu",
         "debug_flags": {
             "wakeword_diagnostics": false,
             "capture_wakeword_positive": true,
             "wakeword_debug_saving": false,
             "capture_stt_training_data": true
         },
-        "stt_model": "small"
+        "stt_model": "tiny"
     },
     "nlp_rules": {
         "abort_keywords": [
