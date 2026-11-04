@@ -2,8 +2,8 @@
 listen_reply_samples.py — Listen to reply-dataset samples via TTS.
 
 Standalone review tool: speaks samples from data/reply_lora_dataset.jsonl
-aloud using the exact same edge-tts voice/rate/pitch as the live system
-(src/clTTS.py's en-GB-RyanNeural, +27% rate, -5Hz pitch), so the JARVIS
+aloud using the exact same Piper voice and effects as the live system
+(src/utils/clVoice.py, settings.tts_settings in config/core.json), so the
 personality can be judged by ear rather than just read as text.
 
 Usage:
@@ -20,12 +20,11 @@ import random
 import sys
 import tempfile
 
-import edge_tts
 from pygame import mixer
 
-VOICE = "en-GB-RyanNeural"
-RATE = "+27%"
-PITCH = "-5Hz"
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "src"))
+from utils.clVoice import VoiceSynth, merge_settings
+
 DATASET_PATH = "training/data/reply_lora_dataset.jsonl"
 
 
@@ -42,9 +41,8 @@ def filter_samples(samples, category: str):
     return samples
 
 
-async def speak(text: str, temp_path: str, voice: str, rate: str, pitch: str) -> None:
-    communicate = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch)
-    await communicate.save(temp_path)
+async def speak(text: str, temp_path: str, synth: VoiceSynth) -> None:
+    await asyncio.to_thread(synth.synthesize_to_file, text, temp_path)
     mixer.music.load(temp_path)
     mixer.music.play()
     while mixer.music.get_busy():
@@ -52,13 +50,13 @@ async def speak(text: str, temp_path: str, voice: str, rate: str, pitch: str) ->
     mixer.music.unload()
 
 
-async def review(samples, count: int, voice: str, rate: str, pitch: str) -> None:
+async def review(samples, count: int, synth: VoiceSynth) -> None:
     random.shuffle(samples)
     samples = samples[:count]
 
     mixer.init()
     with tempfile.TemporaryDirectory() as tmp_dir:
-        temp_path = os.path.join(tmp_dir, "preview.mp3")
+        temp_path = os.path.join(tmp_dir, "preview.wav")
         i = 0
         while i < len(samples):
             sample = samples[i]
@@ -69,7 +67,7 @@ async def review(samples, count: int, voice: str, rate: str, pitch: str) -> None
             print(f'  JARVIS: "{reply}"')
 
             try:
-                await speak(reply, temp_path, voice, rate, pitch)
+                await speak(reply, temp_path, synth)
             except Exception as e:
                 print(f"  (TTS error, skipping: {e})")
 
@@ -86,9 +84,7 @@ def main():
     parser.add_argument("--category", choices=["all", "action", "noise"], default="all",
                          help="all = everything, action = only action-grounded replies, noise = only noise/OOS rejections")
     parser.add_argument("--dataset", default=DATASET_PATH, help="Path to the reply dataset JSONL")
-    parser.add_argument("--voice", default=VOICE, help=f"edge-tts voice (default {VOICE}, matches the live system)")
-    parser.add_argument("--rate", default=RATE, help=f"edge-tts rate (default {RATE!r}, matches the live system)".replace("%", "%%"))
-    parser.add_argument("--pitch", default=PITCH, help=f"edge-tts pitch (default {PITCH}, matches the live system)")
+    parser.add_argument("--no-fx", action="store_true", help="Play the dry Piper voice without the effect chain")
     args = parser.parse_args()
 
     if not os.path.exists(args.dataset):
@@ -104,7 +100,11 @@ def main():
     print(f"{len(samples)} samples available (category={args.category}). Reviewing {n}.\n")
 
     try:
-        asyncio.run(review(samples, args.count, args.voice, args.rate, args.pitch))
+        with open(os.path.join("config", "core.json"), encoding="utf-8") as f:
+            settings = merge_settings(json.load(f).get("settings", {}).get("tts_settings"))
+        if args.no_fx:
+            settings["fx"]["enabled"] = False
+        asyncio.run(review(samples, args.count, VoiceSynth(settings)))
     except KeyboardInterrupt:
         print("\nStopped.")
 
