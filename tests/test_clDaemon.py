@@ -144,6 +144,22 @@ class TestDaemonStateTraps:
         assert daemon.active_context["type"] is None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("phrase", ["abort", "cancel that", "stop", "never mind", "abort sequence"])
+    async def test_bare_abort_phrases_still_abort(self, daemon, phrase):
+        intents, _ = await daemon.route_voice_command(phrase)
+        assert intents[0][1] == "system.abort"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("phrase", [
+        "cancel all alarms", "cancel reminder", "cancel reminder and remind me in 10 minutes", "stop the music",
+    ])
+    async def test_a_command_containing_an_abort_word_is_not_swallowed_as_an_abort(self, daemon, phrase):
+        """Live bug: 'cancel reminder and remind me in 10 minutes' was aborted (nothing happened) because the global
+        abort check looked for the word anywhere in the sentence, before any intent could match."""
+        intents, _ = await daemon.route_voice_command(phrase)
+        assert all(action_id != "system.abort" for _, action_id in intents)
+
+    @pytest.mark.asyncio
     async def test_spotify_choice_trap(self, daemon):
         daemon.active_context = {"type": "spotify_choice", "expires_at": time.time() + 20.0}
         intents, _ = await daemon.route_voice_command("3")

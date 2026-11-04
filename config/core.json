@@ -5,10 +5,10 @@
         "silent_mode": false,
         "debug_mqtt": false,
         "languages": [
-            "en",
-            "pt"
+            "en"
         ],
-        "stt_processing_mode": "parallel",
+        "tts_engine": "kokoro",
+        "stt_processing_mode": "sequential",
         "audio_settings": {
             "input_device": "Microphone (Razer Seiren Mini)",
             "output_device": "Altifalantes (Realtek High Definition Audio)"

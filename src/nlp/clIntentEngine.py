@@ -3,6 +3,8 @@ import logging
 from rapidfuzz import process, fuzz
 from typing import Dict, List, Tuple, Any
 
+from utils.clAbort import is_abort_utterance
+
 class IntentEngine:
     """Stateless, CPU-Optimized Fuzzy Intent Parser."""
 
@@ -63,8 +65,9 @@ class IntentEngine:
         return " ".join(words)
 
     def is_abort_command(self, text: str) -> bool:
-        """Checks if the payload contains an abort command."""
-        return any(kw in text for kw in self.abort_keywords)
+        """Checks if the payload is an abort command: abort words and filler only, so "cancel all alarms" or
+        "cancel reminder and remind me in 10 minutes" stay commands instead of becoming a bare abort."""
+        return is_abort_utterance(text, self.abort_keywords)
 
     def is_decline_command(self, text: str) -> bool:
         """Checks if the payload is declining a follow-up prompt (e.g. "Anything else, sir?")."""

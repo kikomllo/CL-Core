@@ -244,6 +244,32 @@ class TestAlarmReminderDeleteWiring:
         assert outside_audio.exists()
 
     @pytest.mark.asyncio
+    async def test_a_reminder_without_a_recording_makes_no_cloud_request(self, utilities, mocker, isolated_dirs):
+        """Live bug: every text-created reminder called cloud edge-tts (403 since 2026-10-10), waited ~2s and logged an
+        error. clReminderTrigger.py already speaks the text with the local voice when the reminder fires."""
+        _, reminders_dir = isolated_dirs
+        mocker.patch.object(utilities, "schedule_systemd_timer", return_value=True)
+        edge = mocker.MagicMock()
+        mocker.patch.dict(sys.modules, {"edge_tts": edge})
+
+        await utilities.handle_reminder_create({"time": "in 5 minutes", "reminder_id": "reminder_no_audio"})
+
+        edge.Communicate.assert_not_called()
+        meta = json.loads((reminders_dir / "reminder_no_audio.json").read_text())
+        assert meta["audio_path"] == ""
+        assert meta["text"] == "you asked me to remind you"          # not the time phrase ("in 5 minutes")
+
+    @pytest.mark.asyncio
+    async def test_the_task_is_kept_as_the_spoken_reminder_text(self, utilities, mocker, isolated_dirs):
+        _, reminders_dir = isolated_dirs
+        mocker.patch.object(utilities, "schedule_systemd_timer", return_value=True)
+
+        await utilities.handle_reminder_create({"time": "in 5 minutes", "task": "check the oven", "reminder_id": "reminder_task"})
+
+        meta = json.loads((reminders_dir / "reminder_task.json").read_text())
+        assert meta["text"] == "check the oven" and meta["audio_path"] == ""
+
+    @pytest.mark.asyncio
     async def test_handle_alarm_delete_all_cancels_every_alarm(self, utilities, mocker, isolated_dirs):
         alarms_dir, _ = isolated_dirs
         mock_cancel = mocker.patch.object(utilities, "cancel_scheduled_timer")

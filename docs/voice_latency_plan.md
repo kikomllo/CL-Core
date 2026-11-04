@@ -59,15 +59,17 @@ Ryan audio (edge-tts was still 403) or a multi-speaker run that borrows phoneme 
 Tooling and the working recipe: `training/CLAUDE.md` ("Local voice training"). **Audition voices with training paused** — a running
 training job makes every playback path cut words at random.
 
-## Tried and removed: Kokoro (and the film-JARVIS Piper voice)
+## Done: Kokoro is the main voice (`settings.tts_engine = "kokoro"`)
 
 After the Ryan fine-tune was parked, the owner asked to pick an existing small model and shape it. Kokoro-82M (ONNX, no PyTorch), Fable+Lewis blend at
-speed 1.3 with "!" for ".", was the best by pitch movement (Daniel 1.7 st = "dead", Fable 3.3, Ryan 4.2): ~400 MB loaded, first audio 1.1-1.9 s per sentence **but
-only on onnxruntime 1.31 (1.26 was 3.5x slower)**. The community film voice (`jgkawell/jarvis`, jarvis-high) needed noise 1.0/1.2 plus an EQ matched to Ryan
-(it reproduces the films' honky/harsh "radio" sound: ~6 dB too much at 1-2.5 kHz, 8 dB at 6 kHz); a PSOLA pitch stretch matched Ryan's range but was judged
-worse. Both were built as optional `tts_engine` values with tests, then **removed on the owner's call ("still robotic ... just keep ARU")** — the code is
-gone from `clTTS.py`/`clTTSEngines.py`, `requirements.txt` is back to onnxruntime 1.26.0. If a livelier local voice is ever wanted again, the recipe above is all
-it takes (a ~100-line engine with per-sentence generation and a linear-phase FIR EQ).
+speed 1.3 with "!" instead of ".", was best by pitch movement (Daniel 1.7 st = "dead", Fable 3.3, Ryan 4.2) and ear. Still not Ryan (a very large cloud voice), but the
+best local result. ~400 MB loaded (unloads when idle), first audio 1.1-1.9 s per sentence **only on onnxruntime 1.31 (the project was on 1.26, 3.5x slower; upgraded,
+Piper/VAD/wake word re-tested)**. Piper (ARU) is the fallback and the default when `tts_engine` is unset. Tests: `tests/test_clTTS.py` (TestKokoroText/Engine/InTheManager).
+It was removed once during a clean-up and restored the same day when the owner said Kokoro had been their main voice.
+Tuned afterwards (measured): idle timeout 90 s instead of 30 (proactive replies — alarms, reminders, bridge speech — got no mic warm-up and paid load 1.6 s + first sentence ~1.1 s), a long first sentence is cut at its first comma (`KOKORO_FIRST_SPLIT` = 90 chars), one warm-up sentence at boot, and the chirp waits for the first audio so it and the reply play back to back (see `docs/context/voice-pipeline.md`). Generated speech is cached in `assets/tts_cache/` (1000 phrases); the real Ryan mp3s are archived in `assets/ryan/` and never pruned (the old 200-file cleaner counted them with the generated wavs and would eventually have deleted the oldest — the Ryan clips).
+Open: weaker CPUs will be slower
+than 0.45x real time — watch the `[LATENCY]` `tts_synth` figure. The film-JARVIS Piper voice (`jgkawell/jarvis`) needed noise 1.0/1.2 plus an EQ matched to Ryan to
+hide the films' honky/harsh "radio" sound (~6 dB too much at 1-2.5 kHz, 8 dB at 6 kHz) and was judged "still robotic"; it was built and removed (not in the code).
 
 ## Local voice survey (2026-10-12) — nothing lean matched Ryan
 
@@ -76,7 +78,7 @@ Kokoro Fable+Lewis ~400 MB / 0.45 (best local result, optional engine); Superton
 archived; Kitten TTS 0.8 mini ~330 MB / 0.27 and nano-int8 ~250 MB / 0.1 (no PyTorch at runtime, but the `kittenml` package installs torch;
 Kitten 2 needs ~6 GB); Piper en_US-ryan-high ~290 MB / 0.2-0.5 (American) — all rejected by ear. MOSS-TTS-Nano (ONNX voice cloning from Ryan
 clips) peaked at 2.45 GB and ran ~3x slower than real time — over budget. Untested: NeuTTS Air (cloning, ~400-600 MB GGUF + ONNX decoder).
-**Then found:** a community Piper voice trained on the Iron Man films (`jgkawell/jarvis`): see the removed-engines section above; the owner called it "better", not "good". Remaining routes: real Ryan clips as a phrase cache for the known replies, more Ryan audio when edge-tts works again, or a cloning model if the
+**Then found:** a community Piper voice trained on the Iron Man films (`jgkawell/jarvis`): see the Kokoro section above; the owner called it "better", not "good" and it was not kept. Remaining routes: real Ryan clips as a phrase cache for the known replies, more Ryan audio when edge-tts works again, or a cloning model if the
 RAM budget is ever relaxed. All survey scripts, clips and downloads were deleted afterwards (WSL `~/voice`, `data/voice_training/`, `models/pocket|kokoro`, `outputs/voice_*`, HF cache entries, uv).
 
 ## Done: wake-word clean-up

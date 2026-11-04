@@ -381,7 +381,8 @@ class JarvisUtilities:
     async def handle_reminder_create(self, payload):
         raw_time = payload.get("time") or payload.get("raw_text") or payload.get("task") or ""
         time_input = self.normalize_time_string(raw_time)
-        reminder_text = payload.get("task") or payload.get("raw_text") or payload.get("time") or "Reminder"
+        # "remind me in 5 minutes" has no task; speaking its time phrase back ("in 5 minutes") is meaningless.
+        reminder_text = payload.get("task") or payload.get("raw_text") or "you asked me to remind you"
         tmp_audio_path = payload.get("audio_path", "")
 
         def parse_date():
@@ -429,16 +430,11 @@ class JarvisUtilities:
                 fallback_reason = f"Provided audio_path does not exist: {tmp_audio_path}"
         
         if not copied_user_audio:
-            logging.info(f"[TTS FALLBACK] Generating TTS for reminder. Reason: {fallback_reason}")
-            try:
-                import edge_tts
-                tts_text = f"Sir, reminder: {reminder_text}"
-                communicate = edge_tts.Communicate(tts_text, "en-GB-RyanNeural", rate="+15%", pitch="-5Hz")
-                await communicate.save(audio_dest)
-            except Exception as e:
-                logging.error(f"Failed to generate TTS audio for reminder: {e}")
-                audio_dest = ""
-            
+            # No recording to replay. clReminderTrigger.py speaks the text with the local voice when the reminder
+            # fires, so nothing is pre-generated here (the cloud edge-tts it used to call has been 403-ing).
+            logging.info(f"[REMINDER] No recorded audio ({fallback_reason}); it will be spoken live when it fires.")
+            audio_dest = ""
+
         meta = {
             "id": reminder_id,
             "text": reminder_text,

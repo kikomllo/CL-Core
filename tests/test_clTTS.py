@@ -90,7 +90,7 @@ class TestStreamingSpeech:
         trace = published(client, "jarvis/sys/trace")
         assert len(trace) == 1 and trace[0]["cached"] is False
         fake_mixer.speech.play.assert_called_once()
-        wavs = list(tmp_path.glob("tts_*_local.wav"))
+        wavs = list((tmp_path / "tts_cache").glob("tts_*_local.wav"))
         assert len(wavs) == 1
         with wave.open(str(wavs[0])) as wf:
             assert wf.getframerate() == 24000 and wf.getnframes() == 4 * 1920
@@ -112,7 +112,7 @@ class TestStreamingSpeech:
         client = AsyncMock()
         with patch.object(manager, '_engine_order', return_value=[FakeEngine()]):
             await manager.generate_and_play(client, "A very long AI reply. " * 12, abort_count=0)
-        assert list(tmp_path.glob("tts_*_local.wav")) == []
+        assert list((tmp_path / "tts_cache").glob("tts_*_local.wav")) == []
 
     @pytest.mark.asyncio
     async def test_a_voice_that_fails_once_is_tried_again_for_the_next_reply(self, manager, fake_mixer):
@@ -133,7 +133,7 @@ class TestStreamingSpeech:
         client = AsyncMock()
         with patch.object(manager, '_engine_order', return_value=[FakeEngine("stand-in")]):
             await manager.generate_and_play(client, "System online!", abort_count=0)
-        assert list(tmp_path.glob("tts_*_local.wav")) == []
+        assert list((tmp_path / "tts_cache").glob("tts_*_local.wav")) == []
 
     @pytest.mark.asyncio
     async def test_a_boot_announcement_waits_for_the_main_voice_to_load(self, manager, fake_mixer):
@@ -174,7 +174,7 @@ class TestStreamingSpeech:
             await manager.generate_and_play(client, "Cut off part way.", abort_count=0)
 
         assert fake_mixer.speech.play.call_count == 1           # the part that was ready was played
-        assert list(tmp_path.glob("tts_*_local.wav")) == []     # a partial phrase is not cached
+        assert list((tmp_path / "tts_cache").glob("tts_*_local.wav")) == []     # a partial phrase is not cached
 
     @pytest.mark.asyncio
     async def test_idle_is_still_emitted_when_no_engine_can_speak(self, manager, fake_mixer):
@@ -299,6 +299,65 @@ class TestBlip:
         assert time.time() - t < 0.18
 
 
+class TestBlipAndSpeechPlayTogether:
+    """A slow voice (Kokoro: first audio after 1-2s) used to leave a silent gap after the blip."""
+
+    @pytest.mark.asyncio
+    async def test_the_blip_waits_until_the_voice_has_audio_and_speech_follows_it_immediately(self, manager, fake_mixer):
+        marks = {}
+
+        async def blip(client=None):
+            marks["blip_start"] = time.time()
+            await asyncio.sleep(0.2)                    # the chirp itself
+            marks["blip_end"] = time.time()
+
+        fake_mixer.speech.play.side_effect = lambda sound: marks.setdefault("speech", time.time())
+        with patch.object(manager, '_play_blip', new=blip),                 patch.object(manager, '_engine_order', return_value=[FakeEngine(chunks=8, delay=0.1)]):
+            t = time.time()
+            await manager.generate_and_play(AsyncMock(), "A slow voice.", abort_count=0)
+
+        assert marks["blip_start"] - t >= 0.3           # ~4 chunks of 80 ms must exist before anything is heard
+        assert 0 <= marks["speech"] - marks["blip_end"] < 0.1
+
+    @pytest.mark.asyncio
+    async def test_no_blip_when_the_voice_makes_no_audio(self, manager, fake_mixer):
+        blip = AsyncMock()
+        with patch.object(manager, '_play_blip', new=blip),                 patch.object(manager, '_engine_order', return_value=[FakeEngine("piper", fail_at=0)]):
+            await manager.generate_and_play(AsyncMock(), "Nobody can say this.", abort_count=0)
+        blip.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_fallback_voice_gets_the_blip_when_the_first_voice_fails(self, manager, fake_mixer):
+        blip = AsyncMock()
+        engines = [FakeEngine("kokoro", fail_at=0), FakeEngine("piper")]
+        with patch.object(manager, '_play_blip', new=blip), patch.object(manager, '_engine_order', return_value=engines):
+            await manager.generate_and_play(AsyncMock(), "Fall back to the other voice.", abort_count=0)
+        blip.assert_awaited_once()
+        fake_mixer.speech.play.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_interrupting_while_waiting_for_the_voice_plays_nothing(self, manager, fake_mixer):
+        blip = AsyncMock()
+
+        async def abort_soon():
+            await asyncio.sleep(0.2)
+            manager.abort_counter += 1
+            manager.stop_speaking()
+
+        with patch.object(manager, '_play_blip', new=blip),                 patch.object(manager, '_engine_order', return_value=[FakeEngine(chunks=50, delay=0.5)]):
+            await asyncio.gather(manager.generate_and_play(AsyncMock(), "Interrupted early.", abort_count=0), abort_soon())
+
+        blip.assert_not_awaited()
+        fake_mixer.speech.play.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_fast_voice_is_not_held_back(self, manager, fake_mixer):
+        with patch.object(manager, '_play_blip', new=AsyncMock()),                 patch.object(manager, '_engine_order', return_value=[FakeEngine(chunks=3)]):
+            t = time.time()
+            await manager.generate_and_play(AsyncMock(), "Quick reply.", abort_count=0)
+        assert time.time() - t < 0.18
+
+
 class TestEngineSelection:
     def test_piper_is_the_only_engine(self, manager):
         assert [e.name for e in manager._engine_order()] == ["piper"]
@@ -396,10 +455,97 @@ class TestCacheFiles:
         assert all(abs(r - 0.5) < 1e-3 for r in rms)
 
     def test_cache_cleanup_counts_local_wavs(self, manager, tmp_path):
+        (tmp_path / "tts_cache").mkdir()
         for i in range(5):
-            (tmp_path / f"tts_{i}_local.wav").write_bytes(b"x")
+            (tmp_path / "tts_cache" / f"tts_{i}_local.wav").write_bytes(b"x")
         manager.clean_old_cache(max_files=2)
-        assert len(list(tmp_path.glob("tts_*_local.wav"))) == 2
+        assert len(list((tmp_path / "tts_cache").glob("tts_*_local.wav"))) == 2
+
+    def test_cleanup_never_touches_the_ryan_clips(self, manager, tmp_path):
+        (tmp_path / "ryan").mkdir()
+        (tmp_path / "tts_cache").mkdir()
+        for i in range(5):
+            (tmp_path / "ryan" / f"tts_{i}.mp3").write_bytes(b"ryan")
+            (tmp_path / f"tts_{i + 10}.mp3").write_bytes(b"loose ryan")             # a legacy loose mp3
+            (tmp_path / "tts_cache" / f"tts_{i}_local.wav").write_bytes(b"x")
+        manager.clean_old_cache(max_files=1)
+        assert len(list((tmp_path / "ryan").glob("*.mp3"))) == 5
+        assert len(list(tmp_path.glob("tts_*.mp3"))) == 5
+        assert len(list((tmp_path / "tts_cache").glob("*.wav"))) == 1
+
+    def test_the_cache_keeps_a_thousand_phrases_by_default(self, manager):
+        import clTTS
+        assert clTTS.CACHE_MAX_FILES == 1000
+
+    def test_the_least_recently_used_phrases_go_first(self, manager, tmp_path):
+        cache = tmp_path / "tts_cache"
+        cache.mkdir()
+        for i, age in enumerate((300, 200, 100)):
+            f = cache / f"tts_{i}_local.wav"
+            f.write_bytes(b"x")
+            os.utime(f, (time.time() - age, time.time() - age))
+        os.utime(cache / "tts_0_local.wav", None)                  # the oldest was just played again
+        manager.clean_old_cache(max_files=2)
+        assert sorted(p.name for p in cache.glob("*.wav")) == ["tts_0_local.wav", "tts_2_local.wav"]
+
+    def test_loose_files_from_older_versions_are_moved_into_their_folders(self, manager, tmp_path):
+        (tmp_path / "tts_a.mp3").write_bytes(b"ryan")
+        (tmp_path / "tts_b_local.wav").write_bytes(b"phrase")
+        (tmp_path / "blip.mp3").write_bytes(b"blip")
+        manager.migrate_legacy_files()
+        assert (tmp_path / "ryan" / "tts_a.mp3").read_bytes() == b"ryan"
+        assert (tmp_path / "tts_cache" / "tts_b_local.wav").read_bytes() == b"phrase"
+        assert (tmp_path / "blip.mp3").exists() and not (tmp_path / "tts_a.mp3").exists()
+        manager.migrate_legacy_files()                              # a second run changes nothing
+        assert (tmp_path / "ryan" / "tts_a.mp3").exists()
+
+    def test_a_migrated_file_never_overwrites_the_archived_copy(self, manager, tmp_path):
+        (tmp_path / "ryan").mkdir()
+        (tmp_path / "ryan" / "tts_a.mp3").write_bytes(b"archived")
+        (tmp_path / "tts_a.mp3").write_bytes(b"duplicate")
+        manager.migrate_legacy_files()
+        assert (tmp_path / "ryan" / "tts_a.mp3").read_bytes() == b"archived" and not (tmp_path / "tts_a.mp3").exists()
+
+    @pytest.mark.asyncio
+    async def test_edge_mode_plays_a_ryan_clip_from_the_archive_without_the_network(self, manager, tmp_path):
+        import hashlib
+        manager.tts_engine = "edge"
+        name = "tts_" + hashlib.md5("Right away, sir._en-GB-RyanNeural".encode()).hexdigest() + ".mp3"
+        (tmp_path / "ryan").mkdir()
+        (tmp_path / "ryan" / name).write_bytes(b"ryan")
+        with patch('clTTS.edge_tts.Communicate') as MockCommunicate, \
+                patch.object(manager, '_play_file', new=AsyncMock()) as play_file:
+            await manager.generate_and_play(AsyncMock(), "Right away, sir.", abort_count=0)
+        MockCommunicate.assert_not_called()
+        assert play_file.await_args.args[1] == str(tmp_path / "ryan" / name)
+
+    @pytest.mark.asyncio
+    async def test_edge_mode_still_finds_a_loose_legacy_ryan_clip(self, manager, tmp_path):
+        import hashlib
+        manager.tts_engine = "edge"
+        name = "tts_" + hashlib.md5("Right away, sir._en-GB-RyanNeural".encode()).hexdigest() + ".mp3"
+        (tmp_path / name).write_bytes(b"ryan")
+        with patch('clTTS.edge_tts.Communicate') as MockCommunicate, \
+                patch.object(manager, '_play_file', new=AsyncMock()) as play_file:
+            await manager.generate_and_play(AsyncMock(), "Right away, sir.", abort_count=0)
+        MockCommunicate.assert_not_called()
+        assert play_file.await_args.args[1] == str(tmp_path / name)
+
+    @pytest.mark.asyncio
+    async def test_new_edge_audio_is_saved_in_the_ryan_folder(self, manager, tmp_path):
+        manager.tts_engine = "edge"
+        saved = []
+
+        async def fake_save(path):
+            saved.append(path)
+            with open(path, "wb") as f:
+                f.write(b"\x00")
+
+        with patch('clTTS.edge_tts.Communicate') as MockCommunicate, \
+                patch.object(manager, '_play_file', new=AsyncMock()):
+            MockCommunicate.return_value.save = fake_save
+            await manager.generate_and_play(AsyncMock(), "A brand new phrase.", abort_count=0)
+        assert saved and os.path.dirname(saved[0]) == str(tmp_path / "ryan")
 
 
 class TestSetOutputDevice:
@@ -484,7 +630,7 @@ class TestEchoReferenceAndGain:
         with patch.object(manager, '_engine_order', return_value=[FakeEngine(chunks=4)]):
             await manager.generate_and_play(client, "Right away.", abort_count=0)
 
-        wav = next(tmp_path.glob("tts_*_local.wav"))
+        wav = next((tmp_path / "tts_cache").glob("tts_*_local.wav"))
         with wave.open(str(wav)) as wf:
             data = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
         assert abs(int(np.median(data)) - int(0.1 * 32767)) < 5
@@ -677,3 +823,258 @@ class TestPiperLifecycle:
         manager.handle_mic_state({"state": "listening"})
         await asyncio.sleep(0.3)
         assert piper_engine.ready() is True
+
+
+class FakeKokoro:
+    """Stands in for kokoro_onnx.Kokoro; records every piece it is asked to speak."""
+    def __init__(self, *a):
+        self.calls = []
+
+    def get_voice_style(self, name):
+        return np.full((4, 1, 2), 1.0 if name == "bm_fable" else 3.0, dtype=np.float32)
+
+    def create(self, text, voice, speed, lang):
+        self.calls.append({"text": text, "voice": voice, "speed": speed, "lang": lang})
+        return np.full(2400, 0.1, dtype=np.float32), 24000
+
+
+@pytest.fixture
+def kokoro_engine(tmp_path):
+    import types
+    from utils.clTTSEngines import KokoroEngine, KOKORO_MODEL_FILE, KOKORO_VOICES_FILE
+    (tmp_path / KOKORO_MODEL_FILE).write_bytes(b"x")
+    (tmp_path / KOKORO_VOICES_FILE).write_bytes(b"x")
+    fake_module = types.SimpleNamespace(Kokoro=FakeKokoro)
+    KokoroEngine._warmed = False                                  # the warm-up is once per process
+    with patch.dict(sys.modules, {"kokoro_onnx": fake_module}):
+        yield KokoroEngine(model_dir=str(tmp_path))
+    KokoroEngine._warmed = False
+
+
+class TestKokoroText:
+    def test_sentence_final_full_stops_become_exclamations(self):
+        from utils.clTTSEngines import brighten
+        assert brighten("Good evening. All systems are running.") == "Good evening! All systems are running!"
+
+    def test_questions_ellipses_decimals_and_abbreviations_are_left_alone(self):
+        from utils.clTTSEngines import brighten
+        assert brighten("Is it nine degrees?") == "Is it nine degrees?"
+        assert brighten("Well... maybe.") == "Well... maybe!"
+        assert brighten("It is 9.5 degrees.") == "It is 9.5 degrees!"
+        assert brighten("Dr. Who is here.") == "Dr. Who is here!"
+
+    def test_a_reply_is_spoken_a_sentence_at_a_time(self):
+        from utils.clTTSEngines import split_pieces
+        text = "Good evening, sir, all is well. The lights are on. Anything else I can help with today?"
+        assert [p for p, _ in split_pieces(text)] == [
+            "Good evening, sir, all is well.", "The lights are on. Anything else I can help with today?"]
+
+    def test_a_short_opening_is_kept_with_the_sentence_after_it(self):
+        from utils.clTTSEngines import split_pieces
+        assert [p for p, _ in split_pieces("Right away! Is there anything else you require, sir?")] == [
+            "Right away! Is there anything else you require, sir?"]
+
+    def test_a_very_long_sentence_is_split_at_a_comma(self):
+        from utils.clTTSEngines import split_pieces, KOKORO_MAX_PIECE
+        sentence = ", ".join(["the thermostat is set to nineteen degrees"] * 6) + "."
+        pieces = [p for p, _ in split_pieces(sentence)]
+        assert len(pieces) > 1 and all(len(p) <= KOKORO_MAX_PIECE for p in pieces)
+
+    def test_a_long_first_sentence_is_cut_at_its_first_comma_so_speech_starts_sooner(self):
+        from utils.clTTSEngines import split_pieces
+        text = "Good evening sir, I trust you slept well, and the thermostat is set to nineteen degrees with rain forecast for the afternoon."
+        assert [p for p, _ in split_pieces(text)] == [
+            "Good evening sir, I trust you slept well,",
+            "and the thermostat is set to nineteen degrees with rain forecast for the afternoon."]
+
+    def test_a_short_first_sentence_is_not_split(self):
+        from utils.clTTSEngines import split_pieces
+        assert len(split_pieces("Good evening, sir, all is well.")) == 1
+
+    def test_only_the_first_sentence_is_cut_early(self):
+        from utils.clTTSEngines import split_pieces
+        later = "Then the second sentence is also quite long, with a comma in the middle of it, and it keeps going on."
+        pieces = [p for p, _ in split_pieces("Hello there. " + later)]
+        assert pieces == ["Hello there. " + later]                   # short first sentence merged, no early cut
+
+    def test_a_tiny_head_is_never_split_off(self):
+        from utils.clTTSEngines import split_pieces
+        text = "Yes, and the rest of this sentence just keeps going without any more commas at all in it."
+        assert len(split_pieces(text)) == 1                            # the only comma is too early to be a good cut
+
+    def test_the_pause_is_longer_after_a_sentence_than_after_a_comma_split(self):
+        from utils.clTTSEngines import split_pieces
+        sentence = ", ".join(["the thermostat is set to nineteen degrees"] * 6) + "."
+        pauses = [pause for _, pause in split_pieces(sentence)]
+        assert pauses[0] < pauses[-1]
+
+
+class TestKokoroLoudness:
+    """Kokoro speaks ~10 dB quieter than Piper; the gain is fixed and a limiter keeps it from clipping."""
+
+    @staticmethod
+    def rms_db(a):
+        return 20 * np.log10(np.sqrt(np.mean(np.square(a))) + 1e-12)
+
+    def test_quiet_speech_gets_the_fixed_gain(self):
+        from utils.clTTSEngines import boost, KOKORO_GAIN_DB
+        quiet = (0.05 * np.sin(np.linspace(0, 600, 24000))).astype(np.float32)
+        assert self.rms_db(boost(quiet)) - self.rms_db(quiet) == pytest.approx(KOKORO_GAIN_DB, abs=0.2)
+
+    def test_the_boosted_speech_never_exceeds_the_ceiling(self):
+        from utils.clTTSEngines import boost, KOKORO_CEILING
+        loud = (0.9 * np.sin(np.linspace(0, 900, 24000))).astype(np.float32)
+        loud[5000] = 0.97                                              # a sharp consonant peak
+        out = boost(loud)
+        assert np.abs(out).max() <= KOKORO_CEILING + 1e-4 and len(out) == len(loud)
+
+    def test_a_lone_peak_dips_the_level_only_briefly(self):
+        from utils.clTTSEngines import boost
+        quiet = np.full(24000, 0.02, dtype=np.float32)
+        quiet[12000] = 0.95                                            # one spike in quiet speech
+        out = boost(quiet)
+        assert np.abs(out).max() <= 0.951
+        away = np.abs(out[:11000]).mean() / 0.02
+        assert away == pytest.approx(10 ** (7 / 20), rel=0.02)         # far from the spike the gain is intact
+
+    def test_silence_and_empty_audio_are_safe(self):
+        from utils.clTTSEngines import boost
+        assert np.abs(boost(np.zeros(1000, dtype=np.float32))).max() == 0
+        assert len(boost(np.zeros(0, dtype=np.float32))) == 0
+
+    def test_the_engine_output_is_boosted_and_the_cache_tag_says_so(self, kokoro_engine):
+        out = np.concatenate(list(kokoro_engine.stream("Hello there.", threading.Event())))
+        assert out.mean() == pytest.approx(0.1 * 10 ** (7 / 20), rel=0.02)    # the fake voice speaks at a constant 0.1
+        assert "7dB" in kokoro_engine.voice_tag                       # phrases cached at the old level are not replayed
+
+
+class TestKokoroEngine:
+    def test_the_voice_is_the_fable_lewis_blend_at_speed_1_3(self, kokoro_engine):
+        from utils.clTTSEngines import KOKORO_VOICES, KOKORO_SPEED
+        assert (KOKORO_VOICES, KOKORO_SPEED) == (("bm_fable", "bm_lewis"), 1.3)
+        list(kokoro_engine.stream("Hello there.", threading.Event()))
+        call = kokoro_engine.kokoro.calls[0]
+        assert call["speed"] == 1.3 and call["lang"] == "en-gb"
+        assert np.allclose(call["voice"], 2.0)                    # the mean of the two style vectors
+
+    def test_text_is_brightened_unless_turned_off(self, kokoro_engine):
+        list(kokoro_engine.stream("Good evening. All is well.", threading.Event()))
+        assert kokoro_engine.kokoro.calls[0]["text"] == "Good evening! All is well!"
+        kokoro_engine.bright = False
+        list(kokoro_engine.stream("Good evening. All is well.", threading.Event()))
+        assert kokoro_engine.kokoro.calls[1]["text"] == "Good evening. All is well."
+
+    def test_it_yields_one_chunk_per_piece_with_a_pause_between(self, kokoro_engine):
+        chunks = list(kokoro_engine.stream("Good evening, sir, all is well. The lights are now on.", threading.Event()))
+        assert len(chunks) == 2
+        assert len(chunks[0]) > len(chunks[1]) == 2400            # only the last has no trailing silence
+        assert kokoro_engine.sample_rate == 24000
+
+    def test_it_stops_between_pieces(self, kokoro_engine):
+        stop = threading.Event()
+        stream = kokoro_engine.stream("Good evening, sir, all is well. The lights are now on.", stop)
+        next(stream)
+        stop.set()
+        assert list(stream) == [] and len(kokoro_engine.kokoro.calls) == 1
+
+    def test_warm_up_synthesizes_one_throwaway_sentence_once_per_process(self, kokoro_engine):
+        kokoro_engine.warm_up()
+        kokoro_engine.warm_up()
+        assert [c["text"] for c in kokoro_engine.kokoro.calls] == ["Ready."]
+        kokoro_engine.unload()
+        kokoro_engine.warm_up()                                       # reloading later does not repeat it
+        assert kokoro_engine.kokoro is None
+
+    def test_a_failing_warm_up_does_not_break_the_voice(self, kokoro_engine):
+        kokoro_engine.load()
+        kokoro_engine.kokoro.create = MagicMock(side_effect=RuntimeError("no"))
+        kokoro_engine.warm_up()
+        assert kokoro_engine.ready() is True
+
+    def test_the_cache_tag_names_the_voice_and_the_brightening(self, kokoro_engine):
+        assert "bm_fable+bm_lewis" in kokoro_engine.voice_tag and "bright" in kokoro_engine.voice_tag
+        bright = kokoro_engine.voice_tag
+        kokoro_engine.bright = False
+        assert kokoro_engine.voice_tag != bright
+
+    def test_loads_on_first_use_and_unloads_when_idle(self, kokoro_engine):
+        assert kokoro_engine.ready() is False
+        list(kokoro_engine.stream("Hello there.", threading.Event()))
+        assert kokoro_engine.ready() is True and kokoro_engine.unload_if_idle(30) is False
+        kokoro_engine.last_used = time.time() - 60
+        assert kokoro_engine.unload_if_idle(30) is True and kokoro_engine.ready() is False
+
+    def test_it_is_not_unloaded_mid_sentence(self, kokoro_engine):
+        stream = kokoro_engine.stream("Good evening, sir, all is well. The lights are now on.", threading.Event())
+        next(stream)
+        kokoro_engine.last_used = time.time() - 600
+        assert kokoro_engine.unload_if_idle(30) is False and kokoro_engine.ready() is True
+        stream.close()
+
+    def test_missing_model_files_are_downloaded_once(self, tmp_path):
+        import types
+        from utils.clTTSEngines import KokoroEngine
+        engine = KokoroEngine(model_dir=str(tmp_path))
+
+        def fetch(url, dest):
+            with open(dest, "wb") as f:
+                f.write(b"x")
+
+        with patch.dict(sys.modules, {"kokoro_onnx": types.SimpleNamespace(Kokoro=FakeKokoro)}), \
+                patch("urllib.request.urlretrieve", side_effect=fetch) as get:
+            engine.load()
+            engine.unload()
+            engine.load()
+        assert get.call_count == 2                                # the model and the voices, only on the first load
+
+
+class TestKokoroInTheManager:
+    @pytest.fixture
+    def kokoro_manager(self, tmp_path, kokoro_engine):
+        with patch('clTTS.ConfigLoader') as MockLoader:
+            MockLoader.return_value.load_json.side_effect = lambda name: (
+                {"settings": {"silent_mode": False, "tts_engine": "kokoro"}} if name == "core.json" else {"mqtt": {}})
+            from clTTS import TTSManager
+            m = TTSManager()
+        m.assets_dir = str(tmp_path)
+        m.kokoro = kokoro_engine
+        return m
+
+    def test_kokoro_speaks_first_and_piper_is_the_fallback(self, kokoro_manager):
+        assert [e.name for e in kokoro_manager._engine_order()] == ["kokoro", "piper"]
+        assert kokoro_manager._primary_engine_name() == "kokoro"
+
+    def test_cached_phrases_are_tagged_with_the_kokoro_voice(self, kokoro_manager):
+        assert kokoro_manager._cache_tag().startswith("kokoro:") and "bm_fable" in kokoro_manager._cache_tag()
+
+    def test_piper_stays_the_default(self, manager):
+        assert manager._primary_engine_name() == "piper" and [e.name for e in manager._engine_order()] == ["piper"]
+
+    def test_the_manager_reaps_an_idle_kokoro_voice(self, kokoro_manager):
+        list(kokoro_manager.kokoro.stream("Hello there.", threading.Event()))
+        kokoro_manager.kokoro.last_used = time.time() - 60
+        assert kokoro_manager.reap_idle() is False and kokoro_manager.kokoro.ready() is True    # still within its 90s
+        kokoro_manager.kokoro.last_used = time.time() - 120
+        assert kokoro_manager.reap_idle() is True and kokoro_manager.kokoro.ready() is False
+
+    def test_kokoro_stays_loaded_for_90_seconds_and_piper_for_30(self, kokoro_manager, manager):
+        assert kokoro_manager.piper_idle_seconds == 90 and manager.piper_idle_seconds == 30
+
+    def test_an_explicit_idle_setting_wins(self, tmp_path, kokoro_engine):
+        with patch('clTTS.ConfigLoader') as MockLoader:
+            MockLoader.return_value.load_json.side_effect = lambda name: (
+                {"settings": {"tts_engine": "kokoro", "tts_idle_seconds": 15}} if name == "core.json" else {"mqtt": {}})
+            from clTTS import TTSManager
+            assert TTSManager().piper_idle_seconds == 15
+
+    @pytest.mark.asyncio
+    async def test_the_boot_preload_also_warms_the_voice_up(self, kokoro_manager):
+        await kokoro_manager.preload()
+        assert kokoro_manager.kokoro.ready() is True
+        assert [c["text"] for c in kokoro_manager.kokoro.kokoro.calls] == ["Ready."]
+
+    @pytest.mark.asyncio
+    async def test_the_voice_is_started_when_the_user_begins_speaking(self, kokoro_manager):
+        kokoro_manager.handle_mic_state({"state": "recording"})
+        await asyncio.sleep(0.3)
+        assert kokoro_manager.kokoro.ready() is True

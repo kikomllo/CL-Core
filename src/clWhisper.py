@@ -26,6 +26,7 @@ if sys.platform == "win32":
 
 from faster_whisper import WhisperModel
 from utils.clConfigLoader import ConfigLoader
+from utils.clAbort import is_abort_utterance
 from utils.clLogging import setup_logging
 setup_logging('WHISPER')
 
@@ -165,8 +166,7 @@ class InferenceEngine:
 
         # Run abort check on the best segments
         for s in best_result["segments"]:
-            segment_lower = s.text.lower()
-            if any(kw in segment_lower for kw in self.abort_keywords):
+            if is_abort_utterance(s.text, self.abort_keywords):
                 logging.warning(f"Instant Abort triggered on segment: '{s.text}'. Halting inference!")
                 return "abort"
                 

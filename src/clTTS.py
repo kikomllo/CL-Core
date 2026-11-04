@@ -30,16 +30,19 @@ setup_logging('TTS')
 
 import queue
 from utils.clEcho import StreamResampler24to16
-from utils.clTTSEngines import PiperEngine, resample
+from utils.clTTSEngines import PiperEngine, KokoroEngine, resample
 
 # Speech is local (settings.tts_engine):
 #   "piper" - (default) Piper's ARU voice tuned toward Ryan: ~300MB while speaking, freed ~30s after use
+#   "kokoro" - Kokoro, a livelier British blend: ~400MB while loaded, ~0.45x real time on CPU (generated per
+#             sentence, needs onnxruntime 1.31); Piper takes over if it fails
 #   "edge"  - cloud edge-tts first (Microsoft began 403-ing its handshake on 2026-10-10), Piper when it fails
 MIXER_RATE = 24000           # the mixer's rate; engine audio is resampled to it once per sentence
 SPEECH_CHANNEL = 1           # mixer.Channel for streamed speech (mixer.music plays cached phrase files)
 BLIP_CHANNEL = 2             # the "I heard you" chirp before every reply
 PREBUFFER_SECONDS = 0.25     # audio generated before streamed speech starts, against underruns
 CACHE_MAX_CHARS = 140        # only short, likely-to-repeat phrases are cached (AI replies are unique)
+CACHE_MAX_FILES = 1000       # phrases kept in assets/tts_cache (the least recently used go first)
 EDGE_BLOCK_SECONDS = 120.0   # after edge-tts fails, skip it this long (no doomed retries per phrase)
 PRELOAD_WAIT_SECONDS = 45.0  # how long a reply spoken at startup waits for the primary voice to load
 VIZ_FRAME = 0.024            # seconds per audio_vol sample
@@ -62,6 +65,7 @@ class TTSManager:
         self.abort_counter = 0
         self.edge_blocked_until = 0.0
         self.piper = PiperEngine()
+        self.kokoro = None          # built once the settings are read (needs `tts_kokoro_bright`)
         self.preloading = False
         self._warming = False
         self.gain = 1.0             # JARVIS's own voice level; the mic lowers it if the speaker is too loud to interrupt
@@ -78,8 +82,14 @@ class TTSManager:
         core_data = ConfigLoader().load_json("core.json")
         self.silent_mode = core_data.get("settings", {}).get("silent_mode", False)
         self.tts_engine = core_data.get("settings", {}).get("tts_engine", "piper")
-        # Piper is cheap to reload (~2s, hidden behind the user speaking), so it is released soon after use.
-        self.piper_idle_seconds = float(core_data.get("settings", {}).get("tts_piper_idle_seconds", 30))
+        self.kokoro = KokoroEngine(bright=bool(core_data.get("settings", {}).get("tts_kokoro_bright", True)))
+        # The local voice is cheap to reload (~2s, hidden behind the user speaking), so it is released soon after
+        # use. `tts_piper_idle_seconds` is the old name of the setting.
+        settings = core_data.get("settings", {})
+        # Kokoro takes ~1.6s to load and ~300MB comes back when it is unloaded; 90s keeps it warm through a
+        # conversation and through proactive replies (alarms, reminders) that no mic event warms it for.
+        default_idle = 90 if self.tts_engine == "kokoro" else 30
+        self.piper_idle_seconds = float(settings.get("tts_idle_seconds", settings.get("tts_piper_idle_seconds", default_idle)))
         barge_cfg = core_data.get("settings", {}).get("barge_in", {})
         self.publish_ref = bool(barge_cfg.get("enabled", True))
         self.state_path = os.path.join(self.base_dir, "..", "data", "barge_in_state.json")
@@ -92,26 +102,63 @@ class TTSManager:
             logging.error(f"Failed to init mixer on '{output_device}', using system default: {e}")
             _init_mixer()
         logging.info("Audio mixer initialized.")
-        self.clean_old_cache(max_files=200)
+        self.clean_old_cache()
 
-    def clean_old_cache(self, max_files: int = 30) -> None:
-        """Removes oldest cached tts_*.mp3 files to prevent assets folder bloat."""
+    @property
+    def cache_dir(self) -> str:
+        """Generated phrases: reusable, pruned to CACHE_MAX_FILES, safe to delete."""
+        return os.path.join(self.assets_dir, "tts_cache")
+
+    @property
+    def ryan_dir(self) -> str:
+        """The real Ryan voice (edge-tts mp3s). Never pruned: while edge-tts is blocked they cannot be regenerated."""
+        return os.path.join(self.assets_dir, "ryan")
+
+    def migrate_legacy_files(self) -> None:
+        """Older versions kept everything loose in assets/ and pruned the oldest files, Ryan's included.
+        Moves tts_*.mp3 into ryan/ and tts_*_local.wav into tts_cache/ (idempotent)."""
+        moved = {"ryan": 0, "cache": 0}
         try:
-            tts_files = []
             for f in os.listdir(self.assets_dir):
-                if f.startswith("tts_") and f.endswith((".mp3", "_local.wav")):
-                    full_path = os.path.join(self.assets_dir, f)
-                    tts_files.append((full_path, os.path.getmtime(full_path)))
-            
-            if len(tts_files) > max_files:
-                tts_files.sort(key=lambda x: x[1])
-                files_to_remove = tts_files[:-max_files]
+                if not f.startswith("tts_"):
+                    continue
+                if f.endswith(".mp3"):
+                    dest_dir, key = self.ryan_dir, "ryan"
+                elif f.endswith("_local.wav"):
+                    dest_dir, key = self.cache_dir, "cache"
+                else:
+                    continue
+                os.makedirs(dest_dir, exist_ok=True)
+                dest = os.path.join(dest_dir, f)
+                if os.path.exists(dest):
+                    os.remove(os.path.join(self.assets_dir, f))      # already archived
+                else:
+                    os.replace(os.path.join(self.assets_dir, f), dest)
+                moved[key] += 1
+            if moved["ryan"] or moved["cache"]:
+                logging.info(f"[TTS] Moved {moved['ryan']} Ryan clips to assets/ryan and {moved['cache']} cached phrases to assets/tts_cache.")
+        except Exception as e:
+            logging.error(f"[TTS] Could not migrate cached audio: {e}")
+
+    def clean_old_cache(self, max_files: int = CACHE_MAX_FILES) -> None:
+        """Prunes the generated-phrase cache to `max_files` (least recently used first). The Ryan mp3s are never touched."""
+        try:
+            wavs = []
+            if os.path.isdir(self.cache_dir):
+                for f in os.listdir(self.cache_dir):
+                    if f.startswith("tts_") and f.endswith("_local.wav"):
+                        full_path = os.path.join(self.cache_dir, f)
+                        wavs.append((full_path, os.path.getmtime(full_path)))
+
+            if len(wavs) > max_files:
+                wavs.sort(key=lambda x: x[1])
+                files_to_remove = wavs[:-max_files]
                 for path, _ in files_to_remove:
                     try:
                         os.remove(path)
                     except Exception:
                         pass
-                logging.info(f"Cleaned up {len(files_to_remove)} old cached TTS files.")
+                logging.info(f"Cleaned up {len(files_to_remove)} old cached TTS phrases.")
         except Exception as e:
             logging.error(f"Failed to clean TTS cache: {e}")
 
@@ -164,11 +211,15 @@ class TTSManager:
     # ------------------------------------------------------------------
     # Engine selection
     # ------------------------------------------------------------------
+    def _primary(self):
+        """The voice that speaks (and whose phrases are cached): Kokoro when asked for, otherwise Piper."""
+        return self.kokoro if self.tts_engine == "kokoro" else self.piper
+
     def _engine_order(self):
-        return [self.piper]
+        return [self.kokoro, self.piper] if self.tts_engine == "kokoro" else [self.piper]
 
     def _primary_engine_name(self) -> str:
-        return "piper"
+        return self._primary().name
 
     async def _await_preload(self) -> None:
         """A reply spoken during startup (the boot announcement) waits for the voice to finish loading."""
@@ -178,7 +229,8 @@ class TTSManager:
 
     def _cache_tag(self) -> str:
         """Which voice a cached phrase was spoken in, so switching engines never replays the wrong one."""
-        return f"piper:{self.piper.voice_tag}"
+        primary = self._primary()
+        return f"{primary.name}:{primary.voice_tag}"
 
     # ------------------------------------------------------------------
     # Level + echo reference (so the mic can hear the user over JARVIS)
@@ -262,7 +314,7 @@ class TTSManager:
     async def warm(self) -> None:
         """Start the voice if it is not loaded. Called when the user begins speaking, so the load overlaps
         with their command and the speech recognition instead of delaying the reply."""
-        engine = self.piper
+        engine = self._primary()
         if engine.ready() or self._warming or self.preloading:
             return
         self._warming = True
@@ -280,26 +332,32 @@ class TTSManager:
             asyncio.create_task(self.warm())
 
     def reap_idle(self) -> bool:
-        """Frees the Piper voice (~100MB) once it has been unused for tts_piper_idle_seconds. Never while a
-        reply is being spoken or started."""
+        """Frees a local voice (100-300MB) once it has been unused for tts_idle_seconds. Never while a reply is
+        being spoken or started."""
         if self.semaphore.locked() or self._warming or self.preloading:
             return False
-        if self.piper_idle_seconds > 0 and self.piper.unload_if_idle(self.piper_idle_seconds):
-            logging.info(f"[TTS] Piper voice unloaded after {self.piper_idle_seconds:.0f} idle seconds (frees the RAM).")
-            return True
-        return False
+        freed = False
+        for engine in (self.piper, self.kokoro):
+            if self.piper_idle_seconds > 0 and engine.unload_if_idle(self.piper_idle_seconds):
+                logging.info(f"[TTS] {engine.name} voice unloaded after {self.piper_idle_seconds:.0f} idle seconds (frees the RAM).")
+                freed = True
+        return freed
 
     def close(self) -> None:
-        try: self.piper.shutdown()
-        except Exception: pass
+        for engine in (self.piper, self.kokoro):
+            try: engine.shutdown()
+            except Exception: pass
 
     async def preload(self) -> None:
         """Load the voice at startup so the boot announcement doesn't pay for it."""
-        engine = self.piper
+        engine = self._primary()
         t = time.time()
         self.preloading = True
         try:
             await asyncio.to_thread(engine.load)
+            warm_up = getattr(engine, "warm_up", None)          # the first synthesis in a process is slower; get it over with
+            if warm_up:
+                await asyncio.to_thread(warm_up)
             logging.info(f"[TTS] {engine.name} engine ready in {time.time() - t:.1f}s.")
         except Exception as e:
             logging.error(f"[TTS] Could not load the {engine.name} engine: {e}")
@@ -380,9 +438,7 @@ class TTSManager:
         loop = asyncio.get_event_loop()
         stop = self._stop_event = threading.Event()
         chunks: "queue.Queue" = queue.Queue()
-        stats = self._start_producer(engine, text, stop, chunks)   # generating while the blip plays
-
-        await self._play_blip(client)                 # ducking (triggered by tts_state active) runs meanwhile
+        stats = self._start_producer(engine, text, stop, chunks)   # generating while we wait for the first audio
 
         channel = mixer.Channel(SPEECH_CHANNEL)
         pending, spoken, viz, carry = [], [], [], np.zeros(0, dtype=np.float32)
@@ -390,12 +446,9 @@ class TTSManager:
         start_time, last_pub = 0.0, 0.0
         gain, ref_rs, ref_off, ref_t0 = self.gain, StreamResampler24to16(), 0, 0.0
 
-        while True:
-            if self.abort_counter != abort_count or stop.is_set():
-                stop.set()
-                channel.stop()
-                return "aborted"
-
+        def drain() -> None:
+            """Moves whatever the engine has produced so far from the queue into `pending`."""
+            nonlocal finished, error, carry
             try:
                 while True:
                     item = chunks.get_nowait()
@@ -410,6 +463,32 @@ class TTSManager:
                         viz.extend(frames)
             except queue.Empty:
                 pass
+
+        # The blip waits until the voice has its first audio, so the chirp and the reply are heard back to back
+        # (a slow voice used to leave a silent gap after the chirp). Ducking, triggered by tts_state active, runs meanwhile.
+        while True:
+            if self.abort_counter != abort_count or stop.is_set():
+                stop.set()
+                channel.stop()
+                return "aborted"
+            drain()
+            if finished or sum(len(p) for p in pending) / MIXER_RATE >= PREBUFFER_SECONDS:
+                break
+            await asyncio.sleep(0.01)
+        if finished and not pending:                    # nothing to say: no blip, let the next engine try
+            if error:
+                logging.error(f"[TTS] {engine.name} failed: {error}")
+            return "failed"
+
+        await self._play_blip(client)
+
+        while True:
+            if self.abort_counter != abort_count or stop.is_set():
+                stop.set()
+                channel.stop()
+                return "aborted"
+
+            drain()
 
             pending_seconds = sum(len(p) for p in pending) / MIXER_RATE
             if pending and channel.get_queue() is None and (started or finished or pending_seconds >= PREBUFFER_SECONDS):
@@ -462,6 +541,7 @@ class TTSManager:
     @staticmethod
     def _write_cache(path: str, audio: np.ndarray) -> None:
         try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
             pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
             with wave.open(path + ".part", "wb") as wf:
                 wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(MIXER_RATE)
@@ -480,16 +560,21 @@ class TTSManager:
 
         t_req = time.time()
         file_hash = hashlib.md5(f"{text}_{voice}".encode()).hexdigest()
-        mp3_file = os.path.join(self.assets_dir, f"tts_{file_hash}.mp3")
+        mp3_file = os.path.join(self.ryan_dir, f"tts_{file_hash}.mp3")
         local_hash = hashlib.md5(f"{text}_{self._cache_tag()}".encode()).hexdigest()
-        local_file = os.path.join(self.assets_dir, f"tts_{local_hash}_local.wav")
+        local_file = os.path.join(self.cache_dir, f"tts_{local_hash}_local.wav")
 
         def usable(path):                      # an empty file is a failed save, not a cached phrase
             return os.path.exists(path) and os.path.getsize(path) > 0
 
+        legacy_mp3 = os.path.join(self.assets_dir, f"tts_{file_hash}.mp3")      # before the ryan/ folder existed
+        if not usable(mp3_file) and usable(legacy_mp3):
+            mp3_file = legacy_mp3
+
         # Cloud voice only in "edge" mode (cached mp3 first, then a live request).
         if self.tts_engine == "edge":
             if not usable(mp3_file) and time.time() >= self.edge_blocked_until:
+                os.makedirs(os.path.dirname(mp3_file), exist_ok=True)
                 if not await self._synthesize_edge(text, voice, mp3_file):
                     self.edge_blocked_until = time.time() + EDGE_BLOCK_SECONDS
                     logging.warning(f"[TTS] edge-tts unavailable; using the local voice for the next {EDGE_BLOCK_SECONDS:.0f}s.")
@@ -509,7 +594,7 @@ class TTSManager:
             if client:
                 await client.publish("jarvis/sys/tts_state", json.dumps({"state": "idle"}))
                 await client.publish("jarvis/sys/tts_done", "1")
-        self.clean_old_cache(max_files=200)
+        self.clean_old_cache()
 
     def _file_ref16(self, path: str) -> np.ndarray:
         """A cached 24kHz wav as it will sound (gain applied), at 16kHz for the echo canceller."""
@@ -523,7 +608,7 @@ class TTSManager:
     async def _play_file(self, client, temp_file, t_req, cached, abort_count) -> None:
         """Plays a finished audio file (cached phrase or edge-tts mp3) with the blip, ducking and volume feed."""
         t_synth_done = time.time()
-        self.clean_old_cache(max_files=200)
+        self.clean_old_cache()
 
         async with self.semaphore:
             if self.abort_counter != abort_count:
@@ -731,6 +816,7 @@ class TTSManager:
 
 async def run_tts_service():
     manager = TTSManager()
+    manager.migrate_legacy_files()
     asyncio.create_task(manager.preload())
 
     async def idle_reaper():

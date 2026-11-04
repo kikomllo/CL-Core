@@ -28,6 +28,8 @@ logs/
 .cache
 assets/tts_*.mp3
 assets/tts_*_local.wav
+assets/ryan/
+assets/tts_cache/
 assets/voice_tuning/
 
 # IDE / OS

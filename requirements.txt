@@ -39,7 +39,7 @@ MouseInfo==0.1.3
 multidict==6.7.1
 narwhals==2.22.0
 numpy==2.4.6
-onnxruntime==1.26.0
+onnxruntime==1.31.0
 openwakeword==0.4.0
 packaging==26.2
 paho-mqtt==2.1.0
@@ -48,6 +48,11 @@ pathvalidate==3.3.1
 pyaec==1.0.1
 # Local speech (src/clTTS.py, src/utils/clTTSEngines.py): Piper, ~300MB while speaking, no PyTorch
 piper-tts==1.8.0
+# Main voice (settings.tts_engine "kokoro"): ONNX only, ~400MB while loaded; model files download on first use. Needs onnxruntime>=1.31 (1.26 was 3.5x slower)
+kokoro-onnx==0.6.1
+espeakng-loader==0.2.4
+phonemizer==3.4.0
+dlinfo==2.0.0
 pluggy==1.6.0
 propcache==0.5.2
 protobuf==7.35.0
