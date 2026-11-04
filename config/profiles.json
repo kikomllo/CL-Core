@@ -1,0 +1,30 @@
+{
+    "lite": {
+        "hardware": "cpu",
+        "stt_model": "base",
+        "stt_processing_mode": "sequential",
+        "tts_engine": "piper",
+        "slm_settings": {
+            "threads": 3,
+            "gpu_layers": 0
+        },
+        "reply_slm_settings": {
+            "threads": 2,
+            "gpu_layers": 0
+        }
+    },
+    "full": {
+        "hardware": "cuda",
+        "stt_model": "small",
+        "stt_processing_mode": "sequential",
+        "tts_engine": "kokoro",
+        "slm_settings": {
+            "threads": 4,
+            "gpu_layers": -1
+        },
+        "reply_slm_settings": {
+            "threads": 2,
+            "gpu_layers": -1
+        }
+    }
+}

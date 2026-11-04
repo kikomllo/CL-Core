@@ -6,6 +6,14 @@ import os
 import signal
 import paho.mqtt.client as mqtt_client
 
+# config/core.json is this machine's own file; create / top it up from core.default.json before anything reads it
+try:
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src", "utils"))
+    from clLocalConfig import ensure_core
+    ensure_core()
+except Exception as e:
+    print(f"[SUPERVISOR] Could not prepare config/core.json: {e}")
+
 # --- OS SETTINGS & DEBUG FLAG ---
 def load_settings():
     config_path = os.path.join("config", "core.json")

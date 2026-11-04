@@ -82,3 +82,8 @@ training/data/voice_dataset/
 training/data/voice_ref/
 training/data/voice_export/
 training/data/ultron_lines/
+
+# Per-machine settings (created from config/core.default.json by src/utils/clLocalConfig.py)
+config/core.json
+config/core.json.lock
+config/core.json.tmp

@@ -10,8 +10,8 @@
         "tts_engine": "kokoro",
         "stt_processing_mode": "sequential",
         "audio_settings": {
-            "input_device": "Microphone (Razer Seiren Mini)",
-            "output_device": "Altifalantes (Realtek High Definition Audio)"
+            "input_device": null,
+            "output_device": "System Default"
         },
         "slm_settings": {
             "enabled": true,

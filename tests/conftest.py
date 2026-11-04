@@ -5,6 +5,15 @@ import asyncio
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _local_core_json():
+    """config/core.json is per-machine and gitignored; a fresh clone has only core.default.json."""
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "utils"))
+    from clLocalConfig import ensure_core
+    ensure_core()
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _no_windows_on_screen():
     """Widget tests show real top-level windows (drawers, panels, dialogs); on a desktop session that
     flashes dozens of them and can freeze the machine. Flag every window a test shows as

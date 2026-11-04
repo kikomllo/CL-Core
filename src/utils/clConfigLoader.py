@@ -22,6 +22,15 @@ class ConfigLoader:
     def load_json(self, filename: str) -> Dict[str, Any]:
         """Loads a raw JSON file without schema validation."""
         filepath = os.path.join(self.config_dir, filename)
+        if not os.path.exists(filepath) and filename == "core.json":
+            try:
+                try:    # core.json is per-machine; rebuild it from core.default.json
+                    from .clLocalConfig import ensure_core
+                except ImportError:     # imported as a top-level module, not as utils.clConfigLoader
+                    from clLocalConfig import ensure_core
+                ensure_core(self.config_dir)
+            except Exception as e:
+                logging.error(f"Could not create core.json from core.default.json: {e}")
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"Configuration file not found: {filepath}")
 
