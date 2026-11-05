@@ -41,7 +41,7 @@ are relative to that baseline, not guessed now.
 
 ## Phase 0: land the merge and get both machines comparable
 
-- [ ] Fast-forward `main` to `desktop-voice-wip` (merge of PR #1), push, close PR #1. The laptop then does
+- [x] Fast-forward `main` to `desktop-voice-wip` (merge of PR #1), push, close PR #1. The laptop then does
       `git fetch && git reset --hard origin/main` after saving its local-only files (`models/`, `data/`, `.env`, and **`config/core.json`**, which this pull untracks).
 - [x] **Per-machine config (done, differs from the first idea).** An overlay file would not work: services rewrite
       `core.json` at runtime and ~a dozen read it directly, bypassing `ConfigLoader`. So `core.json` is now untracked and
@@ -50,7 +50,7 @@ are relative to that baseline, not guessed now.
 - [x] **Profiles (done).** `config/profiles.json` (`lite`, `full`); `python src/utils/clLocalConfig.py --profile lite`
       applies one and records `settings.performance_profile`. More keys (fx level, `ui_lite`, idle seconds) join the
       profiles as later phases add them.
-- [ ] Baseline measurement on both machines (see Phase 5 harness; for now `logs/latest_run.log` + Task Manager).
+- [ ] Baseline measurement: desktop done (see Measured), laptop pending (see Phase 5 harness; for now `logs/latest_run.log` + Task Manager).
 
 ## Phase 1: the Ultron voice (the part that matters first)
 
@@ -232,4 +232,19 @@ Nothing implemented yet. The merge of the laptop's `clVoice` + dataset tooling i
 
 ## Measured
 
-(empty: fill from Phase 5 on both machines)
+### Desktop baseline, 2026-11-04 (12-core, 15.9 GB, CUDA, profile `full`, Kokoro, Whisper small, live use)
+- Voice command, end of speech to action: endpoint 0.72-0.73 s + whisper 0.29-0.43 s + route 0.00-0.18 s = **1.0-1.4 s**; reply
+  audio then `reply_gen` 0.05 s + `tts_synth` 0.00 s (cached) or ~1.0 s (new phrase, Kokoro cold) + `duck+blip` 0.38-0.40 s.
+- A 4-sentence `jarvis/sys/speak` reply streamed for ~7 s with ducking, `tts_ref` and a clean `tts_done`/idle.
+- RAM (working set) with Spotify/browser open: ecosystem ~3.1 GB total: `clDaemon` 1251 MB (both SLMs), `clWhisper` 510,
+  `clTTS` 345 (Kokoro just used; ~110-190 once unloaded), `clMic` 235, `clUI` 164, rest 30-65 each. The 11 MB duplicates are
+  Windows launcher stubs. System had 3.0 GB free of 15.9 GB at the time.
+- Kokoro unloads after 90 s idle as designed. Known harmless log line: `[TTS] words count mismatch` (phonemizer).
+- Lite machine (12 GB): to be measured with `--profile lite` (Whisper base, Piper). Expect the daemon's 1.25 GB to be the
+  largest block; the voice engine is a small part of the budget.
+
+### TTS bench, desktop, 2026-11-04 (stock Piper aru voice, ecosystem running so numbers are slightly pessimistic)
+`python training/tools/bench_tts.py`: five lines of 1-5 s of speech. First chunk after the first warm line:
+Piper 0.06-0.19 s; Ultron `light` 0.04-0.21 s; Ultron `full` 0.13-0.34 s. Real-time factor: Piper 0.05, `light` 0.04-0.05,
+`full` 0.07-0.12 (all far below 1). The RSS column accumulates across engines in one process, so it is not a per-engine figure; for the 1.6 RAM gate run one engine per process (`--engines ultron:light`) with the ecosystem stopped.
+Rendered samples for listening: `outputs/bench_tts/` (gitignored).

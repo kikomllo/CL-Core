@@ -266,6 +266,102 @@ class KokoroEngine:
             self.last_used = time.time()
 
 
+def _overlay(base: np.ndarray, extra: np.ndarray, offset: int = 0) -> np.ndarray:
+    """`extra` added onto `base` starting at `offset`; the result is as long as whichever ends later."""
+    out = np.zeros(max(len(base), offset + len(extra)), dtype=np.float32)
+    out[:len(base)] = base
+    out[offset:offset + len(extra)] += extra
+    return out
+
+
+class UltronEngine(PiperEngine):
+    """Piper plus the clVoice effect chain (denoise, pitch drop, vocoder, reverb), applied sentence by sentence so the
+    voice still streams: first audio waits for one sentence of Piper plus its effects, not for the whole reply.
+    The trained voice is `settings.tts_settings.piper_model`; if that file is missing the stock Piper voice speaks
+    instead (same effects), so a new machine still talks. `tts_settings.fx_level` ("off" | "light" | "full") trades
+    CPU for quality, see clVoice.level_settings. The reverb tail of a sentence is mixed into the start of the next
+    one, so sentences do not each end in their own isolated echo."""
+    name = "ultron"
+
+    def __init__(self, settings=None, model_dir: str = os.path.join(MODELS_DIR, "piper")):
+        super().__init__(model_dir)
+        from utils.clVoice import merge_settings
+        self.cfg = merge_settings(settings)
+        self._speaker = None             # a trained voice is single-speaker; the stock fallback needs its speaker id
+        self.using_fallback = False
+
+    @property
+    def model_path(self) -> str:
+        p = self.cfg["piper_model"]
+        return p if os.path.isabs(p) else os.path.abspath(os.path.join(MODELS_DIR, "..", p))
+
+    @property
+    def voice_tag(self) -> str:
+        import hashlib
+        import json
+        digest = hashlib.md5(json.dumps(self.cfg, sort_keys=True, default=str).encode()).hexdigest()[:8]
+        return f"{os.path.basename(self.cfg['piper_model'])}:{self.cfg.get('fx_level', 'full')}:{digest}"
+
+    def load(self) -> None:
+        if os.path.exists(self.model_path):
+            with self._lock:
+                self.last_used = time.time()
+                if self.voice is not None:
+                    return
+                from piper import PiperVoice
+                self.voice = PiperVoice.load(self.model_path)
+                self.sample_rate = int(self.voice.config.sample_rate)
+                self._speaker, self.using_fallback = None, False
+            return
+        if not self.using_fallback:
+            logging.warning(f"[TTS] Ultron voice '{self.model_path}' not found; using the stock Piper voice with the same effects.")
+        PiperEngine.load(self)
+        self._speaker, self.using_fallback = PIPER_SPEAKER, True
+
+    def stream(self, text: str, stop: threading.Event) -> Iterator[np.ndarray]:
+        from piper import SynthesisConfig
+        from utils.clVoice import level_settings, denoise, apply_fx, _pitch_down
+        self.load()
+        strength, fx = level_settings(self.cfg)
+        fx_on = fx.get("enabled", True)
+        pitch = float(fx.get("pitch_semitones", 0.0)) if fx_on else 0.0
+        # Pitching down by resampling slows speech by the same ratio; Piper is asked to speak faster to compensate.
+        length_scale = float(self.cfg["length_scale"]) * 2.0 ** (pitch / 12.0)
+        pieces = split_pieces(text)
+        rate = self.sample_rate
+        pending = np.zeros(0, dtype=np.float32)       # the previous sentence's reverb tail, still to be heard
+        with self._lock:
+            self.last_used = time.time()
+            syn = SynthesisConfig(length_scale=length_scale, speaker_id=self._speaker,
+                                  noise_scale=self.cfg.get("noise_scale"), noise_w_scale=self.cfg.get("noise_w_scale"))
+            for i, (piece, pause) in enumerate(pieces):
+                if stop.is_set():
+                    return
+                parts = [c.audio_float_array for c in self.voice.synthesize(piece, syn)]
+                if not parts:
+                    continue
+                dry = denoise(np.concatenate(parts).astype(np.float32), rate, strength)
+                if fx_on:
+                    dry = _pitch_down(dry, pitch)
+                    wet = apply_fx(dry, rate, fx)
+                else:
+                    wet = dry
+                head, tail = wet[:len(dry)], wet[len(dry):]       # apply_fx's reverb lengthens the clip by its tail
+                last = i == len(pieces) - 1
+                segment = head if last else np.concatenate([head, np.zeros(int(rate * pause), dtype=np.float32)])
+                mixed = _overlay(_overlay(segment, pending), tail, len(head))
+                if last:
+                    yield np.clip(mixed, -1.0, 1.0)
+                    pending = np.zeros(0, dtype=np.float32)
+                else:
+                    yield np.clip(mixed[:len(segment)], -1.0, 1.0)
+                    pending = mixed[len(segment):]
+            else:
+                if len(pending):                              # the last sentence made no audio: let the tail ring out
+                    yield np.clip(pending, -1.0, 1.0)
+            self.last_used = time.time()
+
+
 def resample(audio: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
     """Whole-sentence resample (Piper hands back complete sentences, so there is no chunk-boundary filter
     transient to worry about)."""

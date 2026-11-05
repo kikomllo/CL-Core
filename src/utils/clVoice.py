@@ -22,6 +22,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "backend": "piper",
     "piper_model": "models/piper/en_US-ryan-medium.onnx",
     "length_scale": 0.9,
+    "fx_level": "full",              # off = dry Piper, light = pitch + EQ + reverb only (cheap CPU), full = everything configured
     "denoise": 0.6,                  # 0 = off, 1 = strongest: spectral gate on the dry Piper audio (the trained voice inherits its clips' noise)
     "fx": {
         "enabled": True,
@@ -51,6 +52,21 @@ def merge_settings(user: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         else:
             out[k] = v
     return out
+
+
+def level_settings(cfg: Dict[str, Any]) -> "tuple[float, Dict[str, Any]]":
+    """(denoise strength, fx dict) for cfg["fx_level"]. `light` drops the stages that cost real CPU on a weak machine
+    (spectral-gate denoise, vocoder, comb, ring mod) and keeps the pitch drop, EQ, drive and reverb; `off` is the dry voice."""
+    level = str(cfg.get("fx_level", "full")).lower()
+    fx = dict(cfg["fx"])
+    if level == "off":
+        fx["enabled"] = False
+        return 0.0, fx
+    if level == "light":
+        for key in ("vocoder_mix", "ring_mod_mix", "comb_mix"):
+            fx[key] = 0.0
+        return 0.0, fx
+    return float(cfg.get("denoise", 0.0)), fx
 
 
 # --------------------------------------------------------------------------- effects
@@ -222,7 +238,7 @@ class VoiceSynth:
 
     def render(self, text: str) -> "tuple[np.ndarray, int]":
         from piper import SynthesisConfig
-        fx = self.cfg["fx"]
+        denoise_strength, fx = level_settings(self.cfg)
         length_scale = float(self.cfg["length_scale"])
         if fx.get("enabled", True):
             # Pitching down by resampling slows the speech by the same ratio; pre-compensate.
@@ -236,7 +252,7 @@ class VoiceSynth:
             raise RuntimeError("Piper returned no audio")
         sr = chunks[0].sample_rate
         audio = np.concatenate([c.audio_float_array for c in chunks]).astype(np.float32)
-        audio = denoise(audio, sr, float(self.cfg.get("denoise", 0.0)))
+        audio = denoise(audio, sr, denoise_strength)
         if fx.get("enabled", True):
             audio = apply_fx(_pitch_down(audio, float(fx.get("pitch_semitones", 0.0))), sr, fx)
         return audio, sr

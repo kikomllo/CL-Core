@@ -8,6 +8,10 @@
             "en"
         ],
         "tts_engine": "kokoro",
+        "tts_settings": {
+            "piper_model": "models/piper/actor_voice.onnx",
+            "fx_level": "full"
+        },
         "stt_processing_mode": "sequential",
         "audio_settings": {
             "input_device": null,

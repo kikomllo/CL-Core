@@ -11,6 +11,9 @@
         "reply_slm_settings": {
             "threads": 2,
             "gpu_layers": 0
+        },
+        "tts_settings": {
+            "fx_level": "light"
         }
     },
     "full": {
@@ -25,6 +28,9 @@
         "reply_slm_settings": {
             "threads": 2,
             "gpu_layers": -1
+        },
+        "tts_settings": {
+            "fx_level": "full"
         }
     }
 }

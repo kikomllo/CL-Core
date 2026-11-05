@@ -30,12 +30,14 @@ setup_logging('TTS')
 
 import queue
 from utils.clEcho import StreamResampler24to16
-from utils.clTTSEngines import PiperEngine, KokoroEngine, resample
+from utils.clTTSEngines import PiperEngine, KokoroEngine, UltronEngine, resample
 
 # Speech is local (settings.tts_engine):
 #   "piper" - (default) Piper's ARU voice tuned toward Ryan: ~300MB while speaking, freed ~30s after use
 #   "kokoro" - Kokoro, a livelier British blend: ~400MB while loaded, ~0.45x real time on CPU (generated per
 #             sentence, needs onnxruntime 1.31); Piper takes over if it fails
+#   "ultron" - Piper + the clVoice effect chain per sentence (settings.tts_settings: voice model, fx_level off|light|full);
+#             the stock Piper voice speaks if the trained model is missing, and Piper takes over if it fails
 #   "edge"  - cloud edge-tts first (Microsoft began 403-ing its handshake on 2026-10-10), Piper when it fails
 MIXER_RATE = 24000           # the mixer's rate; engine audio is resampled to it once per sentence
 SPEECH_CHANNEL = 1           # mixer.Channel for streamed speech (mixer.music plays cached phrase files)
@@ -66,6 +68,7 @@ class TTSManager:
         self.edge_blocked_until = 0.0
         self.piper = PiperEngine()
         self.kokoro = None          # built once the settings are read (needs `tts_kokoro_bright`)
+        self.ultron = None          # same, needs `tts_settings`
         self.preloading = False
         self._warming = False
         self.gain = 1.0             # JARVIS's own voice level; the mic lowers it if the speaker is too loud to interrupt
@@ -83,6 +86,7 @@ class TTSManager:
         self.silent_mode = core_data.get("settings", {}).get("silent_mode", False)
         self.tts_engine = core_data.get("settings", {}).get("tts_engine", "piper")
         self.kokoro = KokoroEngine(bright=bool(core_data.get("settings", {}).get("tts_kokoro_bright", True)))
+        self.ultron = UltronEngine(core_data.get("settings", {}).get("tts_settings"))
         # The local voice is cheap to reload (~2s, hidden behind the user speaking), so it is released soon after
         # use. `tts_piper_idle_seconds` is the old name of the setting.
         settings = core_data.get("settings", {})
@@ -212,11 +216,12 @@ class TTSManager:
     # Engine selection
     # ------------------------------------------------------------------
     def _primary(self):
-        """The voice that speaks (and whose phrases are cached): Kokoro when asked for, otherwise Piper."""
-        return self.kokoro if self.tts_engine == "kokoro" else self.piper
+        """The voice that speaks (and whose phrases are cached): Ultron or Kokoro when asked for, otherwise Piper."""
+        return {"kokoro": self.kokoro, "ultron": self.ultron}.get(self.tts_engine, self.piper)
 
     def _engine_order(self):
-        return [self.kokoro, self.piper] if self.tts_engine == "kokoro" else [self.piper]
+        primary = self._primary()
+        return [primary] if primary is self.piper else [primary, self.piper]
 
     def _primary_engine_name(self) -> str:
         return self._primary().name
@@ -337,14 +342,14 @@ class TTSManager:
         if self.semaphore.locked() or self._warming or self.preloading:
             return False
         freed = False
-        for engine in (self.piper, self.kokoro):
+        for engine in (self.piper, self.kokoro, self.ultron):
             if self.piper_idle_seconds > 0 and engine.unload_if_idle(self.piper_idle_seconds):
                 logging.info(f"[TTS] {engine.name} voice unloaded after {self.piper_idle_seconds:.0f} idle seconds (frees the RAM).")
                 freed = True
         return freed
 
     def close(self) -> None:
-        for engine in (self.piper, self.kokoro):
+        for engine in (self.piper, self.kokoro, self.ultron):
             try: engine.shutdown()
             except Exception: pass
 
