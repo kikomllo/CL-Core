@@ -79,7 +79,9 @@ Today the laptop's `clVoice.py` renders a whole phrase, then plays it; the deskt
 `fit_voice_fx.py` / `collect_voice.py review --fx` stay the tuning tools; the tuned numbers are the `full` preset and
 `light` is derived from them by dropping the expensive stages, then re-tuned by ear.
 
-**1.3 Cache beats compute.** Most replies are canned (`config/responses.json`), so on lite they should cost nothing:
+**1.3 Cache beats compute (done).** Counted afterwards: `responses.json` has only ~52 fixed phrases (+19 with placeholders) and
+the reply model's free text rarely repeats, so the saving is real but smaller than first assumed; pre-rendering those 52
+took 57 s with Kokoro on the desktop. Planned shape:
 - Cache stores the post-FX audio (as now, `assets/tts_cache/*_local.wav`, 1000 phrases LRU).
 - New idle job / CLI `python src/clTTS.py --prerender` renders every `responses.json` phrase without placeholders
   (and common ones with typical values) into the cache, once per voice tag. Run it after a persona or voice change and on
@@ -110,32 +112,30 @@ stages (reverb length, EQ bands) before touching streaming.
 
 ## Phase 2: the Ultron look
 
-`src/clTheme.py` (`Theme`) is the single source for colors/fonts, but the orange palette still leaks: ~14 hard-coded hex
-values across `clClaudeWidget`, `clDrawerControls`, `clMediaWidget`, `clRingCheckBox`, `clSettingsWidget`, plus the
-visualizer orb and clock glow (painted), and the SVG icons in `assets/icons/` (check whether they carry the color or are
-tinted at runtime).
+**Approach changed (decided while building).** The audit found ~250 colour literals (135 outside `clTheme.py`, the rest inside its
+stylesheet strings), all in the orange family. Moving each to a token by hand would be slow and could shift the current look by
+accident, while `QWidget.setStyleSheet` already has one choke point (`clUIScalerInjector`). So the palette is a **skin that
+recolours the existing colours** (`src/clSkin.py`), not a second set of tokens: `jarvis` is the identity (the default look is
+unchanged by construction), `ultron` is a deterministic mapping. Details: `docs/context/ui.md` ("Skins").
 
-- [ ] Audit: grep for hex/`rgba(` outside `clTheme.py`; move every one to a `Theme.C_*` token. This is a pure refactor
-      with the current orange values, shipped and tested first (`tests/test_clUI.py`, widget grabs) so any visual diff is
-      a bug.
-- [ ] Palette as data: `Theme` reads a palette dict chosen by `settings.theme` (`"jarvis"` default, `"ultron"`), so both
-      skins coexist and switching is a restart, not a code change.
-      **Decided direction: as close to Ultron as possible, red and black, an "evil" look.** Starting palette (tuned by eye,
-      then frozen into the tokens): background near-black (`~#070708`), panels gunmetal-black with a faint cold tint
-      (`~#121316`, 180 alpha like today), primary the glowing-eye crimson (`~#ff1a24`), hover hotter (`~#ff4a3d`), dim and
-      borders the same red at 40-60% alpha, deep blood red for titles/accents (`~#b3001b`), text brushed steel
-      (`~#c9ccd2`) with a dim steel for secondary (`~#7d828b`), success stays readable but desaturated (cold green) so state
-      still reads. Keep JetBrains Mono (angular, technical).
-      "Evil setup" elements, each behind `ui_lite` so the laptop can drop them: the orb as a red glowing eye/core with a
-      slow menacing pulse and a brighter flare while he speaks, a faint scanline or flicker on the overlay, harsher
-      square corners where `clSmoothBorders` allows, an "ULTRON" boot/title treatment, and red-tinted icons.
-- [ ] Painted pieces (orb in the visualizer, clock glow, `clSmoothBorders` colors) take colors from `Theme`, not constants.
-- [ ] Assets: tray icon + app icon, `blip.wav`/`blip.mp3` chirp, boot/alarm sounds in `assets/` (a colder, lower blip so
-      the sound matches the voice). Per-theme asset folder `assets/themes/<name>/` with fallback to the root asset.
-- [ ] Lite flag `settings.ui_lite` (set by the profile): lower animation fps, drop the gaussian glow blur to a cheaper
-      approximation, no per-frame full-window repaints. Software-rendered Qt on an iGPU is the real cost here.
-- [ ] Tests: palette loads, every token present in both palettes, no hex literals outside `clTheme.py` (a cheap grep test
-      keeps the refactor honest).
+- [x] **Skin engine**: `clSkin.py` (pure mapping, idempotent, `settings.theme` / `JARVIS_THEME`), applied to `Theme.C_*`, to every
+      widget stylesheet (injector) and to painted colours (`clSkinQt.QColor` in clUI, MediaWidget, DrawerControls, ReminderWidget,
+      ClockDisplay, RingCheckBox, DashboardDrawer, ClaudeWidget). Ultron: orange/amber -> crimson (yellower = lighter/hotter),
+      cream/warm grey -> steel, dark brown -> cold near-black; greens/blues/whites/brand/status colours untouched.
+      `tests/test_clSkin.py`; the 463 existing UI tests pass unchanged under `jarvis`; side-by-side render in
+      `outputs/theme_preview_{jarvis,ultron}.png`.
+- [x] **Assets**: Ultron chirp `assets/themes/ultron/blip.wav` (generator `training/tools/make_theme_blip.py`, clTTS prefers
+      `assets/themes/<theme>/blip.wav`), tray icon is a red "U". SVG icons are recoloured from `Theme.C_PRIMARY` at runtime, so they follow.
+- [ ] **Tune by eye on the real dashboard** (the preview is widgets on a dark backdrop, not the fullscreen overlay): crimson
+      saturation/hue, steel text tint, panel darkness. The mapping constants are at the top of `clSkin.ultron_rgb`; named overrides
+      for individual `Theme.C_*` constants can be added if one colour needs a hand-picked value.
+- [x] **The head replaces the visualizer (done)**: dot-matrix Ultron head from the owner's pixel reference, the owner's hand-drawn sprite frames (idle + 3 talking, `assets/themes/ultron/head/`) cross-faded by the voice, brighter the wider the mouth is open, idle breathing, soft glitches at rest and a rare hard flicker (`settings.ultron_glitch`); `ui/clUltronHead.py`, `tests/test_clUltronHead.py`.
+- [ ] **"Evil setup" extras (the rest)** (new drawing, not recolouring): the orb as a glowing red eye with a slow pulse and a flare while he
+      speaks, a faint scanline/flicker on the overlay, harsher square corners where `clSmoothBorders` allows, an "ULTRON"
+      boot/title treatment, boot/alarm sounds. Each behind `ui_lite`.
+- [ ] **`ui_lite`** (set by the lite profile): lower animation fps, a cheaper glow than the gaussian blur, no per-frame
+      full-window repaints. Belongs with the laptop work.
+- [ ] Switch it on: `"theme": "ultron"` in `config/core.json` (template default stays `jarvis` until both machines are happy), restart the UI.
 
 ## Phase 3: the Ultron persona
 
@@ -227,8 +227,16 @@ Acceptance for "the switch is done":
 
 ## Status
 
-Nothing implemented yet. The merge of the laptop's `clVoice` + dataset tooling is on `desktop-voice-wip`
-(commit `bff756a`), not yet in `main`; `clVoice` is not wired into `clTTS.py`.
+- Phase 0: merge (in `main`), per-machine `core.json`, profiles and the desktop baseline are done. Pending: laptop pull +
+  `--profile lite` + its baseline.
+- Phase 1 (desktop part done): 1.1 `UltronEngine`, 1.2 fx levels, 1.3 pre-render (`TTSManager.prerender`,
+  `python src/clTTS.py --prerender`, `settings.tts_prerender`), 1.5 tests (`tests/test_clUltron.py`) and
+  `training/tools/bench_tts.py`. Wired as `tts_engine = "ultron"` but not switched on in any live `core.json`. Pending: 1.4
+  model download (deferred), 1.6 laptop gate, tuning `light`/`full` by ear with the real `actor_voice.onnx` (only the stock
+  Piper voice is on the desktop, so the engine falls back to it).
+- Phase 2: skin engine + Ultron palette + chirp + tray icon done (not switched on live); tuning by eye, the extra effects and
+  `ui_lite` pending.
+- Phases 3-5: not started.
 
 ## Measured
 

@@ -3,6 +3,9 @@ import os
 import pytest
 import asyncio
 
+# Tests assert the JARVIS palette; never let this machine's settings.theme (or a stray env var) change it. Skin tests start their own interpreter with JARVIS_THEME set.
+os.environ["JARVIS_THEME"] = "jarvis"
+
 
 @pytest.fixture(scope="session", autouse=True)
 def _local_core_json():

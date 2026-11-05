@@ -1,5 +1,6 @@
 from PyQt6.QtCore import Qt, QRectF, QSize
-from PyQt6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPen
+from PyQt6.QtGui import QImage, QLinearGradient, QPainter, QPen
+from clSkinQt import QColor
 from PyQt6.QtWidgets import QCheckBox
 
 from clUIScaler import UIScaler

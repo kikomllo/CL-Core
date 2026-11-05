@@ -6,7 +6,8 @@ from PyQt6.QtWidgets import (
     QStyle, QStyleOptionSlider, QGraphicsOpacityEffect,
 )
 from PyQt6.QtCore import QTimer, QSize, Qt, QVariantAnimation, QEasingCurve, QRectF, pyqtSignal
-from PyQt6.QtGui import QPixmap, QPainter, QColor, QPen, QLinearGradient
+from PyQt6.QtGui import QPixmap, QPainter, QPen, QLinearGradient
+from clSkinQt import QColor
 from clUIScaler import UIScaler
 from ui.clMarqueeLabel import MarqueeLabel
 

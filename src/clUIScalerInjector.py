@@ -3,6 +3,7 @@ from PyQt6.QtCore import QSize
 from PyQt6.QtGui import QFont
 from clUIScaler import UIScaler
 import clSmoothBorders as smooth_borders
+from clSkin import recolor_css
 
 def inject_scaler():
     # Style Sheet
@@ -10,6 +11,7 @@ def inject_scaler():
     def _scaled_setStyleSheet(self, css):
         if not isinstance(css, str):
             return _orig_setStyleSheet(self, css)
+        css = recolor_css(css)          # the skin (settings.theme); a no-op for the default JARVIS colours
         self._unscaled_css = css
         _orig_setStyleSheet(self, smooth_borders.process(self, UIScaler.get().scale_css(css)))
     QWidget.setStyleSheet = _scaled_setStyleSheet

@@ -15,6 +15,8 @@ except ImportError as e:
 
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [TRAY] %(message)s', datefmt='%H:%M:%S')
 
+import clSkin
+
 def create_qt_icon():
     pixmap = QPixmap(64, 64)
     pixmap.fill(QColor("transparent"))
@@ -22,7 +24,7 @@ def create_qt_icon():
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     
     color1 = QColor(0, 0, 0)
-    color2 = QColor(0, 200, 255)
+    color2 = QColor(255, 40, 40) if clSkin.ACTIVE == "ultron" else QColor(0, 200, 255)
     
     painter.setBrush(color1)
     
@@ -35,7 +37,7 @@ def create_qt_icon():
     font = QFont("Arial", 28, QFont.Weight.Bold)
     painter.setFont(font)
     painter.setPen(color2)
-    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "J")
+    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "U" if clSkin.ACTIVE == "ultron" else "J")
     
     painter.end()
     return QIcon(pixmap)

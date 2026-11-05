@@ -6,7 +6,8 @@ from clTheme import Theme
 from utils.clActionRouter import ActionRouter
 from PyQt6.QtWidgets import QWidget, QPushButton
 from PyQt6.QtCore import QTimer, QFileSystemWatcher, Qt, QRectF
-from PyQt6.QtGui import QPainter, QColor, QPen, QFont
+from PyQt6.QtGui import QPainter, QPen, QFont
+from clSkinQt import QColor
 
 class ReminderWidget(QWidget):
     def __init__(self, parent=None, grid_mode=False):

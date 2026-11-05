@@ -2039,3 +2039,25 @@ class TestSpotifyQueueTopic:
 
         dashboard_copy.update_queue.assert_called_once_with(data)
         carousel_copy.update_queue.assert_called_once_with(data)
+
+
+class TestOrbBloom:
+    """The orb's glow must fade smoothly: the old 3-stop linear ramp had visible kinks that read as a hard-edged disc."""
+
+    def test_the_glow_is_brightest_at_the_core_and_reaches_exactly_zero_at_the_rim(self):
+        import clUI
+        alphas = [c.alpha() for _, c in clUI.bloom_stops()]
+        assert alphas[0] == clUI.BLOOM_PEAK_ALPHA and alphas[-1] == 0
+        assert all(a >= b for a, b in zip(alphas, alphas[1:]))             # never brightens going outward
+
+    def test_the_falloff_has_no_kink(self):
+        import clUI
+        alphas = [c.alpha() for _, c in clUI.bloom_stops()]
+        steps = [a - b for a, b in zip(alphas, alphas[1:])]
+        # a smooth curve changes its slope gradually: no step is wildly bigger than its neighbour
+        assert all(abs(x - y) <= 0.2 * clUI.BLOOM_PEAK_ALPHA for x, y in zip(steps, steps[1:]))
+
+    def test_the_stops_cover_the_whole_radius_in_order(self):
+        import clUI
+        positions = [t for t, _ in clUI.bloom_stops()]
+        assert positions[0] == 0.0 and positions[-1] == 1.0 and positions == sorted(positions)

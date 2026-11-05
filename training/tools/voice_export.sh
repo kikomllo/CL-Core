@@ -1,8 +1,9 @@
 #!/bin/bash
 # Export a run checkpoint to ONNX and synthesise a test line (WSL). $1 = run, $2 = ckpt file, $3 = output voice name.
 export PATH="$HOME/.local/bin:$PATH"
+export PYTHONPATH="$HOME/voice/piper1-gpl/src${PYTHONPATH:+:$PYTHONPATH}"
 cd "$HOME/voice/piper1-gpl" && source .venv/bin/activate
-CK=$(ls -d "$HOME/voice/runs/$1"/lightning_logs/*/checkpoints | tail -n1)/$2
+CK=$(ls -d "$HOME/voice/runs/$1"/lightning_logs/*/checkpoints/"$2" | tail -n1)       # a resumed run has one version_N folder per attempt: take the newest that has the file
 OUT="$HOME/voice/out/$3"; mkdir -p "$OUT"
 python - "$CK" "$OUT/$3.onnx" <<'PY'
 import pathlib, sys, torch, runpy

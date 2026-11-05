@@ -3,7 +3,7 @@ import sys
 import threading
 import time
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 
 import numpy as np
 import pytest
@@ -236,3 +236,132 @@ class TestInTheManager:
             from clTTS import TTSManager
             m = TTSManager()
         assert m._primary_engine_name() == "piper" and [e.name for e in m._engine_order()] == ["piper"]
+
+
+class CountingEngine:
+    """A minimal primary engine: counts loads and renders a short tone per phrase (or fails for chosen phrases)."""
+    name = "ultron"
+    voice_tag = "test"
+    sample_rate = 24000
+
+    def __init__(self, fail=()):
+        self.loads, self.spoken, self.fail = 0, [], set(fail)
+
+    def load(self):
+        self.loads += 1
+
+    def ready(self):
+        return True
+
+    def unload_if_idle(self, idle_seconds):
+        return False
+
+    def unload(self):
+        return True
+
+    def shutdown(self):
+        pass
+
+    def stream(self, text, stop):
+        self.spoken.append(text)
+        if text in self.fail:
+            raise RuntimeError("boom")
+        yield np.full(2400, 0.1, dtype=np.float32)
+
+
+@pytest.fixture
+def prerender_manager(tmp_path):
+    with patch('clTTS.ConfigLoader') as MockLoader:
+        MockLoader.return_value.load_json.side_effect = lambda name: (
+            {"settings": {"silent_mode": False, "tts_engine": "ultron"}} if name == "core.json" else {"mqtt": {}})
+        from clTTS import TTSManager
+        m = TTSManager()
+    m.assets_dir = str(tmp_path)
+    m.ultron = CountingEngine()
+    return m
+
+
+PHRASES = ["Going dark.", "Halting the media streams.", "Powering them up."]
+
+
+class TestPlainPhrases:
+    def test_only_fixed_short_phrases_are_taken_from_every_section(self):
+        from clTTS import TTSManager
+        data = {"mqtt": {"a": {"on": ["Going dark.", "Going dark.", "Lights at {lum} percent."]}},
+                "conversational": {"x": ["  Anything else?  "]}, "followup_suggestions": ["y" * 200, "Shall I?"]}
+        assert TTSManager.plain_phrases(data) == ["Anything else?", "Going dark.", "Shall I?"]
+
+    def test_the_shipped_responses_have_phrases(self):
+        import json
+        from clTTS import TTSManager
+        path = os.path.join(os.path.dirname(__file__), "..", "config", "responses.json")
+        phrases = TTSManager.plain_phrases(json.load(open(path, encoding="utf-8")))
+        assert len(phrases) > 20 and not any("{" in p for p in phrases)
+
+
+class TestPrerender:
+    def test_renders_the_missing_phrases_into_the_cache_the_player_looks_in(self, prerender_manager):
+        m = prerender_manager
+        stats = m.prerender(PHRASES)
+        assert stats == {"rendered": 3, "failed": 0, "already_cached": 0}
+        for text in PHRASES:
+            path = m._cache_file(text)
+            assert os.path.dirname(path) == m.cache_dir and os.path.getsize(path) > 0
+
+    def test_a_second_run_does_nothing_and_loads_nothing(self, prerender_manager):
+        m = prerender_manager
+        m.prerender(PHRASES)
+        loads = m.ultron.loads
+        assert m.prerender(PHRASES) == {"rendered": 0, "failed": 0, "already_cached": 3}
+        assert m.ultron.loads == loads and len(m.ultron.spoken) == 3
+
+    def test_a_phrase_that_fails_does_not_stop_the_others(self, prerender_manager):
+        m = prerender_manager
+        m.ultron.fail = {PHRASES[1]}
+        assert m.prerender(PHRASES) == {"rendered": 2, "failed": 1, "already_cached": 0}
+        assert not os.path.exists(m._cache_file(PHRASES[1]))
+
+    def test_a_changed_voice_is_rendered_again(self, prerender_manager):
+        m = prerender_manager
+        m.prerender(PHRASES)
+        m.ultron.voice_tag = "other voice"
+        assert m.prerender(PHRASES)["rendered"] == 3
+
+    def test_it_waits_while_the_user_is_speaking(self, prerender_manager):
+        m = prerender_manager
+        m.mic_active = True
+        worker = threading.Thread(target=m.prerender, args=(PHRASES,))
+        worker.start()
+        time.sleep(0.6)
+        assert m.ultron.spoken == []                       # nothing rendered while the mic is busy
+        m.mic_active = False
+        worker.join(timeout=5)
+        assert len(m.ultron.spoken) == 3
+
+    def test_it_can_be_stopped(self, prerender_manager):
+        m = prerender_manager
+        m.mic_active = True
+        worker = threading.Thread(target=m.prerender, args=(PHRASES,))
+        worker.start()
+        time.sleep(0.3)
+        m.stop_prerender()
+        worker.join(timeout=5)
+        assert not worker.is_alive() and m.ultron.spoken == []
+
+    @pytest.mark.asyncio
+    async def test_a_cached_phrase_is_played_from_the_file_without_synthesis(self, prerender_manager):
+        m = prerender_manager
+        m.prerender(PHRASES)
+        m.ultron.spoken.clear()
+        with patch.object(m, "_play_file", new=AsyncMock()) as play:
+            await m.generate_and_play(None, PHRASES[0], ignore_silent=True)
+        assert play.call_args[0][1] == m._cache_file(PHRASES[0]) and m.ultron.spoken == []
+
+    @pytest.mark.asyncio
+    async def test_mic_state_tracks_whether_the_user_is_speaking(self, prerender_manager):
+        m = prerender_manager
+        with patch.object(m, "warm", new=AsyncMock()):
+            m.handle_mic_state({"state": "recording"})
+            assert m.mic_active is True
+            m.handle_mic_state({"state": "idle"})
+            assert m.mic_active is False

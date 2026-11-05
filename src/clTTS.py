@@ -15,10 +15,11 @@ import numpy as np
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 from pygame import mixer
 import aiomqtt
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 import sys
 
 from utils.clConfigLoader import ConfigLoader
+import clSkin
 
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -44,6 +45,7 @@ SPEECH_CHANNEL = 1           # mixer.Channel for streamed speech (mixer.music pl
 BLIP_CHANNEL = 2             # the "I heard you" chirp before every reply
 PREBUFFER_SECONDS = 0.25     # audio generated before streamed speech starts, against underruns
 CACHE_MAX_CHARS = 140        # only short, likely-to-repeat phrases are cached (AI replies are unique)
+PRERENDER_DELAY = 60.0        # seconds after boot before the canned phrases are rendered (the other services are still starting)
 CACHE_MAX_FILES = 1000       # phrases kept in assets/tts_cache (the least recently used go first)
 EDGE_BLOCK_SECONDS = 120.0   # after edge-tts fails, skip it this long (no doomed retries per phrase)
 PRELOAD_WAIT_SECONDS = 45.0  # how long a reply spoken at startup waits for the primary voice to load
@@ -62,7 +64,8 @@ class TTSManager:
     def __init__(self):
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
         self.assets_dir = os.path.abspath(os.path.join(self.base_dir, "..", "assets"))
-        self.blip_path = os.path.join(self.assets_dir, "blip.mp3")
+        themed_blip = os.path.join(self.assets_dir, "themes", clSkin.ACTIVE, "blip.wav")      # the skin's own chirp, if it has one
+        self.blip_path = themed_blip if os.path.exists(themed_blip) else os.path.join(self.assets_dir, "blip.mp3")
         self.semaphore = asyncio.Semaphore(1)
         self.abort_counter = 0
         self.edge_blocked_until = 0.0
@@ -70,6 +73,8 @@ class TTSManager:
         self.kokoro = None          # built once the settings are read (needs `tts_kokoro_bright`)
         self.ultron = None          # same, needs `tts_settings`
         self.preloading = False
+        self.mic_active = False     # the user is speaking: background work (pre-render) waits
+        self._prerender_stop = threading.Event()
         self._warming = False
         self.gain = 1.0             # JARVIS's own voice level; the mic lowers it if the speaker is too loud to interrupt
         self.publish_ref = True
@@ -85,6 +90,7 @@ class TTSManager:
         core_data = ConfigLoader().load_json("core.json")
         self.silent_mode = core_data.get("settings", {}).get("silent_mode", False)
         self.tts_engine = core_data.get("settings", {}).get("tts_engine", "piper")
+        self.prerender_enabled = bool(core_data.get("settings", {}).get("tts_prerender", True))
         self.kokoro = KokoroEngine(bright=bool(core_data.get("settings", {}).get("tts_kokoro_bright", True)))
         self.ultron = UltronEngine(core_data.get("settings", {}).get("tts_settings"))
         # The local voice is cheap to reload (~2s, hidden behind the user speaking), so it is released soon after
@@ -237,6 +243,11 @@ class TTSManager:
         primary = self._primary()
         return f"{primary.name}:{primary.voice_tag}"
 
+    def _cache_file(self, text: str) -> str:
+        """Where `text` spoken by the primary voice is cached."""
+        local_hash = hashlib.md5(f"{text}_{self._cache_tag()}".encode()).hexdigest()
+        return os.path.join(self.cache_dir, f"tts_{local_hash}_local.wav")
+
     # ------------------------------------------------------------------
     # Level + echo reference (so the mic can hear the user over JARVIS)
     # ------------------------------------------------------------------
@@ -333,7 +344,8 @@ class TTSManager:
             self._warming = False
 
     def handle_mic_state(self, payload: dict) -> None:
-        if payload.get("state") in ("listening", "recording"):
+        self.mic_active = payload.get("state") in ("listening", "recording")
+        if self.mic_active:
             asyncio.create_task(self.warm())
 
     def reap_idle(self) -> bool:
@@ -556,6 +568,69 @@ class TTSManager:
             logging.warning(f"[TTS] Could not cache phrase: {e}")
 
     # ------------------------------------------------------------------
+    # Pre-rendering the canned phrases
+    # ------------------------------------------------------------------
+    @staticmethod
+    def plain_phrases(responses: Dict[str, Any]) -> List[str]:
+        """Every fixed (no {placeholder}) phrase in responses.json that is short enough to be cached, sorted."""
+        found: List[str] = []
+
+        def walk(node) -> None:
+            if isinstance(node, str):
+                found.append(node)
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item)
+            elif isinstance(node, dict):
+                for item in node.values():
+                    walk(item)
+
+        walk(responses)
+        return sorted({t.strip() for t in found if t.strip() and "{" not in t and len(t.strip()) <= CACHE_MAX_CHARS})
+
+    def _is_cached(self, text: str) -> bool:
+        path = self._cache_file(text)
+        return os.path.exists(path) and os.path.getsize(path) > 0
+
+    def prerender(self, texts: Optional[List[str]] = None) -> Dict[str, int]:
+        """Renders the phrases that are not cached yet with the primary voice, so replies that repeat cost a file read
+        instead of a synthesis (the point on a slow CPU). Blocking; run it in a thread. It waits while a reply is being
+        spoken or the user is talking, and stops as soon as `stop_prerender()` is called. Does nothing (and loads
+        nothing) when every phrase is already cached."""
+        if texts is None:
+            texts = self.plain_phrases(ConfigLoader().load_json("responses.json"))
+        missing = [t for t in texts if not self._is_cached(t)]
+        stats = {"rendered": 0, "failed": 0, "already_cached": len(texts) - len(missing)}
+        if not missing:
+            return stats
+        engine = self._primary()
+        self._prerender_stop.clear()
+        t0 = time.time()
+        engine.load()
+        never = threading.Event()                       # prerender is not cut off by speech aborts, only by stop_prerender()
+        for text in missing:
+            while (self.semaphore.locked() or self.mic_active or self._warming) and not self._prerender_stop.is_set():
+                time.sleep(0.25)
+            if self._prerender_stop.is_set():
+                break
+            try:
+                audio = [resample(c, engine.sample_rate, MIXER_RATE) for c in engine.stream(text, never)]
+                if audio:
+                    self._write_cache(self._cache_file(text), np.concatenate(audio))
+                    stats["rendered"] += 1
+                else:
+                    stats["failed"] += 1
+            except Exception as e:
+                logging.warning(f"[TTS] Could not pre-render '{text}': {e}")
+                stats["failed"] += 1
+        logging.info(f"[TTS] Pre-rendered {stats['rendered']} phrases with the {engine.name} voice in {time.time() - t0:.1f}s "
+                     f"({stats['failed']} failed, {stats['already_cached']} were cached).")
+        return stats
+
+    def stop_prerender(self) -> None:
+        self._prerender_stop.set()
+
+    # ------------------------------------------------------------------
     # Entry point
     # ------------------------------------------------------------------
     async def generate_and_play(self, client, text, voice="en-GB-RyanNeural", ignore_silent=False, abort_count=0) -> None:
@@ -566,8 +641,7 @@ class TTSManager:
         t_req = time.time()
         file_hash = hashlib.md5(f"{text}_{voice}".encode()).hexdigest()
         mp3_file = os.path.join(self.ryan_dir, f"tts_{file_hash}.mp3")
-        local_hash = hashlib.md5(f"{text}_{self._cache_tag()}".encode()).hexdigest()
-        local_file = os.path.join(self.cache_dir, f"tts_{local_hash}_local.wav")
+        local_file = self._cache_file(text)
 
         def usable(path):                      # an empty file is a failed save, not a cached phrase
             return os.path.exists(path) and os.path.getsize(path) > 0
@@ -824,6 +898,15 @@ async def run_tts_service():
     manager.migrate_legacy_files()
     asyncio.create_task(manager.preload())
 
+    async def prerender_later():
+        await asyncio.sleep(PRERENDER_DELAY)
+        if manager.prerender_enabled:
+            try:
+                await asyncio.to_thread(manager.prerender)
+            except Exception as e:
+                logging.error(f"[TTS] Pre-render failed: {e}")
+    asyncio.create_task(prerender_later())
+
     async def idle_reaper():
         while True:
             await asyncio.sleep(30)
@@ -934,9 +1017,17 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="JARVIS TTS microservice")
     parser.add_argument("-t", "--text", help="Generate and speak this text once, then exit (no MQTT needed)")
+    parser.add_argument("--prerender", action="store_true",
+                        help="Render every fixed phrase in responses.json into the cache with the configured voice, then exit")
     args = parser.parse_args()
 
-    if args.text:
+    if args.prerender:
+        manager = TTSManager()
+        try:
+            print(manager.prerender())
+        finally:
+            manager.close()
+    elif args.text:
         manager = TTSManager()
         try:
             asyncio.run(manager.generate_and_play(None, args.text, ignore_silent=True))

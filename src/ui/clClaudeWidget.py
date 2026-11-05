@@ -4,8 +4,9 @@ from clTheme import Theme
 from utils.clActionRouter import ActionRouter
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import (
-    QPainter, QColor, QStandardItemModel, QStandardItem, QTextCursor, QKeySequence, QTextCharFormat
+    QPainter, QStandardItemModel, QStandardItem, QTextCursor, QKeySequence, QTextCharFormat
 )
+from clSkinQt import QColor
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTextEdit, QSizePolicy, QCompleter, QApplication
 )

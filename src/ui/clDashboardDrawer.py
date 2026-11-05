@@ -1,7 +1,8 @@
 from datetime import datetime
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QPainter, QRadialGradient, QColor
+from PyQt6.QtGui import QPainter, QRadialGradient
+from clSkinQt import QColor
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QScrollArea, QStackedWidget, QVBoxLayout, QWidget
 
 from clCalendarWidget import CalendarWidget

@@ -12,6 +12,38 @@
             "piper_model": "models/piper/actor_voice.onnx",
             "fx_level": "full"
         },
+        "tts_prerender": true,
+        "theme": "jarvis",
+        "ultron_head": "gap",
+        "ultron_glitch": {
+            "enabled": true,
+            "idle_every_s": [
+                3.0,
+                9.0
+            ],
+            "speaking_every_s": [
+                6.0,
+                15.0
+            ],
+            "processing_every_s": [
+                0.7,
+                2.0
+            ],
+            "soft_ms": [
+                110,
+                320
+            ],
+            "soft_shift": 3,
+            "hard_every_s": [
+                15.0,
+                45.0
+            ],
+            "hard_ms": [
+                500,
+                1500
+            ],
+            "hard_shift": 9
+        },
         "stt_processing_mode": "sequential",
         "audio_settings": {
             "input_device": null,

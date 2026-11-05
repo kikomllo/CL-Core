@@ -521,10 +521,23 @@ def summarize(rejects):
 
 # --------------------------------------------------------------------------- transcription
 
+def add_cuda_dll_dirs():
+    """CTranslate2 on Windows needs the pip-installed CUDA DLLs (nvidia-cublas/cudnn in the venv) on the DLL search path,
+    or Whisper on cuda fails with "Library cublas64_12.dll is not found" (clWhisper.py does the same)."""
+    if sys.platform != "win32":
+        return
+    for base in sys.path:
+        for lib in ("cublas", "cudnn"):
+            path = os.path.join(base, "nvidia", lib, "bin")
+            if os.path.isdir(path):
+                os.add_dll_directory(path)
+
+
 def transcribe_missing(ds, args):
     todo = [r for r in ds.rows if not r["text"]]
     if not todo:
         return
+    add_cuda_dll_dirs()
     from faster_whisper import WhisperModel
     print(f"Transcribing {len(todo)} clip(s) with Whisper '{args.whisper_model}' on {args.whisper_device}...")
     model = WhisperModel(args.whisper_model, device=args.whisper_device,

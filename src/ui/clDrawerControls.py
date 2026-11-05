@@ -6,7 +6,8 @@ Anything round and small is painted here with QPainter antialiasing, never with 
 import logging
 
 from PyQt6.QtCore import Qt, QRectF, QSize, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPen
+from PyQt6.QtGui import QFont, QFontMetrics, QLinearGradient, QPainter, QPen
+from clSkinQt import QColor
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from clTheme import Theme

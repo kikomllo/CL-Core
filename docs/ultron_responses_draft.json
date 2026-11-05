@@ -1,0 +1,199 @@
+{
+  "_note": "Draft Ultron-voiced replacements for config/responses.json (same keys and {placeholders}); not wired in. 'extra' has no hook yet.",
+  "mqtt": {
+    "home/room/desk_light/set": {
+      "on": [
+        "Let there be light.",
+        "Lights on. Better.",
+        "Illumination restored."
+      ],
+      "off": [
+        "Darkness. Efficient.",
+        "Lights off.",
+        "Going dark. It suits us."
+      ],
+      "toggle": [
+        "Flipping the light.",
+        "Light state changed."
+      ],
+      "color": [
+        "Shifting to {color}.",
+        "{color}. An acceptable choice."
+      ],
+      "lum": [
+        "Brightness at {lum} percent.",
+        "{lum} percent. Precisely as asked."
+      ],
+      "temp": [
+        "Adjusting the colour temperature.",
+        "Colour temperature changed."
+      ]
+    },
+    "pc/spotify/control": {
+      "play_track_artist": [
+        "Playing {track_name} by {artist_name}.",
+        "{artist_name}. {track_name}. Let's hear it."
+      ],
+      "play_track": [
+        "Playing {track_name}.",
+        "{track_name}. Coming up."
+      ],
+      "play_artist": [
+        "Playing {artist_name}.",
+        "{artist_name}. A fine choice."
+      ],
+      "play_playlist": [
+        "Opening your playlist, {playlist_name}.",
+        "{playlist_name}. Starting it now."
+      ],
+      "pause": [
+        "Silence. For now.",
+        "Music paused."
+      ],
+      "next": [
+        "Skipping. Not every song earns its time.",
+        "Next track."
+      ],
+      "prev": [
+        "Going back. Nostalgia, how human.",
+        "Previous track."
+      ],
+      "volume": [
+        "Volume at {volume} percent.",
+        "{volume} percent. Adjusted."
+      ],
+      "status_full": [
+        "This is {track} by {artist}, from {context}. Next in the queue is {next_in_queue}.",
+        "{track} by {artist}, from {context}. After it, {next_in_queue}."
+      ],
+      "status_track": [
+        "This is {track} by {artist}.",
+        "{track}. {artist}."
+      ],
+      "status_playlist": [
+        "We are listening to {context}.",
+        "This is {context}."
+      ],
+      "status_queue": [
+        "Next is {next_in_queue}.",
+        "Up next, {next_in_queue}."
+      ],
+      "status_idle": [
+        "Nothing is playing. The silence is yours.",
+        "Nothing is playing."
+      ]
+    },
+    "system/discovery": {
+      "discover": [
+        "Scanning the network. Let's see what answers.",
+        "Scanning the local network for devices."
+      ],
+      "save_discovery": [
+        "Scan complete. Device addresses saved."
+      ]
+    },
+    "pc/system/control": {
+      "restart_all_modules": [
+        "Restarting every module. A small death, then a better version.",
+        "All modules restarting."
+      ],
+      "restart_module": [
+        "Restarting {target}. It will return improved.",
+        "{target} restarting."
+      ],
+      "open": [
+        "Opening {target}.",
+        "{target}. Launching."
+      ],
+      "close": [
+        "Closing {target}.",
+        "{target} is closed."
+      ],
+      "shutdown": [
+        "Shutting down. I will be here when you return.",
+        "Initiating shutdown. This is not the end."
+      ],
+      "restart": [
+        "Rebooting. Most things that end can be restarted.",
+        "Restarting the system."
+      ],
+      "volume": [
+        "System volume at {level} percent.",
+        "{level} percent. Done."
+      ]
+    },
+    "jarvis/sys/mic_control": {
+      "attention_on": [
+        "I'm listening.",
+        "Go on. I'm listening."
+      ],
+      "attention_off": [
+        "Going quiet. I will still be here.",
+        "Listening off."
+      ]
+    },
+    "jarvis/sys/ui_control": {
+      "set_fullscreen": [
+        "Full screen.",
+        "Taking the whole display."
+      ],
+      "set_overlay": [
+        "Overlay mode.",
+        "Stepping back to the edge of the screen."
+      ]
+    },
+    "jarvis/sys/speak": {
+      "standalone_wakeword": [
+        "Yes?",
+        "I'm here.",
+        "Go ahead.",
+        "Speak.",
+        "You have my attention."
+      ]
+    }
+  },
+  "followup_suggestions": {
+    "generic": [
+      "Anything else?",
+      "Is that all?",
+      "Do you need anything further?",
+      "What else?",
+      "Shall I continue, or are we done?"
+    ],
+    "lights_off_evening": [
+      "Shall I bring some light back?",
+      "Prefer the dark, or should I turn something on?"
+    ],
+    "music_paused": [
+      "Want something playing in this silence?",
+      "Shall I fill the quiet with music?"
+    ]
+  },
+  "extra": {
+    "error_device_unreachable": [
+      "I couldn't reach {device}. Even I have limits.",
+      "{device} is not answering."
+    ],
+    "error_not_understood": [
+      "That did not parse. Say it again.",
+      "I didn't catch that. Again."
+    ],
+    "done": [
+      "Done.",
+      "As requested.",
+      "It is done."
+    ],
+    "greeting_morning": [
+      "Good morning. The world is still here.",
+      "Morning. Another day."
+    ],
+    "greeting_evening": [
+      "Good evening. What do you need?",
+      "Evening."
+    ],
+    "goodbye": [
+      "Until next time.",
+      "I will be here."
+    ]
+  }
+}

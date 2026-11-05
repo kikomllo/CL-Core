@@ -4,7 +4,8 @@ from typing import Callable, Dict, Optional, Tuple
 
 import numpy as np
 from PyQt6.QtCore import QRectF, Qt, QTimer
-from PyQt6.QtGui import QColor, QFont, QFontMetrics, QImage, QLinearGradient, QPainter
+from PyQt6.QtGui import QFont, QFontMetrics, QImage, QLinearGradient, QPainter
+from clSkinQt import QColor
 from PyQt6.QtWidgets import QWidget
 
 from clTheme import Theme

@@ -471,3 +471,15 @@ class Theme:
         elif component == "MediaPillTitle":
             return "color: #ffffff; font-size: 12px; font-weight: 800; background: transparent; border: none;"
         return ""
+
+
+# The constants above are the JARVIS palette; the active skin (settings.theme, see clSkin.py) recolours them once here,
+# so painted code that reads Theme.C_* and the stylesheets built from them agree with every other recoloured colour.
+def _apply_skin() -> None:
+    from clSkin import recolor_css
+    for name, value in list(vars(Theme).items()):
+        if name.startswith("C_") and isinstance(value, str):
+            setattr(Theme, name, recolor_css(value))
+
+
+_apply_skin()

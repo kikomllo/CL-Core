@@ -81,6 +81,7 @@ unsloth_compiled_cache/
 training/data/voice_dataset/
 training/data/voice_ref/
 training/data/voice_export/
+training/data/voice_export_ultron/
 training/data/ultron_lines/
 
 # Per-machine settings (created from config/core.default.json by src/utils/clLocalConfig.py)

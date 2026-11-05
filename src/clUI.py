@@ -9,8 +9,10 @@ from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLa
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPointF, QPoint, QSize, QFileSystemWatcher, QPropertyAnimation, QVariantAnimation, QEasingCurve, QRect, pyqtProperty
 from datetime import datetime
 import paho.mqtt.publish as publish
-from PyQt6.QtGui import QPainter, QColor, QPen, QPainterPath, QRadialGradient, QBrush, QLinearGradient
-from PyQt6.QtGui import QPainter, QColor, QPen, QPainterPath, QRadialGradient, QBrush, QLinearGradient, QFontMetrics, QFont
+from PyQt6.QtGui import QPainter, QPen, QPainterPath, QRadialGradient, QBrush, QLinearGradient
+from PyQt6.QtGui import QPainter, QPen, QPainterPath, QRadialGradient, QBrush, QLinearGradient, QFontMetrics, QFont
+from clSkinQt import QColor
+import clSkin
 from utils.clActionRouter import ActionRouter
 
 from ui.clMediaWidget import MediaWidget
@@ -612,6 +614,9 @@ class DraggableWidget(QWidget):
                 self.main_window.save_ui_state()
         super().mouseReleaseEvent(event)
 
+from ui.clUltronHead import new_glitch, Glitch, pulse_scale
+
+
 class JarvisVisualizer(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -629,6 +634,22 @@ class JarvisVisualizer(QWidget):
         self.frequency = 0.05
         self.speed = 0.1
         self.is_fullscreen = False
+        # The Ultron skin puts a dot-matrix head in the middle instead of the dashed rings (see ui/clUltronHead.py)
+        self.head = None
+        self.talk_level = 0.0
+        self.glitch_rows = None
+        self.flicker = 1.0
+        self.glitch = None
+        if clSkin.ACTIVE == "ultron":
+            from ui.clUltronHead import load_head, head_kind
+            try:
+                with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config", "core.json"), "r", encoding="utf-8") as f:
+                    ultron_settings = json.load(f).get("settings", {})
+            except Exception:
+                ultron_settings = {}
+            # settings.ultron_head picks the head ("gap" | "stages" | "sprite"); settings.ultron_glitch tunes how often and how hard it glitches
+            self.head = load_head(kind=head_kind(ultron_settings))
+            self.glitch = Glitch(ultron_settings.get("ultron_glitch"))
 
     def set_volume(self, vol):
         max_amp = self.height() / 4.0 if self.height() > 100 else 150
@@ -709,7 +730,19 @@ class JarvisVisualizer(QWidget):
 
         self.time_offset += self.speed
 
-        if self.target_opacity > 0 and self.amplitude > 5:
+        if self.head is not None:
+            max_amp = self.height() / 4.0 if self.height() > 100 else 150
+            if self.state == "SPEAKING":
+                raw = (self.amplitude - 10) / (max_amp * 0.7)
+            elif self.state in ("RECORDING", "LISTENING"):
+                raw = 0.5 * (self.amplitude - 10) / max_amp          # the eyes follow the user's voice a little
+            else:
+                raw = 0.0
+            raw = min(1.0, max(0.0, raw))
+            self.talk_level += (raw - self.talk_level) * (0.6 if raw > self.talk_level else 0.25)   # quick attack, slower release
+            self.glitch_rows, self.flicker = self.glitch.update(self.state, self.head.h)
+
+        if self.head is None and self.target_opacity > 0 and self.amplitude > 5:
             if random.random() < (self.amplitude / 30.0):
                 self.particles.append({
                     "x": random.randint(0, self.width()),
@@ -745,25 +778,35 @@ class JarvisVisualizer(QWidget):
 
         painter.save()
         painter.translate(cx, cy)
-        painter.scale(self.current_scale, self.current_scale)
+        scale = self.current_scale
+        if self.head is not None:                      # the Ultron head gets bigger and smaller with the voice
+            scale *= pulse_scale(self.talk_level, self.state == "SPEAKING", self.time_offset)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.scale(scale, scale)
         painter.translate(-cx, -cy)
         
         painter.setOpacity(self.current_opacity)
-        
-        # Stronger than the original (was 60/30) -- no glow on the wave
-        # lines this time, so the center bloom carries the glow instead.
-        gradient = QRadialGradient(cx, cy, s(100))
-        gradient.setColorAt(0.0, QColor(255, 150, 0, 110))
-        gradient.setColorAt(0.5, QColor(255, 100, 0, 55))
-        gradient.setColorAt(1.0, QColor(200, 50, 0, 0))
-        
+
+        if self.head is not None:
+            # Ultron skin: the head IS the visualizer (no bloom, rings, waveform or particles); see ui/clUltronHead.py
+            cell = max(2, round(s(300) / self.head.h))
+            self.head.paint(painter, cx, cy, cell, self.talk_level, self.time_offset, self.glitch_rows, self.flicker,
+                            speaking=(self.state == "SPEAKING"))
+            painter.restore()
+            self._paint_state_text(painter)
+            return
+
+        # The center bloom carries the glow (the wave lines have none): bright core, smooth falloff, see bloom_stops().
+        gradient = QRadialGradient(cx, cy, s(BLOOM_RADIUS))
+        gradient.setStops(bloom_stops())
+
         painter.setBrush(QBrush(gradient))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawRect(int(cx - s(500)), int(cy - s(500)), s(1000), s(1000))
         
         painter.save()
         painter.translate(cx, cy)
-        
+    
         painter.save()
         painter.rotate(self.time_offset * 15)
         pen_ring1 = QPen(QColor(255, 180, 0, int(60 * self.current_opacity)))
@@ -773,7 +816,7 @@ class JarvisVisualizer(QWidget):
         r1 = s(80)
         painter.drawEllipse(QPointF(0, 0), r1, r1)
         painter.restore()
-        
+    
         painter.save()
         painter.rotate(-self.time_offset * 25)
         pen_ring2 = QPen(QColor(255, 120, 0, int(90 * self.current_opacity)))
@@ -783,9 +826,9 @@ class JarvisVisualizer(QWidget):
         r2 = s(50)
         painter.drawEllipse(QPointF(0, 0), r2, r2)
         painter.restore()
-        
+    
         painter.restore()
-        
+    
         colors = [QColor(255, 120, 0, 100), QColor(255, 180, 0, 180), QColor(255, 230, 100, 255)]
         phases = [0, 2, 4]
         amplitudes = [s(self.amplitude), s(self.amplitude * 0.6), s(self.amplitude * 0.3)]
@@ -825,11 +868,34 @@ class JarvisVisualizer(QWidget):
                 
         painter.restore()
         
+        self._paint_state_text(painter)
+
+    def _paint_state_text(self, painter):
         if ECOSYSTEM_STATE == "debug":
             painter.save()
             painter.setPen(QColor(255, 255, 255, 150))
             painter.drawText(10, 20, f"State: {self.state}")
             painter.restore()
+
+BLOOM_RADIUS = 170      # px at 1080p, where the glow reaches exactly zero
+BLOOM_PEAK_ALPHA = 100   # at the core (before the skin's accent boost)
+_bloom_cache = None
+
+
+def bloom_stops(steps: int = 16):
+    """Gradient stops for the orb's glow: a gaussian falloff that reaches exactly zero at the rim (no visible edge,
+    unlike the old 3-stop linear ramp whose kinks read as a disc), with a hot core cooling to a deep accent."""
+    global _bloom_cache
+    if _bloom_cache is None:
+        rim = math.exp(-3.5)
+        stops = []
+        for i in range(steps + 1):
+            t = i / steps
+            fall = (math.exp(-3.5 * t * t) - rim) / (1.0 - rim)
+            stops.append((t, QColor(255, int(round(200 - 130 * t)), 0, int(round(BLOOM_PEAK_ALPHA * fall)))))
+        _bloom_cache = stops
+    return _bloom_cache
+
 
 def load_recolored_svg_icon(path: str, color_hex: str, size: int):
     """Loads an SVG, swaps every fill="#hex" for color_hex, and renders it
