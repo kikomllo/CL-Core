@@ -129,6 +129,15 @@ class TestBorderIsDrawnOnceAndSmoothly:
         assert f.styleSheet().count(sb.MARK) == 1
         assert "color: blue" in f.styleSheet() and "color: red" in f.styleSheet()
 
+    def test_scroll_areas_are_left_to_qt(self, qapp):
+        # A QPainter on a QTextEdit frame has no paint engine (it paints on its viewport).
+        from PyQt6.QtWidgets import QTextEdit
+        import clSmoothBorders as sb
+        t = QTextEdit()
+        css = "QTextEdit { border: 1px solid #336699; border-radius: 8px; }"
+        assert sb.process(t, css) == css
+        assert "_sb" not in t.__dict__
+
     def test_corner_is_close_to_an_ideal_antialiased_corner(self, qapp):
         from PyQt6.QtCore import Qt, QRectF
         from PyQt6.QtGui import QImage, QPainter, QPainterPath, QColor

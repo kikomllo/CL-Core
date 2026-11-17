@@ -21,7 +21,7 @@ from functools import lru_cache
 
 from PyQt6.QtCore import Qt, QPointF, QRectF
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPolygonF
-from PyQt6.QtWidgets import QAbstractButton, QApplication, QLineEdit, QPushButton
+from PyQt6.QtWidgets import QAbstractButton, QAbstractScrollArea, QApplication, QLineEdit, QPushButton
 
 # Escape hatch: JARVIS_SMOOTH_BORDERS=0 leaves every border to Qt (for A/B comparisons).
 ENABLED = os.environ.get("JARVIS_SMOOTH_BORDERS", "1") != "0"
@@ -402,9 +402,19 @@ class _SmoothBorder:
             return
         borders = style.visible()
         if borders:
-            p = QPainter(widget)
+            p = QPainter()
+            if not p.begin(widget):
+                # No paint engine (painted outside a normal paint cycle): skip, and name the widget once.
+                key = (type(widget).__name__, widget.objectName())
+                if key not in _BEGIN_FAILED:
+                    _BEGIN_FAILED.add(key)
+                    print(f"[SMOOTH BORDERS] cannot paint border on {key[0]} '{key[1]}' (no paint engine)", flush=True)
+                return
             paint_border(p, QRectF(widget.rect()), style.radii, borders)
             p.end()
+
+
+_BEGIN_FAILED = set()
 
 
 def _install_paint(widget):
@@ -432,6 +442,8 @@ def process(widget, css):
     if not ENABLED:
         return css
     widget._sb_css = css
+    if isinstance(widget, QAbstractScrollArea):
+        return css   # paints on its viewport, a QPainter on the frame itself has no engine
     if not isinstance(widget, (QPushButton, QLineEdit)) and not css.strip():
         widget.__dict__.pop("_sb", None)
         return css

@@ -418,6 +418,13 @@ class SpotifyManager:
             return None
 
         volume = self.last_known_normal_volume if self.last_known_normal_volume is not None else "Unknown"
+        # The snapshot is up to a heartbeat old: advance it to now, or the UI (and the lyrics) re-anchor seconds behind.
+        position = self._local_status.get("position", 0.0)
+        duration = self._local_status.get("duration", 0.0)
+        if self._local_status.get("status") == "Playing":
+            position += max(0.0, time.time() - self._local_status_time)
+            if duration > 0:
+                position = min(position, duration)
         return {
             "status": "success",
             "is_playing": self._local_status.get("status") == "Playing",
@@ -426,8 +433,8 @@ class SpotifyManager:
             "artist": self._local_status.get("artist") or "Unknown",
             "context": "Unknown",
             "next_in_queue": "Unknown",
-            "progress_ms": int(self._local_status.get("position", 0.0) * 1000),
-            "duration_ms": int(self._local_status.get("duration", 0.0) * 1000),
+            "progress_ms": int(position * 1000),
+            "duration_ms": int(duration * 1000),
             "shuffle": self._local_status.get("shuffle"),
             "repeat": self._local_status.get("repeat"),
         }
@@ -691,23 +698,25 @@ class SpotifyManager:
             if self._lyrics_settling == (title, artist):
                 self._lyrics_settling = None
 
-    LOCAL_SEEK_JUMP_SECONDS = 1.5
+    LOCAL_SEEK_JUMP_SECONDS = 0.5   # a seek, a buffering stall or slow drift: re-anchor the UI (lyrics follow its position)
 
     def _local_status_changed(self, payload: Dict[str, Any]) -> bool:
-        """True when the local session differs from what was last pushed to
-        the UI: any visible field, or a position that jumped off the
-        interpolated course (a seek -- plain drift is the UI's own job)."""
+        """True when the local session differs from what the UI was last told:
+        any visible field, or a position off the UI's interpolated course by
+        more than the margin. The baseline only moves when we push, so slow
+        drift adds up across heartbeats until it crosses the margin."""
         now = time.time()
         signature = tuple(payload.get(key) for key in (
             "title", "artist", "status", "duration", "shuffle", "repeat", "can_seek", "can_next", "can_prev",
         )) + (self.last_known_normal_volume,)
         last = self._last_pushed_local
         position = payload.get("position", 0.0)
+        if last is not None and last[0] == signature:
+            expected = last[1] + ((now - last[2]) if payload.get("status") == "Playing" else 0.0)
+            if abs(position - expected) <= self.LOCAL_SEEK_JUMP_SECONDS:
+                return False
         self._last_pushed_local = (signature, position, now)
-        if last is None or last[0] != signature:
-            return True
-        expected = last[1] + ((now - last[2]) if payload.get("status") == "Playing" else 0.0)
-        return abs(position - expected) > self.LOCAL_SEEK_JUMP_SECONDS
+        return True
 
     async def handle_local_status_update(self, mqtt_client, payload: Dict[str, Any]) -> None:
         """Reacts to clTerminal.py's free, local Spotify-filtered OS media

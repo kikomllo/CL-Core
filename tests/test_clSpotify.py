@@ -347,6 +347,7 @@ class TestLightweightStatusPrefersLocalSession:
             "shuffle": True, "repeat": "context",
         }
         spotify_manager._local_status_time = time.time()
+        mocker.patch("clSpotify.time.time", return_value=spotify_manager._local_status_time)
 
         result = spotify_manager.status(lightweight=True)
 
@@ -357,6 +358,17 @@ class TestLightweightStatusPrefersLocalSession:
             "next_in_queue": "Unknown", "progress_ms": 12500, "duration_ms": 200000,
             "shuffle": True, "repeat": "context",
         }
+
+    def test_advances_the_snapshot_by_its_age_so_the_ui_is_not_re_anchored_behind(self, spotify_manager, mocker):
+        mocker.patch.object(spotify_manager.sp, 'current_playback')
+        spotify_manager._local_status = {"found": True, "title": "T", "artist": "A", "status": "Playing", "position": 46.0, "duration": 200.0}
+        spotify_manager._local_status_time = 1000.0
+        mocker.patch("clSpotify.time.time", return_value=1004.0)
+
+        assert spotify_manager.status(lightweight=True)["progress_ms"] == 50000
+
+        spotify_manager._local_status["status"] = "Paused"
+        assert spotify_manager.status(lightweight=True)["progress_ms"] == 46000
 
     def test_falls_back_to_the_api_when_local_session_is_stale(self, spotify_manager, mocker):
         mocker.patch.object(spotify_manager.sp, 'current_playback', return_value={
@@ -1202,7 +1214,7 @@ class TestHandleLocalStatusUpdate:
 
         await spotify_manager.handle_local_status_update(mqtt_client, self._payload(position=10.0))
         clock.return_value = 1005.0
-        await spotify_manager.handle_local_status_update(mqtt_client, self._payload(position=16.0))  # 1s of drift
+        await spotify_manager.handle_local_status_update(mqtt_client, self._payload(position=15.3))  # 0.3s of drift, inside the margin
         assert mqtt_client.publish.call_count == 1
         clock.return_value = 1006.0
         await spotify_manager.handle_local_status_update(mqtt_client, self._payload(position=120.0))  # seek
@@ -1761,3 +1773,43 @@ class TestYtMusicInTheChain:
         spotify_manager.lyrics_providers.append(("ytmusic", spotify_manager._lookup_ytmusic))
 
         assert (await spotify_manager.fetch_lyrics("GEIZA", "ProfJam", 136.0))["synced"] is True
+
+
+class TestLocalStatusDriftResync:
+    """The UI (and the lyrics) interpolate position from the last pushed status,
+    so a heartbeat must re-anchor them once the real position drifts off that
+    course by more than a small margin, and stay silent otherwise."""
+
+    def _payload(self, position, status="Playing"):
+        return {"found": True, "title": "T", "artist": "A", "status": status, "duration": 200.0, "position": position}
+
+    def test_a_healthy_track_pushes_once_then_stays_silent(self, spotify_manager, mocker):
+        clock = mocker.patch("clSpotify.time.time")
+        clock.return_value = 1000.0
+        assert spotify_manager._local_status_changed(self._payload(10.0)) is True
+        clock.return_value = 1010.0
+        assert spotify_manager._local_status_changed(self._payload(20.1)) is False
+
+    def test_slow_drift_adds_up_across_heartbeats_until_it_crosses_the_margin(self, spotify_manager, mocker):
+        clock = mocker.patch("clSpotify.time.time")
+        clock.return_value = 1000.0
+        spotify_manager._local_status_changed(self._payload(10.0))
+        results = []
+        for beat in range(1, 6):  # the real player loses 0.2s per 10s heartbeat
+            clock.return_value = 1000.0 + 10 * beat
+            results.append(spotify_manager._local_status_changed(self._payload(10.0 + 10 * beat - 0.2 * beat)))
+        assert results == [False, False, True, False, False]  # 0.6s behind on the third beat, then re-anchored
+
+    def test_a_paused_track_expects_a_frozen_position(self, spotify_manager, mocker):
+        clock = mocker.patch("clSpotify.time.time")
+        clock.return_value = 1000.0
+        spotify_manager._local_status_changed(self._payload(10.0, "Paused"))
+        clock.return_value = 1010.0
+        assert spotify_manager._local_status_changed(self._payload(10.0, "Paused")) is False
+
+    def test_a_seek_is_pushed(self, spotify_manager, mocker):
+        clock = mocker.patch("clSpotify.time.time")
+        clock.return_value = 1000.0
+        spotify_manager._local_status_changed(self._payload(10.0))
+        clock.return_value = 1010.0
+        assert spotify_manager._local_status_changed(self._payload(90.0)) is True
