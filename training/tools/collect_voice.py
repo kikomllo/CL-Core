@@ -912,6 +912,36 @@ def set_text(ds, row, text):
     row["text"] = text
 
 
+REVIEW_HELP = """
+  Review commands (type one at the  >  prompt; nothing changes unless a command says so)
+
+  Text
+    Enter           the text is right: mark the clip reviewed and go to the next one
+    t <new text>    replace the text with <new text>, mark reviewed, next clip   e.g.  t Good evening, sir.
+    e               edit the current text in place (history/arrow keys where the terminal supports it; on Windows you retype the line)
+    u               undo this clip's text change (back to what it said when the clip came up)
+
+  Listening
+    r               replay the clip (a live clock runs while it plays)
+    w, wave         draw the clip's loudness over time, with seconds, to find where to cut
+    While a clip plays:  Enter or space drops a time mark at that moment,  q stops playback.  The last marks are used by cut / keep / split.
+
+  Trimming (the clip's audio is changed in place; the text is kept, so fix it with t or e afterwards)
+    cut             remove the part between your last two marks
+    cut 1.2 2.0     remove 1.2 s to 2.0 s
+    keep            keep only the part between your last two marks, drop the rest
+    keep 0.5 3.0    keep only 0.5 s to 3.0 s
+    split           cut the clip into several clips at your marks (snapped to the nearest pause); all pieces start blank, set each text with t
+    split 1.2 3.4   same, at the times you type
+
+  Clips
+    d, remove, rm, delete   delete this clip from the dataset (the wav is removed)
+    q               save and quit; clips not yet confirmed stay un-reviewed, so the next run resumes there
+
+  help, h, ?        show this list again
+"""
+
+
 def cmd_review(args):
     """Play each clip and fix its text. Reviewed clips are flagged so a re-run resumes where you left off."""
     os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "hide"
@@ -960,7 +990,8 @@ def cmd_review(args):
     print("                                cut | keep (use your last two marks) | cut 1.2 2.0 | keep 0.5 3.0 | w = waveform")
     print("                                split = cut at the marks you left (or split 1.2 3.4) into several clips")
     print("                                u = undo this clip's text change | d / remove = delete clip | q = quit")
-    print("                                anything else does nothing -- the text only changes with t, e or u\n")
+    print("                                anything else does nothing -- the text only changes with t, e or u")
+    print("                                help = explains every command\n")
     try:
         for i, r in enumerate(todo, 1):
             sound = load_sound(r)
@@ -972,6 +1003,9 @@ def cmd_review(args):
                 ans = input("  > ").strip()
                 words = ans.split()
                 cmd = words[0].lower() if words else ""
+                if cmd in ("help", "h", "?") and len(words) == 1:
+                    print(REVIEW_HELP)
+                    continue
                 if cmd == "r" and len(words) == 1:
                     marks = play(sound)
                     continue
@@ -1062,7 +1096,7 @@ def cmd_review(args):
                     new_text = ans[1:].strip()
                 elif ans:
                     print("  not a command -- nothing changed.  Enter = text is right | t <new text> | e = edit | "
-                          "r w cut keep u d q")
+                          "r w cut keep split u d q | help = explains every command")
                     continue
                 if new_text is not None:
                     set_text(ds, r, new_text)
