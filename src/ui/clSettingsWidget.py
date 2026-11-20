@@ -3,7 +3,7 @@ import os
 import sys
 from clTheme import Theme
 from utils.clActionRouter import ActionRouter
-from utils import clBeacon
+from utils import clBeacon, clAutostart
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QFrame, QCheckBox, QComboBox, QPushButton, QTabWidget, QLineEdit, QInputDialog, QSizePolicy, QStylePainter, QStyleOptionComboBox, QStyle
 from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal
 from PyQt6.QtGui import QFontMetrics
@@ -378,6 +378,9 @@ class SettingsWidget(QWidget):
         sys_layout.addWidget(self._create_checkbox("silent_mode", "Silent Mode (No Voice Output)", False, self._toggle_silent_mode))
         sys_layout.addWidget(self._create_checkbox("enable_followup", "Follow-ups", False, self._toggle_followup))
         
+        sys_layout.addWidget(self._create_section_label("Startup"))
+        sys_layout.addWidget(self._create_checkbox("start_on_login", "Start JARVIS when I log in", clAutostart.is_enabled(), self._toggle_start_on_login))
+
         sys_layout.addWidget(self._create_section_label("System Core"))
         sys_layout.addWidget(self._create_dropdown("ecosystem_state", "Ecosystem Mode", ["normal", "debug", "background"], "normal", self._change_ecosystem_mode))
         
@@ -1183,6 +1186,19 @@ class SettingsWidget(QWidget):
         self._update_core_json("silent_mode", is_silent)
         action = "silent_mode_on" if is_silent else "silent_mode_off"
         self.router.dispatch("state.daemon", action=action)
+
+    def _toggle_start_on_login(self, state):
+        want = (state == 2)
+        try:
+            actual = clAutostart.set_enabled(want)
+        except Exception as e:
+            print(f"[SETTINGS] Could not {'enable' if want else 'disable'} start on login: {e}")
+            actual = clAutostart.is_enabled()
+        chk = self.ui_elements.get("start_on_login")
+        if chk is not None and chk.isChecked() != actual:
+            chk.blockSignals(True)
+            chk.setChecked(actual)  # failed: show the real state
+            chk.blockSignals(False)
 
     def _change_update_mode(self, value):
         def update_cb(core):

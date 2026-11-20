@@ -358,3 +358,34 @@ class TestSttProcessingModeSetting:
         widget.last_mtime = 0
         widget._check_for_updates()
         assert widget.ui_elements["stt_processing_mode"].currentText() == "sequential"
+
+
+class TestStartOnLoginToggle:
+    """The Startup checkbox reads the OS entry and writes through clAutostart; tests never touch the
+    real Startup folder."""
+
+    def _widget(self, qapp, enabled=False):
+        from ui import clSettingsWidget
+        with patch.object(clSettingsWidget.clAutostart, "is_enabled", return_value=enabled):
+            return clSettingsWidget, clSettingsWidget.SettingsWidget()
+
+    def test_checkbox_shows_the_os_state(self, qapp):
+        _, w = self._widget(qapp, enabled=True)
+        assert w.ui_elements["start_on_login"].isChecked() is True
+        w.update_timer.stop()
+
+    def test_checking_it_enables_autostart(self, qapp):
+        mod, w = self._widget(qapp, enabled=False)
+        with patch.object(mod.clAutostart, "set_enabled", return_value=True) as se:
+            w.ui_elements["start_on_login"].setChecked(True)
+        se.assert_called_once_with(True)
+        assert w.ui_elements["start_on_login"].isChecked() is True
+        w.update_timer.stop()
+
+    def test_a_failure_puts_the_checkbox_back(self, qapp):
+        mod, w = self._widget(qapp, enabled=False)
+        with patch.object(mod.clAutostart, "set_enabled", side_effect=OSError("nope")), \
+                patch.object(mod.clAutostart, "is_enabled", return_value=False):
+            w.ui_elements["start_on_login"].setChecked(True)
+        assert w.ui_elements["start_on_login"].isChecked() is False
+        w.update_timer.stop()
