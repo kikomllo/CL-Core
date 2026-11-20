@@ -288,6 +288,12 @@ class Theme:
                 QPushButton {{ text-align: center; padding-bottom: 4px; background-color: rgba(255, 50, 0, 40); color: {cls.C_PRIMARY}; border-radius: 5px; padding: 5px; border: 1px solid rgba(255,100,0,80); font-weight: bold; font-size: {cls.F_NORMAL}; }}
                 QPushButton:hover {{ background-color: rgba(255, 50, 0, 80); color: #ffffff; }}
             """
+        elif component == "LogToolButton":
+            return f"""
+                QPushButton {{ background: rgba(255,150,0,0.08); color: {cls.C_TEXT_DIM}; border: 1px solid rgba(255,150,0,0.30); border-radius: 4px; padding: 3px 10px; font-size: {cls.F_TINY}; font-weight: bold; }}
+                QPushButton:hover {{ background: rgba(255,150,0,0.22); color: #ffffff; }}
+                QPushButton:checked {{ background: rgba(255,150,0,0.28); color: {cls.C_PRIMARY}; border: 1px solid {cls.C_PRIMARY}; }}
+            """
         elif component == "LogViewer":
             return f"background: rgba(10, 5, 0, 200); color: {cls.C_PRIMARY}; border: 1px solid {cls.C_BORDER}; border-radius: 4px;"
         elif component == "RebootButton":
