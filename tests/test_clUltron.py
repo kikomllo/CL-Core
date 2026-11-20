@@ -11,7 +11,7 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 
 from utils.clTTSEngines import UltronEngine, PIPER_VOICE, PIPER_SPEAKER, _overlay
-from utils.clVoice import level_settings, merge_settings
+from utils.clVoice import level_settings, merge_settings, match_loudness
 
 TWO_SENTENCES = "The first sentence is quite long enough. The second sentence is also long enough."
 
@@ -126,7 +126,7 @@ class TestStreaming:
         assert wet_total < sum(len(c) for c in dry) + engine.sample_rate * 1.0
 
     def test_off_returns_the_dry_voice(self, tmp_path):
-        eng = make_engine(tmp_path, {"fx_level": "off"})
+        eng = make_engine(tmp_path, {"fx_level": "off", "loudness_dbfs": 0})    # no effects and no level stage: the raw render
         (chunk,) = list(eng.stream("The only sentence here is long enough.", threading.Event()))
         assert len(chunk) == 11025 and np.allclose(chunk, 0.25 * np.sin(2 * np.pi * 140 * np.arange(11025) / 22050) +
                                                    0.1 * np.sin(2 * np.pi * 900 * np.arange(11025) / 22050), atol=1e-5)
@@ -202,10 +202,11 @@ class TestVoiceModel:
 
 class TestInTheManager:
     @pytest.fixture
-    def ultron_manager(self, tmp_path):
+    def ultron_manager(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("JARVIS_THEME", "ultron")           # conftest pins the tests to the jarvis skin; the voice follows the skin
         with patch('clTTS.ConfigLoader') as MockLoader:
             MockLoader.return_value.load_json.side_effect = lambda name: (
-                {"settings": {"silent_mode": False, "tts_engine": "ultron", "tts_settings": {"fx_level": "light"}}}
+                {"settings": {"silent_mode": False, "theme": "ultron", "tts_settings": {"fx_level": "light"}}}
                 if name == "core.json" else {"mqtt": {}})
             from clTTS import TTSManager
             m = TTSManager()
@@ -236,6 +237,49 @@ class TestInTheManager:
             from clTTS import TTSManager
             m = TTSManager()
         assert m._primary_engine_name() == "piper" and [e.name for e in m._engine_order()] == ["piper"]
+
+
+class TestTheVoiceFollowsTheTheme:
+    """Switching the skin switches the voice both ways; settings.tts_engine is the JARVIS voice and is never what keeps Ultron talking."""
+
+    @pytest.fixture(autouse=True)
+    def _no_env_override(self, monkeypatch):
+        monkeypatch.delenv("JARVIS_THEME", raising=False)
+
+    def _engine(self, **settings):
+        from clTTS import resolve_tts_engine
+        return resolve_tts_engine(settings)
+
+    def test_the_ultron_skin_speaks_with_ultron_whatever_tts_engine_says(self):
+        assert self._engine(theme="ultron", tts_engine="kokoro") == "ultron"
+        assert self._engine(theme="ultron") == "ultron"
+
+    def test_switching_back_to_jarvis_returns_the_jarvis_voice(self):
+        assert self._engine(theme="jarvis", tts_engine="kokoro") == "kokoro"
+        assert self._engine(theme="jarvis", tts_engine="piper") == "piper"
+        assert self._engine(tts_engine="kokoro") == "kokoro"           # no theme setting is the JARVIS skin
+
+    def test_a_stale_ultron_in_tts_engine_does_not_keep_the_voice_under_the_jarvis_skin(self):
+        assert self._engine(theme="jarvis", tts_engine="ultron", hardware="cuda") == "kokoro"
+        assert self._engine(theme="jarvis", tts_engine="ultron", hardware="cpu") == "piper"
+        assert self._engine(tts_engine="ultron") == "piper"
+
+    def test_the_jarvis_theme_through_the_manager_gives_the_jarvis_voice(self, tmp_path):
+        with patch('clTTS.ConfigLoader') as MockLoader:
+            MockLoader.return_value.load_json.side_effect = lambda name: (
+                {"settings": {"theme": "jarvis", "tts_engine": "ultron", "hardware": "cpu"}} if name == "core.json" else {"mqtt": {}})
+            from clTTS import TTSManager
+            m = TTSManager()
+        assert m._primary_engine_name() == "piper" and [e.name for e in m._engine_order()] == ["piper"]
+
+    def test_the_env_override_moves_the_voice_with_the_skin(self, monkeypatch):
+        monkeypatch.setenv("JARVIS_THEME", "ultron")
+        assert self._engine(theme="jarvis", tts_engine="kokoro") == "ultron"
+        monkeypatch.setenv("JARVIS_THEME", "jarvis")
+        assert self._engine(theme="ultron", tts_engine="kokoro") == "kokoro"
+
+    def test_an_unknown_theme_is_the_jarvis_skin(self):
+        assert self._engine(theme="nonsense", tts_engine="kokoro") == "kokoro"
 
 
 class CountingEngine:
@@ -270,10 +314,11 @@ class CountingEngine:
 
 
 @pytest.fixture
-def prerender_manager(tmp_path):
+def prerender_manager(tmp_path, monkeypatch):
+    monkeypatch.setenv("JARVIS_THEME", "ultron")
     with patch('clTTS.ConfigLoader') as MockLoader:
         MockLoader.return_value.load_json.side_effect = lambda name: (
-            {"settings": {"silent_mode": False, "tts_engine": "ultron"}} if name == "core.json" else {"mqtt": {}})
+            {"settings": {"silent_mode": False, "theme": "ultron"}} if name == "core.json" else {"mqtt": {}})
         from clTTS import TTSManager
         m = TTSManager()
     m.assets_dir = str(tmp_path)
@@ -365,3 +410,53 @@ class TestPrerender:
             assert m.mic_active is True
             m.handle_mic_state({"state": "idle"})
             assert m.mic_active is False
+
+
+class TestLoudness:
+    """The voice is brought to a fixed speech level whatever the model renders at, so a quiet trained model
+    (or the effect chain, which only matches its own input) cannot make JARVIS faint."""
+
+    @staticmethod
+    def speech(level_db, seconds=1.0, rate=24000):
+        t = np.arange(int(rate * seconds)) / rate
+        return (10 ** (level_db / 20) * np.sqrt(2) * np.sin(2 * np.pi * 180 * t)).astype(np.float32)
+
+    @staticmethod
+    def level_db(x):
+        active = x[np.abs(x) > 0.01]
+        return 20 * np.log10(np.sqrt(np.mean(active ** 2)))
+
+    def test_a_quiet_clip_is_raised_to_the_target(self):
+        assert self.level_db(match_loudness(self.speech(-20), -14.5)) == pytest.approx(-14.5, abs=0.3)
+
+    def test_a_loud_clip_is_lowered_to_the_target(self):
+        assert self.level_db(match_loudness(self.speech(-8), -14.5)) == pytest.approx(-14.5, abs=0.5)
+
+    def test_the_boost_is_capped_so_near_silence_is_not_blown_up(self):
+        quiet = self.speech(-32)
+        rms = lambda x: 20 * np.log10(np.sqrt(np.mean(x ** 2)))
+        assert rms(match_loudness(quiet, -14.5)) - rms(quiet) == pytest.approx(9.0, abs=0.2)   # wanted 17.5 dB, got the 9 dB cap
+
+    def test_fx_off_is_still_leveled_by_default(self, tmp_path):
+        eng = make_engine(tmp_path, {"fx_level": "off"})
+        (chunk,) = list(eng.stream("The only sentence here is long enough.", threading.Event()))
+        assert self.level_db(chunk) == pytest.approx(-14.5, abs=0.6)
+
+    def test_peaks_never_exceed_full_scale(self):
+        spiky = self.speech(-20)
+        spiky[::2000] = 0.99
+        assert np.abs(match_loudness(spiky, -8.0)).max() <= 1.0
+
+    def test_off_returns_the_clip_untouched(self):
+        x = self.speech(-20)
+        assert match_loudness(x, None) is x and match_loudness(x, 0) is x
+
+    def test_silence_and_empty_clips_are_left_alone(self):
+        assert len(match_loudness(np.zeros(0, dtype=np.float32), -14.5)) == 0
+        silent = np.zeros(2400, dtype=np.float32)
+        assert np.array_equal(match_loudness(silent, -14.5), silent)
+
+    def test_the_level_is_part_of_the_voice_tag_so_the_phrase_cache_re_renders(self):
+        a = UltronEngine({"loudness_dbfs": -14.5}).voice_tag
+        b = UltronEngine({"loudness_dbfs": -20}).voice_tag
+        assert a != b

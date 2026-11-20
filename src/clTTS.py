@@ -33,13 +33,28 @@ import queue
 from utils.clEcho import StreamResampler24to16
 from utils.clTTSEngines import PiperEngine, KokoroEngine, UltronEngine, resample
 
-# Speech is local (settings.tts_engine):
+# Speech is local (settings.tts_engine is the JARVIS voice; the Ultron skin switches to "ultron", see resolve_tts_engine):
 #   "piper" - (default) Piper's ARU voice tuned toward Ryan: ~300MB while speaking, freed ~30s after use
 #   "kokoro" - Kokoro, a livelier British blend: ~400MB while loaded, ~0.45x real time on CPU (generated per
 #             sentence, needs onnxruntime 1.31); Piper takes over if it fails
 #   "ultron" - Piper + the clVoice effect chain per sentence (settings.tts_settings: voice model, fx_level off|light|full);
 #             the stock Piper voice speaks if the trained model is missing, and Piper takes over if it fails
 #   "edge"  - cloud edge-tts first (Microsoft began 403-ing its handshake on 2026-10-10), Piper when it fails
+
+
+def resolve_tts_engine(settings):
+    """The voice follows the skin: the Ultron skin speaks with the Ultron voice, any other skin with the JARVIS voice. So
+    `settings.tts_engine` is the JARVIS voice (kokoro | piper | edge) and is left alone when the skin is switched on and off.
+    An "ultron" left in it (the voice used to be switched by hand) is not a JARVIS voice: on another skin it falls back to the
+    hardware tier's own voice instead of keeping Ultron talking under the JARVIS look."""
+    if clSkin.resolve_skin(settings) == "ultron":
+        return "ultron"
+    engine = settings.get("tts_engine", "piper")
+    if engine == "ultron":
+        return "kokoro" if settings.get("hardware") == "cuda" else "piper"
+    return engine
+
+
 MIXER_RATE = 24000           # the mixer's rate; engine audio is resampled to it once per sentence
 SPEECH_CHANNEL = 1           # mixer.Channel for streamed speech (mixer.music plays cached phrase files)
 BLIP_CHANNEL = 2             # the "I heard you" chirp before every reply
@@ -89,7 +104,7 @@ class TTSManager:
 
         core_data = ConfigLoader().load_json("core.json")
         self.silent_mode = core_data.get("settings", {}).get("silent_mode", False)
-        self.tts_engine = core_data.get("settings", {}).get("tts_engine", "piper")
+        self.tts_engine = resolve_tts_engine(core_data.get("settings", {}))
         self.prerender_enabled = bool(core_data.get("settings", {}).get("tts_prerender", True))
         self.kokoro = KokoroEngine(bright=bool(core_data.get("settings", {}).get("tts_kokoro_bright", True)))
         self.ultron = UltronEngine(core_data.get("settings", {}).get("tts_settings"))

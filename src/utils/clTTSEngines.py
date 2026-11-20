@@ -320,7 +320,7 @@ class UltronEngine(PiperEngine):
 
     def stream(self, text: str, stop: threading.Event) -> Iterator[np.ndarray]:
         from piper import SynthesisConfig
-        from utils.clVoice import level_settings, denoise, apply_fx, _pitch_down
+        from utils.clVoice import level_settings, denoise, apply_fx, match_loudness, _pitch_down
         self.load()
         strength, fx = level_settings(self.cfg)
         fx_on = fx.get("enabled", True)
@@ -346,6 +346,7 @@ class UltronEngine(PiperEngine):
                     wet = apply_fx(dry, rate, fx)
                 else:
                     wet = dry
+                wet = match_loudness(wet, self.cfg.get("loudness_dbfs"))
                 head, tail = wet[:len(dry)], wet[len(dry):]       # apply_fx's reverb lengthens the clip by its tail
                 last = i == len(pieces) - 1
                 segment = head if last else np.concatenate([head, np.zeros(int(rate * pause), dtype=np.float32)])

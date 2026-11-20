@@ -23,6 +23,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "piper_model": "models/piper/en_US-ryan-medium.onnx",
     "length_scale": 0.9,
     "fx_level": "full",              # off = dry Piper, light = pitch + EQ + reverb only (cheap CPU), full = everything configured
+    "loudness_dbfs": -14.5,          # speech level every sentence is brought to (0/null = leave as rendered); the old Ryan phrases measured about -14.5
     "denoise": 0.6,                  # 0 = off, 1 = strongest: spectral gate on the dry Piper audio (the trained voice inherits its clips' noise)
     "fx": {
         "enabled": True,
@@ -179,6 +180,24 @@ def apply_fx(x: np.ndarray, sr: int, fx: Dict[str, Any]) -> np.ndarray:
     return y.astype(np.float32)
 
 
+def match_loudness(x: np.ndarray, target_dbfs: Optional[float], max_boost_db: float = 9.0) -> np.ndarray:
+    """Brings the speech (the samples above a -40 dBFS floor, so pauses do not count) to `target_dbfs` RMS, then
+    soft-limits the peaks (a tanh knee above 0.6: speech peaks ~14 dB over its RMS, so a hard peak-scale could not
+    add any level). The boost is capped, so a near-silent clip is not blown up into noise. 0/None = off."""
+    if not target_dbfs or len(x) == 0:
+        return x
+    active = x[np.abs(x) > 0.01]
+    if len(active) < 64:
+        return x
+    rms_db = 20 * np.log10(float(np.sqrt(np.mean(active ** 2))) + 1e-9)
+    gain = 10 ** (min(float(target_dbfs) - rms_db, max_boost_db) / 20)
+    y = x * gain
+    knee = 0.6
+    over = np.abs(y) > knee
+    y[over] = np.sign(y[over]) * (knee + (1 - knee) * np.tanh((np.abs(y[over]) - knee) / (1 - knee)))
+    return y.astype(np.float32)
+
+
 def denoise(x: np.ndarray, sr: int, strength: float, keep_below_hz: float = 0.0) -> np.ndarray:
     """Spectral gate for the dry Piper audio. The noise profile is the quietest frames of this very phrase, so it
     needs no per-voice tuning; if the phrase has no real pauses the strength is scaled down (a profile taken from
@@ -255,7 +274,7 @@ class VoiceSynth:
         audio = denoise(audio, sr, denoise_strength)
         if fx.get("enabled", True):
             audio = apply_fx(_pitch_down(audio, float(fx.get("pitch_semitones", 0.0))), sr, fx)
-        return audio, sr
+        return match_loudness(audio, self.cfg.get("loudness_dbfs")), sr
 
     def synthesize_to_file(self, text: str, out_path: str) -> None:
         audio, sr = self.render(text)

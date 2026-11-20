@@ -27,15 +27,20 @@ _HEX = re.compile(r"(?<![\w])#([0-9a-fA-F]{6})\b")
 _RGB = re.compile(r"rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*(?:,\s*([\d.]+%?)\s*)?\)")
 
 
-def _load_skin() -> str:
-    name = os.environ.get("JARVIS_THEME")
-    if not name:
-        try:
-            with open(_CORE_JSON, "r", encoding="utf-8") as f:
-                name = json.load(f).get("settings", {}).get("theme", "jarvis")
-        except Exception:
-            name = "jarvis"
+def resolve_skin(settings=None) -> str:
+    """The skin for a settings dict: JARVIS_THEME overrides settings.theme, anything unknown is jarvis. Pure, so a service that
+    already loaded core.json (clTTS) gets the same answer as the UI without reading the file again."""
+    name = os.environ.get("JARVIS_THEME") or (settings or {}).get("theme", "jarvis")
     return name if name in SKINS else "jarvis"
+
+
+def _load_skin() -> str:
+    try:
+        with open(_CORE_JSON, "r", encoding="utf-8") as f:
+            settings = json.load(f).get("settings", {})
+    except Exception:
+        settings = {}
+    return resolve_skin(settings)
 
 
 ACTIVE = _load_skin()

@@ -69,7 +69,7 @@ Today the laptop's `clVoice.py` renders a whole phrase, then plays it; the deskt
   (the existing cache already keys on the tag).
 - Boundary artefacts: reverb tail and vocoder state restart per sentence. Mitigation, in order of cost: keep the
   reverb tail of sentence N and add it onto the start of N+1 (cheap, one overlap-add); only if audible, cross-fade.
-- `settings.tts_engine = "ultron"`; Piper stays the fallback if the engine fails, exactly like Kokoro does.
+- The Ultron engine is selected by the **skin**, not by hand: `settings.theme = "ultron"` (or `JARVIS_THEME=ultron`) makes `clTTS.resolve_tts_engine` return `ultron`; any other theme gives the JARVIS voice, which is `settings.tts_engine` (kokoro | piper | edge; a stale `"ultron"` there falls back to the hardware tier's voice: kokoro on cuda, else piper), so switching the theme back returns the voice. Piper stays the fallback if the engine fails, exactly like Kokoro does. The TTS service reads it at start (restart it, or the ecosystem, after changing the theme).
 
 **1.2 FX levels (the knob for cost/quality).** `settings.tts_settings.fx_level`:
 - `off`: dry Piper (debug, and the emergency fallback).
