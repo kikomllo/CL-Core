@@ -92,3 +92,44 @@ class TestObserve:
 
         assert tracker.observe("z") == (SAME, 0)
         assert [i["title"] for i in tracker.snapshot()] == ["y"]
+
+
+class TestJumpTo:
+    """A click on a queued track: find it, then drop everything up to it."""
+
+    def test_find_returns_the_index_of_a_uri(self):
+        tracker = _loaded("a", "b", "c")
+
+        assert tracker.find("spotify:track:c") == 2
+        assert tracker.find("spotify:track:nope") is None
+        assert tracker.find(None) is None
+
+    def test_find_prefers_the_hinted_index_when_a_track_is_queued_twice(self):
+        tracker = _loaded("a", "b", "a")
+
+        assert tracker.find("spotify:track:a") == 0
+        assert tracker.find("spotify:track:a", hint=2) == 2
+        assert tracker.find("spotify:track:a", hint=1) == 0      # a wrong hint is ignored
+
+    def test_skip_to_makes_it_current_and_drops_what_came_before(self):
+        tracker = _loaded("a", "b", "c", "d")
+
+        assert tracker.skip_to("spotify:track:c") is True
+
+        assert tracker.current["title"] == "c"
+        assert [t["title"] for t in tracker.snapshot()] == ["d"]
+
+    def test_skip_to_is_idempotent_once_the_local_session_got_there_first(self):
+        tracker = _loaded("a", "b", "c")
+        tracker.observe("b")                                     # playback already advanced to b
+
+        assert tracker.skip_to("spotify:track:b") is True
+
+        assert [t["title"] for t in tracker.snapshot()] == ["c"]
+
+    def test_skip_to_an_unknown_uri_changes_nothing(self):
+        tracker = _loaded("a", "b")
+
+        assert tracker.skip_to("spotify:track:zzz") is False
+
+        assert tracker.remaining == 2 and tracker.current["title"] == "Now"

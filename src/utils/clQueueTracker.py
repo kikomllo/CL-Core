@@ -77,6 +77,28 @@ class QueueTracker:
             self.items = self.items[index + 1:]
             return ADVANCED, index
 
+    def find(self, uri: Optional[str], hint: Optional[int] = None) -> Optional[int]:
+        """Index of the queued item with this uri (the one at `hint` if it matches, since a track can be queued twice), else None."""
+        with self._lock:
+            if not uri:
+                return None
+            if hint is not None and 0 <= hint < len(self.items) and self.items[hint]["uri"] == uri:
+                return hint
+            return next((i for i, item in enumerate(self.items) if item["uri"] == uri), None)
+
+    def skip_to(self, uri: Optional[str]) -> bool:
+        """Playback jumped to this queued uri: it becomes the current track and everything before it is dropped.
+        True also when it already is the current track (the local media session got there first)."""
+        with self._lock:
+            if self.current and uri and self.current["uri"] == uri:
+                return True
+            index = self.find(uri)
+            if index is None:
+                return False
+            self.current = self.items[index]
+            self.items = self.items[index + 1:]
+            return True
+
     def snapshot(self, limit: int = 10) -> List[Dict[str, Any]]:
         with self._lock:
             return [dict(item) for item in self.items[:limit]]

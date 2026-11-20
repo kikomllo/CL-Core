@@ -18,7 +18,7 @@ import aiohttp
 # NEW: Import your centralized env loader
 from utils.clEnvLoader import EnvLoader
 from utils.clLocalMedia import send_spotify_command, set_spotify_shuffle, set_spotify_repeat, seek_spotify, REPEAT_MODES
-from utils.clQueueTracker import QueueTracker, ADVANCED, DIVERGED
+from utils.clQueueTracker import QueueTracker, ADVANCED, DIVERGED, _normalize as _normalize_title
 from utils.clYtMusicLyrics import YtMusicLyrics
 from utils.clLyrics import LyricsCache, cache_key, clean_title, estimate_line_times, first_artist, pick_search_result, title_variants
 
@@ -71,6 +71,9 @@ class SpotifyManager:
     LOCAL_SKIP_SECONDS = 60.0
     QUEUE_REFILL_AT = 2             # refetch when this few tracks remain (the API returns ~20)
     QUEUE_REFRESH_BACKOFF_SECONDS = 30.0
+    JUMP_DURATION_TOLERANCE_MS = 1500   # same margin QueueTracker uses to match a local reading to a queued track
+    JUMP_SETTLE_SECONDS = 5.0           # after a queue jump, readings from the tracks skipped over may still trickle in
+    QUEUE_SKIP_GAP_SECONDS = 0.12   # between the skips of a queue jump, so the tracks in between are dropped, not heard
 
     def __init__(self, debug_math: bool = True):
         self.base_dir: str = os.path.dirname(os.path.abspath(__file__))
@@ -111,6 +114,7 @@ class SpotifyManager:
         self._local_status: Optional[Dict[str, Any]] = None
         self._local_status_time: float = 0.0
         self._last_pushed_local: Optional[Tuple[tuple, float, float]] = None  # (signature, position, time) last sent to the UI
+        self._jump_expected: Optional[Dict[str, Any]] = None  # the queue item a jump landed on, see _correct_stale_title
 
         self.confidence_threshold: float = 0.60
         self.perfect_match_threshold: float = 0.85
@@ -718,6 +722,24 @@ class SpotifyManager:
         self._last_pushed_local = (signature, position, now)
         return True
 
+    def _correct_stale_title(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """After a queue jump (several Next presses in a row) the local session can deliver a skipped track's
+        title late and keep it, while its timeline is already the landed track's. If the reading's duration is the
+        expected track's but the title is not, the title is stale: show the track we jumped to. Anything else
+        (the title matches, or a different duration: the track ended or the user skipped) ends the expectation --
+        a different duration only after JUMP_SETTLE_SECONDS, since a skipped track's whole reading can still arrive late."""
+        expected = self._jump_expected
+        if not expected:
+            return payload
+        if _normalize_title(payload.get("title")) == _normalize_title(expected["title"]):
+            self._jump_expected = None
+            return payload
+        if abs(int(round(payload.get("duration", 0.0) * 1000)) - expected["duration_ms"]) > self.JUMP_DURATION_TOLERANCE_MS:
+            if time.time() - expected["at"] > self.JUMP_SETTLE_SECONDS:
+                self._jump_expected = None
+            return payload
+        return {**payload, "title": expected["title"], "artist": expected["artist"] or payload.get("artist")}
+
     async def handle_local_status_update(self, mqtt_client, payload: Dict[str, Any]) -> None:
         """Reacts to clTerminal.py's free, local Spotify-filtered OS media
         session by also pushing a fresh media_status (and re-checking
@@ -727,6 +749,8 @@ class SpotifyManager:
         but the UI only hears about it when something actually changed --
         the OS-event listeners wake that loop immediately on a track change,
         so a change reaches the UI in well under a second."""
+        if payload.get("found"):
+            payload = self._correct_stale_title(payload)
         self._local_status = payload
         self._local_status_time = time.time()
         if not payload.get("found"):
@@ -1117,6 +1141,38 @@ class SpotifyManager:
         """What jarvis/sys/spotify_queue carries."""
         return {"queue": self.queue.snapshot(limit), "remaining": self.queue.remaining}
 
+    def play_queue_item(self, uri: Optional[str], queue_index: Optional[int] = None) -> Tuple[bool, str]:
+        """Jumps to a track in the up-next queue. The Web API has no "play this queue entry", and starting the uri
+        alone would replace the playlist/album, so this skips forward -- Next pressed index+1 times (the local
+        client's button first, the API otherwise) -- which keeps the context and everything after the track."""
+        if not uri:
+            return False, "No track given."
+        if not self.queue.loaded and not self.refresh_queue():
+            return False, "Could not fetch the queue right now."
+        index = self.queue.find(uri, queue_index)
+        if index is None:                     # the queue moved on since the UI drew it
+            self.refresh_queue()
+            return False, "That track is no longer up next."
+        target = self.queue.snapshot(index + 1)[index]
+        title = target["title"]
+
+        device = None
+        for n in range(index + 1):
+            if n:
+                time.sleep(self.QUEUE_SKIP_GAP_SECONDS)
+            if self._local_first("button", lambda: send_spotify_command("next")):
+                continue
+            device = device or self._ensure_active_device()
+            if not device:
+                return False, "Spotify is not active."
+            self.sp.next_track(device_id=device)
+        self._local_playing_state = True
+        self._last_state_change_time = time.time()
+        self.queue.skip_to(uri)               # the local session may already have moved it; skip_to is idempotent
+        # Set only now: the in-between tracks' readings must not end it. Needs the duration to tell stale from real.
+        self._jump_expected = {**target, "at": time.time()} if target.get("duration_ms") else None
+        return True, f"Playing {title}."
+
     async def track_queue(self, mqtt_client, local_status: Dict[str, Any]) -> None:
         """Follows playback through the local queue from the free local media
         session; refetches (one API request) only when playback leaves the
@@ -1142,7 +1198,8 @@ class SpotifyManager:
                         artist_name: Optional[str] = None, playlist_name: Optional[str] = None, 
                         search_query: Optional[str] = None, choice_index: Optional[int] = None,
                         enabled: Optional[bool] = None, mode: Optional[str] = None,
-                        position_ms: Optional[int] = None) -> Tuple[bool, Any]:
+                        position_ms: Optional[int] = None, uri: Optional[str] = None,
+                        queue_index: Optional[int] = None) -> Tuple[bool, Any]:
         """Clean router that delegates actions to the appropriate class helper methods."""
         self.last_command_local = False
         try:
@@ -1161,6 +1218,9 @@ class SpotifyManager:
                     if not self.refresh_queue():
                         return False, "Could not fetch the queue right now."
                 return True, f"{self.queue.remaining} tracks up next."
+
+            if action == "play_queue_item":
+                return self.play_queue_item(uri, queue_index)
 
             if action in ["toggle", "next", "prev"]:
                 local_message = self._try_local_media_command(action)
@@ -1368,7 +1428,9 @@ async def mqtt_service_listener(manager: SpotifyManager) -> None:
                                 choice_index=payload.get("choice_index"),
                                 enabled=payload.get("enabled"),
                                 mode=payload.get("mode"),
-                                position_ms=payload.get("position_ms")
+                                position_ms=payload.get("position_ms"),
+                                uri=payload.get("uri"),
+                                queue_index=payload.get("queue_index")
                             )
                             
                             await mqtt_client.publish("jarvis/feedback", json.dumps({
@@ -1378,6 +1440,10 @@ async def mqtt_service_listener(manager: SpotifyManager) -> None:
                                 "silent": payload.get("silent", False)
                             }))
                             
+                            # A jump that failed (the queue had moved on): send the refreshed queue so the drawer redraws instead of waiting.
+                            if not success and payload.get("action") == "play_queue_item":
+                                await mqtt_client.publish("jarvis/sys/spotify_queue", json.dumps(manager.queue_payload()), retain=True)
+
                             # --- Conditional Background Refresh ---
                             if success:
                                 action_cmd = payload.get("action")
@@ -1385,6 +1451,8 @@ async def mqtt_service_listener(manager: SpotifyManager) -> None:
                                 if action_cmd in ["queue", "queue_refresh"]:
                                     await mqtt_client.publish("jarvis/sys/spotify_queue", json.dumps(manager.queue_payload()), retain=True)
                                     continue
+                                if action_cmd == "play_queue_item":     # the drawer drops the rows it jumped over; the status refresh below follows
+                                    await mqtt_client.publish("jarvis/sys/spotify_queue", json.dumps(manager.queue_payload()), retain=True)
 
                                 # 1. Duck and Unduck don't change track metadata. Skip refresh completely.
                                 if action_cmd in ["duck", "unduck"]:
@@ -1392,7 +1460,7 @@ async def mqtt_service_listener(manager: SpotifyManager) -> None:
                                 
                                 # 2. Always refresh status on explicit playback commands to keep UI synced
                                 # (Skipped after a local button press: clTerminal.py's media listeners already push it, no API needed.)
-                                if action_cmd in ["play", "pause", "toggle", "next", "prev", "status"] and not manager.last_command_local:
+                                if action_cmd in ["play", "pause", "toggle", "next", "prev", "status", "play_queue_item"] and not manager.last_command_local:
                                     async def background_refresh():
                                         await asyncio.sleep(1.0)
                                         try:

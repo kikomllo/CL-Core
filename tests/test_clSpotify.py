@@ -1813,3 +1813,141 @@ class TestLocalStatusDriftResync:
         spotify_manager._local_status_changed(self._payload(10.0))
         clock.return_value = 1010.0
         assert spotify_manager._local_status_changed(self._payload(90.0)) is True
+
+
+class TestPlayQueueItem:
+    """Clicking a queued track skips forward to it (Next index+1 times), keeping the playlist and the rest of the queue."""
+
+    @pytest.fixture(autouse=True)
+    def no_sleep(self, mocker):
+        mocker.patch("clSpotify.time.sleep")
+
+    def _loaded(self, spotify_manager, mocker, *names):
+        mocker.patch.object(spotify_manager.sp, "queue", return_value=_queue_response(*names))
+        spotify_manager.execute_command("queue")
+
+    def test_jumping_to_the_third_track_presses_next_three_times(self, spotify_manager, mocker, local_media_button):
+        self._loaded(spotify_manager, mocker, "a", "b", "c", "d")
+        local_media_button.return_value = True
+
+        result = spotify_manager.execute_command("play_queue_item", uri="spotify:track:c", queue_index=2)
+
+        assert result == (True, "Playing c.")
+        assert [c.args for c in local_media_button.call_args_list] == [("next",)] * 3
+
+    def test_the_queue_drops_the_skipped_tracks(self, spotify_manager, mocker, local_media_button):
+        self._loaded(spotify_manager, mocker, "a", "b", "c", "d")
+        local_media_button.return_value = True
+
+        spotify_manager.execute_command("play_queue_item", uri="spotify:track:c", queue_index=2)
+
+        assert [t["title"] for t in spotify_manager.queue_payload()["queue"]] == ["d"]
+
+    def test_without_a_local_client_it_skips_through_the_api(self, spotify_manager, mocker):
+        self._loaded(spotify_manager, mocker, "a", "b")
+        mocker.patch.object(spotify_manager, "_ensure_active_device", return_value="device")
+        skip = mocker.patch.object(spotify_manager.sp, "next_track")
+
+        result = spotify_manager.execute_command("play_queue_item", uri="spotify:track:b", queue_index=1)
+
+        assert result == (True, "Playing b.")
+        assert skip.call_count == 2
+        skip.assert_called_with(device_id="device")
+
+    def test_the_first_row_is_just_a_next(self, spotify_manager, mocker, local_media_button):
+        self._loaded(spotify_manager, mocker, "a", "b")
+        local_media_button.return_value = True
+
+        spotify_manager.execute_command("play_queue_item", uri="spotify:track:a", queue_index=0)
+
+        assert local_media_button.call_count == 1
+
+    def test_a_track_that_left_the_queue_is_refused_and_the_queue_refetched(self, spotify_manager, mocker, local_media_button):
+        self._loaded(spotify_manager, mocker, "a", "b")
+        refresh = mocker.patch.object(spotify_manager, "refresh_queue", return_value=True)
+
+        result = spotify_manager.execute_command("play_queue_item", uri="spotify:track:gone", queue_index=1)
+
+        assert result == (False, "That track is no longer up next.")
+        refresh.assert_called_once()
+        local_media_button.assert_not_called()
+
+    def test_no_uri_is_refused(self, spotify_manager):
+        assert spotify_manager.execute_command("play_queue_item") == (False, "No track given.")
+
+    def test_with_nothing_active_it_says_so(self, spotify_manager, mocker):
+        self._loaded(spotify_manager, mocker, "a")
+        mocker.patch.object(spotify_manager, "_ensure_active_device", return_value=None)
+
+        assert spotify_manager.execute_command("play_queue_item", uri="spotify:track:a", queue_index=0) == (False, "Spotify is not active.")
+
+    def test_an_unloaded_queue_is_fetched_first(self, spotify_manager, mocker, local_media_button):
+        fetch = mocker.patch.object(spotify_manager.sp, "queue", return_value=_queue_response("a", "b"))
+        local_media_button.return_value = True
+
+        result = spotify_manager.execute_command("play_queue_item", uri="spotify:track:b", queue_index=1)
+
+        assert result == (True, "Playing b.")
+        fetch.assert_called_once()
+
+
+class TestQueueJumpStaleTitle:
+    """After a queue jump the local session can keep a skipped track's title while its timeline is already the
+    landed track's (seen live: Broken Bones playing, "Tuyo" shown). The jump's target wins while the duration agrees."""
+
+    @pytest.fixture(autouse=True)
+    def jumped(self, spotify_manager, mocker, local_media_button):
+        mocker.patch("clSpotify.time.sleep")
+        mocker.patch.object(spotify_manager, "maybe_publish_lyrics")
+        mocker.patch.object(spotify_manager, "_request_lyrics")
+        mocker.patch.object(spotify_manager.sp, "queue", return_value=_queue_response("a", "b", "c"))
+        spotify_manager.execute_command("queue")
+        local_media_button.return_value = True
+        spotify_manager.execute_command("play_queue_item", uri="spotify:track:c", queue_index=2)  # c lasts 200 s
+
+    def _reading(self, title, duration=200.0, **kw):
+        return {"found": True, "title": title, "artist": "Someone", "status": "Playing", "position": 3.0, "duration": duration, **kw}
+
+    async def _send(self, spotify_manager, payload):
+        client = AsyncMock()
+        await spotify_manager.handle_local_status_update(client, payload)
+        return [json.loads(c.args[1]) for c in client.publish.call_args_list if c.args[0] == "jarvis/sys/media_status"]
+
+    @pytest.mark.asyncio
+    async def test_a_stale_title_with_the_landed_tracks_duration_is_corrected(self, spotify_manager):
+        sent = await self._send(spotify_manager, self._reading("a"))
+        assert sent[0]["title"] == "c" and sent[0]["artist"] == "Artist"
+        assert spotify_manager._local_status["title"] == "c"
+
+    @pytest.mark.asyncio
+    async def test_it_keeps_correcting_on_later_heartbeats(self, spotify_manager):
+        await self._send(spotify_manager, self._reading("a"))
+        await self._send(spotify_manager, self._reading("a", position=13.0))
+        assert spotify_manager._local_status["title"] == "c"
+
+    @pytest.mark.asyncio
+    async def test_the_right_title_is_left_alone_and_ends_the_correction(self, spotify_manager):
+        sent = await self._send(spotify_manager, self._reading("c", artist="Artist"))
+        assert sent[0]["title"] == "c"
+        assert spotify_manager._jump_expected is None
+
+    @pytest.mark.asyncio
+    async def test_a_reading_of_a_skipped_track_right_after_the_jump_is_not_rewritten(self, spotify_manager):
+        sent = await self._send(spotify_manager, self._reading("a", duration=151.5))
+        assert sent[0]["title"] == "a"
+        assert spotify_manager._jump_expected is not None  # still settling
+
+    @pytest.mark.asyncio
+    async def test_a_different_track_after_the_settle_window_ends_the_correction(self, spotify_manager, mocker):
+        mocker.patch("clSpotify.time.time", return_value=spotify_manager._jump_expected["at"] + 60)
+        sent = await self._send(spotify_manager, self._reading("Next up", duration=180.0))
+        assert sent[0]["title"] == "Next up"
+        assert spotify_manager._jump_expected is None
+
+    def test_a_target_without_a_duration_sets_no_expectation(self, spotify_manager, mocker, local_media_button):
+        resp = _queue_response("x", "y")
+        resp["queue"][1]["duration_ms"] = 0
+        mocker.patch.object(spotify_manager.sp, "queue", return_value=resp)
+        spotify_manager.execute_command("queue_refresh")
+        spotify_manager.execute_command("play_queue_item", uri="spotify:track:y", queue_index=1)
+        assert spotify_manager._jump_expected is None
