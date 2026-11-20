@@ -698,7 +698,7 @@ class SpotifyManager:
             if self._lyrics_settling == (title, artist):
                 self._lyrics_settling = None
 
-    LOCAL_SEEK_JUMP_SECONDS = 0.5   # a seek, a buffering stall or slow drift: re-anchor the UI (lyrics follow its position)
+    LOCAL_SEEK_JUMP_SECONDS = 0.3   # a seek, a buffering stall or slow drift: re-anchor the UI (lyrics follow its position)
 
     def _local_status_changed(self, payload: Dict[str, Any]) -> bool:
         """True when the local session differs from what the UI was last told:

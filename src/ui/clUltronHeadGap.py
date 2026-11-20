@@ -15,7 +15,7 @@ import numpy as np
 from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QColor, QPainter
 
-from ui.clUltronHead import (CHEEK_BULGE, CHEEK_ROWS_ABOVE, DIM_METAL, EYE_CORE, MOUTH_FROM, PLATE_HOT, UltronHead, _edge,
+from ui.clUltronHead import (_halo_pixmap, CHEEK_BULGE, CHEEK_ROWS_ABOVE, DIM_METAL, EYE_CORE, MOUTH_FROM, PLATE_HOT, UltronHead, _edge,
                              build_masks)
 
 GAP_REST = 0.0                # where the bar under the centre gap begins at rest, in cells, relative to its drawn top...
@@ -52,6 +52,7 @@ class GapHead(UltronHead):
         self._glow = None
         self._halo = None
         self.show_halo = True
+        self.halo_scale = 1.0                      # <1 when the host window is smaller than the halo (the overlay box)
 
     # -- geometry ---------------------------------------------------------------------------------------------------------
     def _build_gap(self) -> None:
@@ -201,10 +202,11 @@ class GapHead(UltronHead):
 
         # halo behind the head: faint at rest, stronger as the voice rises
         if self.show_halo:
-            hs = self._halo.width()
+            halo = _halo_pixmap(self, cell)
+            hs = halo.width() * self.halo_scale
             p.save()
             p.setOpacity(p.opacity() * (0.55 + 0.45 * level))
-            p.drawPixmap(QRectF(cx - hs / 2, cy - hs / 2, hs, hs), self._halo, QRectF(self._halo.rect()))
+            p.drawPixmap(QRectF(cx - hs / 2, cy - hs / 2, hs, hs), halo, QRectF(halo.rect()))
             p.restore()
 
         # dim metal: the whole pixmap, or in horizontal bands when glitching

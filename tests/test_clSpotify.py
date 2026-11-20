@@ -1214,7 +1214,7 @@ class TestHandleLocalStatusUpdate:
 
         await spotify_manager.handle_local_status_update(mqtt_client, self._payload(position=10.0))
         clock.return_value = 1005.0
-        await spotify_manager.handle_local_status_update(mqtt_client, self._payload(position=15.3))  # 0.3s of drift, inside the margin
+        await spotify_manager.handle_local_status_update(mqtt_client, self._payload(position=15.2))  # 0.2s of drift, inside the margin
         assert mqtt_client.publish.call_count == 1
         clock.return_value = 1006.0
         await spotify_manager.handle_local_status_update(mqtt_client, self._payload(position=120.0))  # seek
@@ -1798,7 +1798,7 @@ class TestLocalStatusDriftResync:
         for beat in range(1, 6):  # the real player loses 0.2s per 10s heartbeat
             clock.return_value = 1000.0 + 10 * beat
             results.append(spotify_manager._local_status_changed(self._payload(10.0 + 10 * beat - 0.2 * beat)))
-        assert results == [False, False, True, False, False]  # 0.6s behind on the third beat, then re-anchored
+        assert results == [False, True, False, True, False]  # 0.4s behind on the second beat, re-anchored, and again two beats later
 
     def test_a_paused_track_expects_a_frozen_position(self, spotify_manager, mocker):
         clock = mocker.patch("clSpotify.time.time")

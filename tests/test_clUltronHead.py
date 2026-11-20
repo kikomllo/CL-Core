@@ -191,3 +191,34 @@ class TestInTheVisualizer:
         out = run_in_skin("ultron", VIS + "v.current_opacity = 1.0\nfor st in ('IDLE','LISTENING','RECORDING','PROCESSING','SPEAKING'):\n"
                                            "    v.state = st; v.talk_level = 0.7; v.grab()\nprint('ok')")
         assert out == "ok"
+
+
+class TestOverlayHeadFit:
+    """The overlay is a narrow box (200x400 at 1080p) with the orb near its bottom: the head must fit it at its biggest."""
+
+    SETUP = VIS + ("from clUIScaler import UIScaler\nfor m in UIScaler.get().monitors: m['scale'] = 1.0\n"
+                   "v.resizeUnscaled(200, 400)\nv.is_fullscreen = False\nv.state = 'SPEAKING'\nv.current_scale = 1.0\n"
+                   "cx, cy = v.width() / 2, v.height() - 100\nf = v._overlay_head_fit(cx, cy)\n"
+                   "cell = max(2, round(300 / v.head.h))\n")
+
+    def test_the_speaking_head_stays_inside_the_overlay_box(self):
+        out = run_in_skin("ultron", self.SETUP + "from ui.clUltronHead import PULSE_LOUD\n"
+                                                 "w = v.head.w * cell * f * PULSE_LOUD; h = v.head.h * cell * f * PULSE_LOUD\n"
+                                                 "print(f < 1, w <= v.width(), h / 2 <= v.height() - cy)")
+        assert out == "True True True"
+
+    def test_it_never_grows_a_head_that_already_fits(self):
+        out = run_in_skin("ultron", self.SETUP + "v.current_scale = 0.05\nprint(v._overlay_head_fit(cx, cy))")
+        assert out == "1.0"
+
+    def test_the_halo_fades_out_before_the_overlay_boxs_edge(self):
+        out = run_in_skin("ultron", self.SETUP + (
+            "import numpy as np\nfrom PyQt6.QtGui import QImage, QPainter, QRegion\nfrom PyQt6.QtCore import QPoint\n"
+            "from PyQt6.QtWidgets import QWidget\n"
+            "v.set_state('SPEAKING', False); v.current_opacity = 1.0; v.current_scale = 1.0; v.talk_level = 1.0\n"
+            "img = QImage(200, 400, QImage.Format.Format_ARGB32); img.fill(0)\n"
+            "p = QPainter(img); v.render(p, QPoint(), QRegion(), QWidget.RenderFlag(0)); p.end()\n"
+            "ptr = img.constBits(); ptr.setsize(img.sizeInBytes())\n"
+            "a = np.frombuffer(ptr, np.uint8).reshape(400, 200, 4)[..., 3]\n"
+            "print(max(a[:, 0].max(), a[:, -1].max(), a[-1, :].max()))"))
+        assert out == "0"

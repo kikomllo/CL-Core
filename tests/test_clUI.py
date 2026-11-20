@@ -529,9 +529,9 @@ class TestAudioQuickSwitchPill:
         assert pill.width() == pill.diameter
         assert pill.label.isHidden()
 
-    def test_tooltip_on_icon_carries_full_device_name(self, qapp, mocker):
+    def test_the_icon_has_no_tooltip_the_marquee_label_shows_the_name(self, qapp, mocker):
         pill = self._pill(qapp, "output", "Speakers (Realtek Audio)", mocker)
-        assert pill.icon_btn.toolTip() == "Speaker: Speakers (Realtek Audio)"
+        assert pill.icon_btn.toolTip() == ""
 
     def test_quick_pass_through_never_expands(self, qapp, mocker):
         """A cursor sweeping across several pills in a row used to fully
@@ -1552,6 +1552,11 @@ class TestLyricsDisplay:
         d.is_fullscreen = True
         return d
 
+    @staticmethod
+    def _row_centre(d, which):
+        """Where the next row's moving label rests, relative to the whole-box label's centre."""
+        return d._anim_pts["in"] - (d.y() + d.height() / 2.0)
+
     def _line(self, t, text):
         return {"time": t, "text": text}
 
@@ -1566,11 +1571,11 @@ class TestLyricsDisplay:
         d = self._display(qapp)
         assert d.isHidden()
 
-    def test_word_wrap_is_disabled_on_every_row(self, qapp):
+    def test_word_wrap_is_enabled_on_every_row(self, qapp):
         d = self._display(qapp)
-        assert d.next_lbl.wordWrap() is False
-        assert d.current_lbl.wordWrap() is False
-        assert d.prev_lbl.wordWrap() is False
+        assert d.next_lbl.wordWrap() is True
+        assert d.current_lbl.wordWrap() is True
+        assert d.prev_lbl.wordWrap() is True
 
     def test_current_line_color_is_toned_down_from_full_theme_primary(self, qapp):
         d = self._display(qapp)
@@ -1797,7 +1802,7 @@ class TestLyricsDisplay:
 
         assert d._slide_in_next_lbl is not None
         assert d._slide_in_next_lbl.text == "Third line"
-        assert d._slide_in_next_lbl.geometry().y() == d.NEXT_ENTRY_START_OFFSET_PX
+        assert d._slide_in_next_lbl.y_offset == pytest.approx(self._row_centre(d, 0) + d.NEXT_ENTRY_START_OFFSET_PX)
         # Font size/weight live on the widget's own plain attributes, not
         # a stylesheet or QFont lookup -- see _AnimatedLyricLabel.
         assert d._slide_in_next_lbl.font_px == d.NEXT_ENTRY_START_FONT_PX
@@ -1826,13 +1831,12 @@ class TestLyricsDisplay:
         d._on_anim_step(0.5)
 
         expected_font = int(d.NEXT_ENTRY_START_FONT_PX + (d.DIM_FONT_PX - d.NEXT_ENTRY_START_FONT_PX) * 0.5)
-        expected_y = int(d.NEXT_ENTRY_START_OFFSET_PX * 0.5)
-        assert d._slide_in_next_lbl.geometry().y() == expected_y
+        assert d._slide_in_next_lbl.y_offset == pytest.approx(self._row_centre(d, 0) + d.NEXT_ENTRY_START_OFFSET_PX * 0.5)
         assert d._slide_in_next_lbl.font_px == expected_font
 
         d._on_anim_step(1.0)
 
-        assert d._slide_in_next_lbl.geometry().y() == 0
+        assert d._slide_in_next_lbl.y_offset == pytest.approx(self._row_centre(d, 0))
         assert d._slide_in_next_lbl.font_px == d.DIM_FONT_PX
 
     def test_finishing_the_animation_cleans_up_the_slide_in_label(self, qapp, mocker):
@@ -1996,6 +2000,148 @@ class TestLyricsDisplayDynamicWidth:
         d.set_playback("Song2", "Artist2", True, 1.0, 30.0)
 
         assert d.width() == 400
+
+
+class TestLyricsDisplayWrappingAndOrder:
+    """A line wider than MAX_WIDTH wraps onto more lines instead of stretching the box, and the previous / next rows
+    wrap by the same rule at their own font. Rows run previous (top), current, next (bottom)."""
+
+    LONG = "This is a really long lyric line that keeps going and going well past the maximum width the box is allowed to take"
+
+    def _display(self, qapp):
+        import clUI
+        from clUIScaler import UIScaler
+        for m in UIScaler.get().monitors:
+            m["scale"] = 1.0
+        d = clUI.LyricsDisplay()
+        d.resize(700, 110)
+        d.default_width, d.default_height = 700, 110
+        d.is_fullscreen = True
+        d._lines = [{"time": 0.0, "text": "Short"}, {"time": 10.0, "text": self.LONG}, {"time": 20.0, "text": "Also short"}]
+        return d
+
+    def test_the_box_never_grows_past_the_max_width(self, qapp):
+        d = self._display(qapp)
+        d._current_index = 1
+        d._refresh_texts()
+        assert 700 < d.width() <= d.MAX_WIDTH          # as wide as the wrapped line needs, never past the cap
+
+    def test_a_line_that_fits_as_current_is_one_line_in_the_small_rows_too(self, qapp):
+        """A full-width line that fits on one line when current must not be squeezed to two lines as the previous or
+        next row, even if the box was narrower when it was shown there."""
+        d = self._display(qapp)
+        full = "A line that is long enough to fill most of the box okay"
+        d._lines = [{"time": 0.0, "text": "Short"}, {"time": 10.0, "text": "Short too"}, {"time": 20.0, "text": full}]
+        d._current_index = 1
+        d._refresh_texts()
+        assert "\n" not in d.next_lbl.text()
+        assert d.next_lbl.text() == full
+        d._current_index = 2
+        d._refresh_texts()
+        assert d.current_lbl.text() == full           # ...and it is still one line once it is current
+
+    def test_a_line_that_does_not_fit_wraps_and_makes_the_box_taller(self, qapp):
+        d = self._display(qapp)
+        d._current_index = 0
+        d._refresh_texts()
+        one_line_height = d.height()
+        d._current_index = 1
+        d._refresh_texts()
+        assert d.height() > one_line_height
+        assert d._cur_h > d._prev_h
+
+    def test_the_previous_and_next_rows_wrap_the_same_way(self, qapp):
+        d = self._display(qapp)
+        d._lines = [{"time": 0.0, "text": self.LONG * 2}, {"time": 10.0, "text": "Short"}, {"time": 20.0, "text": self.LONG * 2}]
+        d._current_index = 1
+        d._refresh_texts()
+        assert d._prev_h == d._next_h > d._cur_h                          # both neighbours wrap onto more lines than the current one
+        assert d.prev_lbl.height() == d._prev_h and d.next_lbl.height() == d._next_h
+
+    def test_a_line_breaks_in_the_same_places_in_the_small_rows_as_in_the_current_row(self, qapp):
+        d = self._display(qapp)
+        d._lines = [{"time": 0.0, "text": self.LONG}, {"time": 10.0, "text": self.LONG}, {"time": 20.0, "text": self.LONG}]
+        d._current_index = 1
+        d._refresh_texts()
+        current = d.current_lbl.text()
+        assert "\n" in current                       # it does wrap in the middle row...
+        assert d.prev_lbl.text() == current           # ...and the rows before and after break in exactly the same places
+        assert d.next_lbl.text() == current
+        assert current.replace("\n", " ") == self.LONG
+
+    def test_the_moving_labels_carry_the_same_breaks_too(self, qapp, mocker):
+        mocker.patch("clUI.time.time", return_value=1000.0)
+        d = self._display(qapp)
+        d._lines = [{"time": 0.0, "text": "One"}, {"time": 10.0, "text": self.LONG}, {"time": 20.0, "text": self.LONG}, {"time": 30.0, "text": "Four"}]
+        d._current_index = 1
+        d._refresh_texts()
+        d._promote(2)
+        assert d._slide_up_lbl.text == d._slide_down_lbl.text == d._as_current(self.LONG)
+        assert "\n" in d._slide_up_lbl.text
+
+    def test_rows_run_previous_current_next_from_top_to_bottom(self, qapp):
+        d = self._display(qapp)
+        d._current_index = 1
+        d._refresh_texts()
+        assert d.prev_lbl.y() < d.current_lbl.y() < d.next_lbl.y()
+
+    def test_the_current_row_stays_in_the_centre_of_the_box(self, qapp):
+        d = self._display(qapp)
+        d._current_index = 1
+        d._refresh_texts()
+        assert d.current_lbl.y() + d.current_lbl.height() / 2 == pytest.approx(d.height() / 2, abs=1)
+
+    def test_growing_keeps_the_box_centred(self, qapp):
+        d = self._display(qapp)
+        d.move(100, 300)
+        cy = d.y() + d.height() // 2
+        d._current_index = 1
+        d._refresh_texts()
+        assert abs((d.y() + d.height() // 2) - cy) <= 1
+
+    def test_the_outgoing_line_rises_to_the_top_row_and_the_incoming_one_rises_to_the_centre(self, qapp, mocker):
+        mocker.patch("clUI.time.time", return_value=1000.0)
+        d = self._display(qapp)
+        d._lines = [{"time": 0.0, "text": "One"}, {"time": 10.0, "text": "Two"}, {"time": 20.0, "text": "Three"}, {"time": 30.0, "text": "Four"}]
+        d._current_index = 1
+        d._refresh_texts()
+        d._promote(2)
+        off = lambda y: y - (d.y() + d.height() / 2.0)
+        (up_from, up_to), (down_from, down_to) = d._anim_pts["up"], d._anim_pts["down"]
+        d._on_anim_step(0.0)
+        assert d._slide_down_lbl.y_offset == pytest.approx(off(down_from))
+        assert d._slide_up_lbl.y_offset == pytest.approx(off(up_from))
+        d._on_anim_step(1.0)
+        assert d._slide_down_lbl.y_offset == pytest.approx(off(down_to))
+        assert d._slide_up_lbl.y_offset == pytest.approx(off(up_to))
+        assert down_to < up_to < up_from and down_to < down_from       # everything moves up; previous < current < next
+
+    def test_a_multi_line_switch_starts_from_where_the_lines_were_and_never_jumps(self, qapp, mocker):
+        """The current line stays on its anchor, and the moving lines start at the old on-screen positions."""
+        mocker.patch("clUI.time.time", return_value=1000.0)
+        d = self._display(qapp)
+        d.set_home(500.0)
+        d._lines = [{"time": 0.0, "text": "One"}, {"time": 10.0, "text": "Two"}, {"time": 20.0, "text": self.LONG * 2}, {"time": 30.0, "text": "Four"}]
+        d._current_index = 1
+        d._refresh_texts()
+        old_current = d.y() + d.current_lbl.y() + d.current_lbl.height() / 2.0
+        old_next = d.y() + d.next_lbl.y() + d.next_lbl.height() / 2.0
+        assert old_current == pytest.approx(500.0, abs=1)
+        d._promote(2)                                                   # the long line becomes current
+        assert d._anim_pts["down"][0] == pytest.approx(old_current)     # the old current line starts where it was
+        assert d._anim_pts["up"][0] == pytest.approx(old_next)          # the incoming one starts where "next" was
+        assert d._anim_pts["up"][1] == pytest.approx(500.0, abs=1)      # and lands on the anchor
+        d._on_anim_finished()
+        assert d.y() + d.current_lbl.y() + d.current_lbl.height() / 2.0 == pytest.approx(500.0, abs=1)
+
+    def test_the_previous_and_next_text_hug_the_current_line(self, qapp):
+        d = self._display(qapp)
+        d._lines = [{"time": 0.0, "text": self.LONG * 2}, {"time": 10.0, "text": "Short"}, {"time": 20.0, "text": "Also short"}]
+        d._current_index = 1
+        d._refresh_texts()
+        gap = d._gap()
+        assert d.current_lbl.y() - (d.prev_lbl.y() + d.prev_lbl.height()) == gap
+        assert d.next_lbl.y() - (d.current_lbl.y() + d.current_lbl.height()) == gap
 
 
 class TestSpotifyQueueTopic:

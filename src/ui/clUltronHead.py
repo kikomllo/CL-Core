@@ -150,6 +150,7 @@ class UltronHead:
         self._glow: Optional[QPixmap] = None
         self._halo: Optional[QPixmap] = None
         self.show_halo = True
+        self.halo_scale = 1.0                      # <1 when the host window is smaller than the halo (the overlay box)
 
     def _split_cheek_plates(self) -> None:
         """The plates below the brows are the grille (the big connected group, which is the mouth) and the small separate plates
@@ -344,6 +345,9 @@ class UltronHead:
         gp.drawEllipse(0, 0, size, size)
         gp.end()
         self._glow = QPixmap.fromImage(g)
+        UltronHead._build_halo(self, cell)
+
+    def _build_halo(self, cell: int) -> None:
         # the soft red halo behind the whole head (it replaces the old bloom): a gaussian that reaches zero at its rim
         hs = int(max(self.w, self.h) * cell * 1.9)
         hi = QImage(hs, hs, QImage.Format.Format_ARGB32_Premultiplied)
@@ -353,13 +357,18 @@ class UltronHead:
         rim = math.exp(-3.5)
         for k in range(17):
             t = k / 16
-            fall = (math.exp(-3.5 * t * t) - rim) / (1.0 - rim)
+            reach = getattr(self, "halo_reach", 1.0)       # <1 (the overlay box): the same glow, but its tail fades inside the box
+            fall = (math.exp(-3.5 * (t * reach) ** 2) - rim) / (1.0 - rim)
+            if reach < 1.0:
+                u = min(1.0, max(0.0, (t - 0.6) / 0.4))
+                fall *= 1.0 - u * u * (3 - 2 * u)
             halo.setColorAt(t, QColor(255, int(60 - 40 * t), 20, int(HALO_PEAK_ALPHA * fall)))
         hp.setPen(Qt.PenStyle.NoPen)
         hp.setBrush(QBrush(halo))
         hp.drawRect(0, 0, hs, hs)
         hp.end()
         self._halo = QPixmap.fromImage(hi)
+        self._halo_reach_built = getattr(self, "halo_reach", 1.0)
 
     def size_px(self, cell: int) -> Tuple[int, int]:
         return self.w * cell, self.h * cell
@@ -381,10 +390,11 @@ class UltronHead:
 
         # halo behind the head: faint at rest, stronger as the voice rises
         if self.show_halo:
-            hs = self._halo.width()
+            halo = _halo_pixmap(self, cell)
+            hs = halo.width() * self.halo_scale
             p.save()
             p.setOpacity(p.opacity() * (0.55 + 0.45 * level))
-            p.drawPixmap(QRectF(cx - hs / 2, cy - hs / 2, hs, hs), self._halo, QRectF(self._halo.rect()))
+            p.drawPixmap(QRectF(cx - hs / 2, cy - hs / 2, hs, hs), halo, QRectF(halo.rect()))
             p.restore()
 
         # dim metal: the whole pixmap, or in horizontal bands when glitching
@@ -574,6 +584,13 @@ BREATH = 0.012                    # at rest it only breathes, this much
 FRAME_FILES = ("idle", "talk_1", "talk_2", "talk_3", "talk_4", "talk_5", "talk_6")
 
 
+def _halo_pixmap(head, cell: int) -> QPixmap:
+    """The halo, rebuilt when the host asked for a different reach (head.halo_reach)."""
+    if getattr(head, "_halo_reach_built", None) != getattr(head, "halo_reach", 1.0):
+        UltronHead._build_halo(head, cell)
+    return head._halo
+
+
 def pulse_scale(level: float, speaking: bool, t: float) -> float:
     """How big the whole head is, relative to the visualizer's state scale: at rest it only breathes; while he speaks it
     gets bigger and smaller with the voice (PULSE_QUIET at the quietest syllable up to PULSE_LOUD at the loudest). Without
@@ -623,6 +640,7 @@ class SpriteHead:
         self._glow: Optional[QPixmap] = None
         self._halo: Optional[QPixmap] = None
         self.show_halo = True
+        self.halo_scale = 1.0                      # <1 when the host window is smaller than the halo (the overlay box)
 
     def _build_growth(self) -> None:
         """Works out where the mouth lives in the sprite, so it can be stretched beyond the drawn frames: the lit mouth pixels in
@@ -804,10 +822,11 @@ class SpriteHead:
         off = lambda j: (shift[j] if j < len(shift) else 0) * cell
 
         if self.show_halo:                                        # the halo behind the head: faint, swelling with the mouth
-            hs = self._halo.width()
+            halo = _halo_pixmap(self, cell)
+            hs = halo.width() * self.halo_scale
             p.save()
             p.setOpacity(p.opacity() * (0.6 + 0.4 * drive))
-            p.drawPixmap(QRectF(cx - hs / 2, cy - hs / 2, hs, hs), self._halo, QRectF(self._halo.rect()))
+            p.drawPixmap(QRectF(cx - hs / 2, cy - hs / 2, hs, hs), halo, QRectF(halo.rect()))
             p.restore()
 
         sx, sy = x0 - self._margin, y0 - self._margin

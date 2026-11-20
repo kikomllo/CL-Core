@@ -614,7 +614,7 @@ class DraggableWidget(QWidget):
                 self.main_window.save_ui_state()
         super().mouseReleaseEvent(event)
 
-from ui.clUltronHead import new_glitch, Glitch, pulse_scale
+from ui.clUltronHead import new_glitch, Glitch, pulse_scale, PULSE_LOUD, BREATH
 
 
 class JarvisVisualizer(QWidget):
@@ -664,6 +664,27 @@ class JarvisVisualizer(QWidget):
             self.target_amplitude = max(10, norm_vol * max_amp)
             if self.state == "RECORDING":
                 self.target_opacity = min(1.0, max(0.6, norm_vol + 0.6))
+
+    def _overlay_head_fit(self, cx, cy):
+        """The head is sized for the fullscreen dashboard; the overlay is a narrow box with the orb near its bottom, so
+        shrink it (never grow it) until it fits at its biggest, pulse included."""
+        cell = max(2, round(UIScaler.get().scale(300) / self.head.h))
+        half_w, half_h = self.head.w * cell / 2, self.head.h * cell / 2
+        biggest = self.current_scale * (PULSE_LOUD if self.state == "SPEAKING" else 1.0 + BREATH)
+        room_w, room_h = cx * 0.94, min(cy, self.height() - cy) * 0.94
+        return min(1.0, room_w / (half_w * biggest), room_h / (half_h * biggest))
+
+    def _overlay_halo_scale(self, cx, cy, scale):
+        """The head's glow ends well outside the overlay box, so the window's edge cut it in a straight line. Keep the
+        glow as bright as at full size, but draw it so it has faded to nothing by the box's nearest edge: the halo is drawn
+        exactly as wide as the room (its tail fades inside, `halo_reach`), whatever the head's pulse."""
+        cell = max(2, round(UIScaler.get().scale(300) / self.head.h))
+        halo_radius = max(self.head.w, self.head.h) * cell * 1.9 / 2
+        room = min(cx, self.width() - cx, cy, self.height() - cy) * 0.98
+        loud_fit = min(1.0, (cx * 0.94) / (self.head.w * cell / 2 * PULSE_LOUD),
+                       (min(cy, self.height() - cy) * 0.94) / (self.head.h * cell / 2 * PULSE_LOUD))
+        self.head.halo_reach = min(1.0, room / (halo_radius * loud_fit * PULSE_LOUD))   # the glow of the head at its biggest
+        return min(1.0, room / (halo_radius * scale)) if scale > 0 else 1.0
 
     def set_state(self, state, is_fullscreen):
         self.state = state
@@ -780,7 +801,10 @@ class JarvisVisualizer(QWidget):
         painter.translate(cx, cy)
         scale = self.current_scale
         if self.head is not None:                      # the Ultron head gets bigger and smaller with the voice
+            if not self.is_fullscreen:
+                scale *= self._overlay_head_fit(cx, cy)
             scale *= pulse_scale(self.talk_level, self.state == "SPEAKING", self.time_offset)
+            self.head.halo_scale = 1.0 if self.is_fullscreen else self._overlay_halo_scale(cx, cy, scale)
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         painter.scale(scale, scale)
         painter.translate(-cx, -cy)
@@ -997,10 +1021,11 @@ class _AnimatedLyricLabel(QWidget):
         # 3. Draw text perfectly centered around the new (0, 0) origin.
         # A large rect ensures it's never clipped during scaling.
         rect_w = self.width() * 2
-        rect_h = self.height() * 2
+        rect_h = self.height() * 4
+        flags = int(Qt.AlignmentFlag.AlignCenter)      # the line breaks are already in the text (see LyricsDisplay._as_current)
         target_rect = QRectF(-rect_w / 2, -rect_h / 2, rect_w, rect_h)
-        
-        painter.drawText(target_rect, int(Qt.AlignmentFlag.AlignCenter), self.text)
+
+        painter.drawText(target_rect, flags, self.text)
         painter.end()
 
 
@@ -1022,12 +1047,14 @@ class LyricsDisplay(QWidget):
     the whole sheet means every subsequent line is already known, no
     matter how long the next backend update takes.
 
-    Three rows, top to bottom: next (small, dim), current (big, bold,
-    primary orange), previous (small, dim) -- matching how the revolver
+    Three rows, top to bottom: previous (small, dim), current (big, bold,
+    primary orange), next (small, dim) -- matching how the revolver
     animation below moves things: the next line grows and slides up into
-    the current row, the current line shrinks and slides down into the
+    the current row, the current line shrinks and slides up into the
     previous row, and a brand-new next line grows in from a smaller font
-    while sliding up into the now-vacant next row, all on the same clock.
+    while rising into the now-vacant bottom row, all on the same clock.
+    A line wider than MAX_WIDTH wraps (each row by the same rule, at its
+    own font) instead of stretching the box.
 
     Advancing to the next line is triggered locally, on a timer, once
     interpolated playback position (the same client-side-advanced
@@ -1041,7 +1068,7 @@ class LyricsDisplay(QWidget):
     CURRENT_FONT_PX = 26
     DIM_WEIGHT = 400
     CURRENT_WEIGHT = 800
-    # The brand-new next line entering the top row on the same clock as
+    # The brand-new next line entering the bottom row on the same clock as
     # the other two -- starts this small and this far below its resting
     # spot, growing/sliding up into place instead of popping in cold.
     NEXT_ENTRY_START_FONT_PX = 8
@@ -1054,6 +1081,12 @@ class LyricsDisplay(QWidget):
     CURRENT_COLOR_RGBA = (255, 170, 0, 230)
     DIM_COLOR_RGBA = (255, 170, 0, 150)  # matches Theme.C_PRIMARY_DIM exactly
     CURRENT_COLOR = "rgba({}, {}, {}, {})".format(*CURRENT_COLOR_RGBA)
+    # A line wider than this (at 1080p, scaled) wraps onto more lines instead of stretching the box; the previous and
+    # next rows wrap by the same rule at their own (smaller) font.
+    MAX_WIDTH = 900
+    SIDE_MARGIN = 40       # width added around the widest single line
+    LABEL_PAD = 18         # each label's own side padding (a little less than half of SIDE_MARGIN, so exact fits never wrap)
+    ROW_GAP = 12           # between the current line's text and the previous / next block, whatever their size
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1064,7 +1097,8 @@ class LyricsDisplay(QWidget):
         self.prev_lbl = QLabel("", self)
         for lbl in (self.next_lbl, self.current_lbl, self.prev_lbl):
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setWordWrap(False)
+            lbl.setWordWrap(True)
+        self._apply_label_margins()
         self._apply_static_styles()
 
         self.hide()
@@ -1074,6 +1108,13 @@ class LyricsDisplay(QWidget):
         # and the floor _apply_dynamic_width() never shrinks below (only
         # grows past it for a line too wide to fit at its own font size).
         self.default_width = 0
+        self.default_height = 0
+        # Height of the previous / current / next text blocks now shown. They hug the current line (ROW_GAP apart), and
+        # the current line's centre stays at _anchor_y (parent coordinates) whatever the blocks' sizes, so a line
+        # changing from one to several lines never makes the others jump.
+        self._prev_h = self._cur_h = self._next_h = 0
+        self._anchor_y = None
+        self._anim_pts = None
 
         self._lines = []  # [{"time": float, "text": str}, ...]
         self._current_index = -1  # -1 = before the first line
@@ -1119,52 +1160,125 @@ class LyricsDisplay(QWidget):
         if not self._animating:
             self._layout_static()
 
-    def _row_height(self):
-        return self.height() // 3
+    def _apply_label_margins(self):
+        pad = UIScaler.get().scale(self.LABEL_PAD)
+        for lbl in (self.next_lbl, self.current_lbl, self.prev_lbl):
+            lbl.setContentsMargins(pad, 0, pad, 0)
+
+    def _avail_width(self, width=None):
+        """The width a lyric line wraps at in the current row of a box of the given width."""
+        return (width or self.width()) - 2 * UIScaler.get().scale(self.LABEL_PAD)
+
+    def _as_current(self, text, width=None):
+        """The text with a line break wherever the CURRENT row (big bold font) would wrap it: only a line wider than
+        MAX_WIDTH breaks, whatever size the box has right now (the box grows to fit, so a line that fits as current is one
+        line in every row). The previous and next rows show exactly these lines, only smaller."""
+        if not text:
+            return ""
+        from PyQt6.QtGui import QTextLayout, QTextOption
+        self.current_lbl.ensurePolished()
+        layout = QTextLayout(text, self.current_lbl.font())
+        option = QTextOption()
+        option.setWrapMode(QTextOption.WrapMode.WordWrap)
+        layout.setTextOption(option)
+        avail = max(1, self._avail_width(self._max_width()))
+        lines = []
+        layout.beginLayout()
+        while True:
+            line = layout.createLine()
+            if not line.isValid():
+                break
+            line.setLineWidth(avail)
+            lines.append(text[line.textStart():line.textStart() + line.textLength()].strip())
+        layout.endLayout()
+        return "\n".join(l for l in lines if l) or text
+
+    def set_home(self, centre_y):
+        """The parent-coordinate y the current line's centre stays on."""
+        self._anchor_y = centre_y
+
+    def _gap(self):
+        return UIScaler.get().scale(self.ROW_GAP)
+
+    def _row_rects(self):
+        """(y, height) of the next, current and previous text blocks in the box, top to bottom: previous, current, next."""
+        total = self._prev_h + self._cur_h + self._next_h + 2 * self._gap()
+        if self.height() != total:             # the host reset the geometry: fall back to equal thirds until re-fitted
+            self._prev_h = self._next_h = self.height() // 3
+            self._cur_h = self.height() - 2 * self._prev_h - 2 * self._gap()
+        gap, ph, ch = self._gap(), self._prev_h, self._cur_h
+        return (ph + gap + ch + gap, self._next_h), (ph + gap, ch), (0, ph)
 
     def _layout_static(self):
-        w, row_h = self.width(), self._row_height()
-        self.next_lbl.setGeometry(0, 0, w, row_h)
-        self.current_lbl.setGeometry(0, row_h, w, row_h)
-        self.prev_lbl.setGeometry(0, row_h * 2, w, row_h)
+        w = self.width()
+        for lbl, (y, h) in zip((self.next_lbl, self.current_lbl, self.prev_lbl), self._row_rects()):
+            lbl.setGeometry(0, y, w, h)
+
+    def _text_height(self, lbl, text):
+        """Height the (already broken, see _as_current) text needs at the label's own font; an empty row still keeps one
+        line so the box doesn't change size when a song's first or last line is current."""
+        lbl.ensurePolished()
+        return (text.count("\n") + 1 if text else 1) * QFontMetrics(lbl.font()).lineSpacing()
+
+    def _max_width(self):
+        return max(self.default_width, UIScaler.get().scale(self.MAX_WIDTH))
 
     def _needed_row_width(self, current_text, next_text, prev_text, extra_texts=()):
-        """How wide the box must be for its widest current line to sit on
-        one line without running off the edges -- word wrap is off, so a
-        line longer than the box's own width otherwise just gets clipped.
+        """How wide the box must be for the widest line of any of the three texts, each laid out the way it would look as
+        the current line (see _as_current), up to MAX_WIDTH. The previous and next lines count too: they are shown in
+        the shape they will have once current, so the box already has to be as wide as that shape.
 
         extra_texts: additional (label, text) pairs to also measure --
         _promote() uses this for the outgoing current line, which must
         still fit at its current (larger) font for the early part of the
-        transition, not just the smaller font it's shrinking down into for
-        the eventual static prev row."""
+        transition."""
         widest = self.default_width or self.width()
-        margin = UIScaler.get().scale(40)
-        for lbl, text in (
-            (self.current_lbl, current_text),
-            (self.next_lbl, next_text),
-            (self.prev_lbl, prev_text),
-        ) + tuple(extra_texts):
-            if not text:
-                continue
-            # A QLabel's .font() doesn't reflect its QSS font-size at all
-            # (reports Qt's generic default) until the stylesheet has
-            # actually been applied -- ensurePolished() forces that
-            # without needing the widget to have been shown first.
-            lbl.ensurePolished()
-            fm = QFontMetrics(lbl.font())
-            widest = max(widest, fm.horizontalAdvance(text) + margin)
-        return widest
+        margin = UIScaler.get().scale(self.SIDE_MARGIN)
+        # A QLabel's .font() doesn't reflect its QSS font-size at all
+        # (reports Qt's generic default) until the stylesheet has
+        # actually been applied -- ensurePolished() forces that
+        # without needing the widget to have been shown first.
+        self.current_lbl.ensurePolished()
+        fm = QFontMetrics(self.current_lbl.font())
+        for text in (current_text, next_text, prev_text) + tuple(t for _, t in extra_texts):
+            for line in self._as_current(text).split("\n"):
+                if line:
+                    widest = max(widest, fm.horizontalAdvance(line) + margin)
+        return min(widest, self._max_width())
+
+    def _layout_numbers(self, current_text, next_text, prev_text, width):
+        """(previous, current, next) block heights, and the box height they make."""
+        ph = self._text_height(self.prev_lbl, self._as_current(prev_text, width))
+        ch = self._text_height(self.current_lbl, self._as_current(current_text, width))
+        nh = self._text_height(self.next_lbl, self._as_current(next_text, width))
+        return ph, ch, nh, ph + ch + nh + 2 * self._gap()
 
     def _apply_dynamic_width(self, current_text, next_text, prev_text, extra_texts=()):
+        """Sizes the box for the texts about to be shown: as wide as the widest line needs (up to MAX_WIDTH), and as tall as
+        the lines need once the long ones are wrapped. The current line's centre stays put (_anchor_y), so the box grows
+        up and down unevenly when only one side has a taller block."""
         new_width = self._needed_row_width(current_text, next_text, prev_text, extra_texts)
-        if new_width == self.width():
-            return
-        # Stays horizontally centered as it grows -- the box is already
-        # centered on screen by JarvisUI.refresh_layout().
+        ph, ch, nh, new_height = self._layout_numbers(current_text, next_text, prev_text, new_width)
+        for lbl, text in extra_texts:       # the outgoing current line, still at its big font
+            ch = max(ch, self._text_height(lbl, self._as_current(text, new_width)))
+        new_height = ph + ch + nh + 2 * self._gap()
+        self._prev_h, self._cur_h, self._next_h = ph, ch, nh
+        if self._anchor_y is None:
+            self._anchor_y = self.y() + self.height() / 2.0
         old_center_x = self.x() + self.width() // 2
-        self.resize(new_width, self.height())
-        self.move(old_center_x - new_width // 2, self.y())
+        new_y = int(round(self._anchor_y - (ph + self._gap() + ch / 2.0)))
+        if (new_width, new_height, new_y) == (self.width(), self.height(), self.y()):
+            if not self._animating:
+                self._layout_static()      # same box, but the blocks may split it differently
+            return
+        self.setGeometry(old_center_x - new_width // 2, new_y, new_width, new_height)   # stays centred horizontally
+        if not self._animating:
+            self._layout_static()          # a hidden widget gets its resize event late
+
+    def relayout(self):
+        """Re-fits the box to the texts now shown (after the host reset its geometry)."""
+        if not self._animating:
+            self._refresh_texts()
 
     def set_lyrics(self, title, artist, found, lines):
         self._lyrics_track = (title, artist)
@@ -1260,9 +1374,9 @@ class LyricsDisplay(QWidget):
         next_text = self._line_text(self._current_index + 1)
         prev_text = self._line_text(self._current_index - 1)
         self._apply_dynamic_width(current_text, next_text, prev_text)
-        self.current_lbl.setText(current_text)
-        self.next_lbl.setText(next_text)
-        self.prev_lbl.setText(prev_text)
+        self.current_lbl.setText(self._as_current(current_text))
+        self.next_lbl.setText(self._as_current(next_text))
+        self.prev_lbl.setText(self._as_current(prev_text))
 
     # --- Revolver transition: the current line shrinks and slides down
     # into the previous row; the next line grows and slides up into the
@@ -1291,6 +1405,11 @@ class LyricsDisplay(QWidget):
             self._refresh_texts()
             return
 
+        # Where the lines are on screen right now (parent coordinates), before the box is re-fitted.
+        mid_of = lambda lbl: self.y() + lbl.y() + lbl.height() / 2.0
+        old_cur_c, old_next_c = mid_of(self.current_lbl), mid_of(self.next_lbl)
+        old_top, old_bottom = self.y(), self.y() + self.height()
+
         self._animating = True
         self.current_lbl.hide()
         self.next_lbl.hide()
@@ -1315,98 +1434,104 @@ class LyricsDisplay(QWidget):
             extra_texts=[(self.current_lbl, old_current_text)],
         )
 
-        w, row_h = self.width(), self._row_height()
+        # Where each moving line is, in parent coordinates: old positions are read from the labels before anything
+        # moved (captured above), the new ones from the new layout. Everything animates between them, so a multi-line
+        # text changing size never makes the others jump.
+        next_r, cur_r, prev_r = self._row_rects()
+        mid = lambda r: self.y() + r[0] + r[1] / 2.0
+        self._anim_pts = {
+            "up": (old_next_c, mid(cur_r)),            # next -> current
+            "down": (old_cur_c, mid(prev_r)),          # current -> previous
+            "in": mid(next_r),                         # the new next line rises into the bottom row
+        }
+        # The box covers old and new extents while it animates (labels are transparent), and shrinks to the new one after.
+        top, bottom = min(old_top, self.y()), max(old_bottom, self.y() + self.height())
+        self.setGeometry(self.x(), top, self.width(), bottom - top)
+        w, h = self.width(), self.height()
         # _AnimatedLyricLabel, not QLabel -- see its own docstring for why
         # a real QLabel can't reliably change color/font-size per frame
         # here (Theme.get_global_stylesheet()'s app-wide QLabel rule wins
         # the QSS cascade over anything set programmatically afterward).
-        self._slide_down_lbl = _AnimatedLyricLabel(old_current_text, self)
-        self._slide_down_lbl.setGeometry(0, row_h, w, row_h)
+        # Each spans the whole box, so wrapped text is never clipped, and is moved by its y_offset.
+        def make(text):
+            lbl = _AnimatedLyricLabel(self._as_current(text), self)      # same line breaks as the current row
+            lbl.setGeometry(0, 0, w, h)
+            return lbl
+
+        self._slide_down_lbl = make(old_current_text)          # current -> previous (up)
         self._slide_down_lbl.set_style(
             self.DIM_COLOR_RGBA, 
-            target_font_px=self.DIM_FONT_PX, 
+            target_font_px=self.CURRENT_FONT_PX, 
             target_weight=self.DIM_WEIGHT,
-            scale_factor=self.CURRENT_FONT_PX / self.DIM_FONT_PX
+            scale_factor=1.0,
+            y_offset=self._offset(self._anim_pts["down"][0])
         )
         
-        self._slide_up_lbl = _AnimatedLyricLabel(new_current_text, self)
-        self._slide_up_lbl.setGeometry(0, 0, w, row_h)
+        self._slide_up_lbl = make(new_current_text)            # next -> current (up)
         self._slide_up_lbl.set_style(
             self.CURRENT_COLOR_RGBA, 
             target_font_px=self.CURRENT_FONT_PX, 
             target_weight=self.CURRENT_WEIGHT,
-            scale_factor=self.DIM_FONT_PX / self.CURRENT_FONT_PX
+            scale_factor=self.DIM_FONT_PX / self.CURRENT_FONT_PX,
+            y_offset=self._offset(self._anim_pts["up"][0])
         )
         
         self._slide_down_lbl.show()
         self._slide_up_lbl.show()
 
         if new_next_text:
-            self._slide_in_next_lbl = _AnimatedLyricLabel(new_next_text, self)
-            self._slide_in_next_lbl.setGeometry(0, self.NEXT_ENTRY_START_OFFSET_PX, w, row_h)
+            self._slide_in_next_lbl = make(new_next_text)      # a new next line rises into the bottom row
             self._slide_in_next_lbl.set_style(
                 self.DIM_COLOR_RGBA, 
-                target_font_px=self.DIM_FONT_PX, 
+                target_font_px=self.CURRENT_FONT_PX, 
                 target_weight=self.DIM_WEIGHT,
-                scale_factor=self.NEXT_ENTRY_START_FONT_PX / self.DIM_FONT_PX
+                scale_factor=self.NEXT_ENTRY_START_FONT_PX / self.CURRENT_FONT_PX,
+                y_offset=self._offset(self._anim_pts["in"]) + self.NEXT_ENTRY_START_OFFSET_PX
             )
             self._slide_in_next_lbl.show()
 
         self._anim.stop()
         self._anim.start()
 
-    def _on_anim_step(self, value):
-        if self._slide_up_lbl is None or self._slide_down_lbl is None:
-            return
-        w, row_h = self.width(), self._row_height()
+    def _offset(self, parent_y):
+        """A parent-coordinate y as an offset from the centre of the (whole-box) moving labels."""
+        return parent_y - (self.y() + self.height() / 2.0)
 
-        # --- Slide Up (Next -> Current) ---
-        raw_y_up = row_h * value
-        int_y_up = int(raw_y_up)
-        
+    def _on_anim_step(self, value):
+        if self._slide_up_lbl is None or self._slide_down_lbl is None or self._anim_pts is None:
+            return
+        lerp = lambda a, b: a + (b - a) * value
+        up, down, enter = self._anim_pts["up"], self._anim_pts["down"], self._anim_pts["in"]
+
+        # --- Slide Up (Next, bottom -> Current) ---
         current_size_up = self.DIM_FONT_PX + (self.CURRENT_FONT_PX - self.DIM_FONT_PX) * value
-        scale_up = current_size_up / self.CURRENT_FONT_PX
-        
-        self._slide_up_lbl.setGeometry(0, int_y_up, w, row_h)
         self._slide_up_lbl.set_style(
             self.CURRENT_COLOR_RGBA, 
             target_font_px=self.CURRENT_FONT_PX, 
             target_weight=self.CURRENT_WEIGHT, 
-            scale_factor=scale_up, 
-            y_offset=raw_y_up - int_y_up
+            scale_factor=current_size_up / self.CURRENT_FONT_PX, 
+            y_offset=self._offset(lerp(*up))
         )
 
-        # --- Slide Down (Current -> Prev) ---
-        raw_y_down = row_h + (row_h * value)
-        int_y_down = int(raw_y_down)
-        
+        # --- Slide Up (Current -> Prev, top) ---
         current_size_down = self.CURRENT_FONT_PX - (self.CURRENT_FONT_PX - self.DIM_FONT_PX) * value
-        scale_down = current_size_down / self.DIM_FONT_PX
-        
-        self._slide_down_lbl.setGeometry(0, int_y_down, w, row_h)
         self._slide_down_lbl.set_style(
             self.DIM_COLOR_RGBA, 
-            target_font_px=self.DIM_FONT_PX, 
+            target_font_px=self.CURRENT_FONT_PX, 
             target_weight=self.DIM_WEIGHT, 
-            scale_factor=scale_down, 
-            y_offset=raw_y_down - int_y_down
+            scale_factor=current_size_down / self.CURRENT_FONT_PX, 
+            y_offset=self._offset(lerp(*down))
         )
 
-        # --- Slide In Next ---
+        # --- Slide In Next (rises into the bottom row) ---
         if self._slide_in_next_lbl is not None:
-            raw_y_next = self.NEXT_ENTRY_START_OFFSET_PX * (1 - value)
-            int_y_next = int(raw_y_next)
-            
             current_size_next = self.NEXT_ENTRY_START_FONT_PX + (self.DIM_FONT_PX - self.NEXT_ENTRY_START_FONT_PX) * value
-            scale_next = current_size_next / self.DIM_FONT_PX
-            
-            self._slide_in_next_lbl.setGeometry(0, int_y_next, w, row_h)
             self._slide_in_next_lbl.set_style(
                 self.DIM_COLOR_RGBA, 
-                target_font_px=self.DIM_FONT_PX, 
+                target_font_px=self.CURRENT_FONT_PX, 
                 target_weight=self.DIM_WEIGHT, 
-                scale_factor=scale_next, 
-                y_offset=raw_y_next - int_y_next
+                scale_factor=current_size_next / self.CURRENT_FONT_PX, 
+                y_offset=self._offset(enter) + self.NEXT_ENTRY_START_OFFSET_PX * (1 - value)
             )
 
     def _on_anim_finished(self):
@@ -1637,7 +1762,6 @@ class AudioQuickSwitchPill(IconPill):
     for switching without leaving the fullscreen view."""
 
     ICON_FILE = {"input": "mic.svg", "output": "speaker.svg"}
-    TOOLTIP_PREFIX = {"input": "Mic", "output": "Speaker"}
 
     def __init__(self, kind: str, grow_direction: str = "right", parent=None):
         self.kind = kind  # "input" or "output"
@@ -1695,7 +1819,6 @@ class AudioQuickSwitchPill(IconPill):
             display = name
         self._cached_display_name = display
         self._refresh_expanded_width()
-        self.icon_btn.setToolTip(f"{self.TOOLTIP_PREFIX[self.kind]}: {display}")
         if self.label.isVisible():
             self.label.setText(display)
 
@@ -2088,6 +2211,10 @@ class JarvisUI(QWidget):
             lyrics_y = pill_y - lyrics_height - s(80)
             self.lyrics_display.setGeometry(lyrics_x, lyrics_y, lyrics_width, lyrics_height)
             self.lyrics_display.default_width = lyrics_width
+            self.lyrics_display.default_height = lyrics_height
+            self.lyrics_display.set_home(lyrics_y + lyrics_height / 2.0)
+            self.lyrics_display._apply_label_margins()
+            self.lyrics_display.relayout()
 
         if hasattr(self, 'clock_display'):
             self.clock_display.place(win_w, win_h)
@@ -3115,14 +3242,20 @@ class JarvisUI(QWidget):
             return
             
         if not self.is_fullscreen:
+            # The overlay box is transparent: clear any opaque pixels the fullscreen backdrop left in the buffer
+            # (on XWayland the idle overlay showed up as a black rectangle).
+            clear = QPainter(self)
+            clear.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+            clear.fillRect(self.rect(), Qt.GlobalColor.transparent)
+            clear.end()
             return
-            
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
+
         cx = self.width() / 2
         cy = self.height() / 2
-        
+
         # Invisible background to prevent alpha-click-passthrough on Linux (alpha=1 is enough to catch clicks)
         painter.setBrush(QColor(0, 0, 0, 240))
         painter.setPen(Qt.PenStyle.NoPen)

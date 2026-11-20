@@ -779,6 +779,52 @@ class MediaWidget(QWidget):
                 wrapper.resize(wrapper.width(), height_before - delta)
             self._app_volume_delta = 0
         self._sync_drawer_buttons()
+        self._persist_ui_state()
+
+    def get_ui_state(self):
+        """Which drawer (Up Next / App Volume) is open, for ui_state.json --
+        read by JarvisUI.save_ui_state() and handed back to restore_ui_state()
+        on the next start. `drawer_delta` is the height the open drawer added
+        to the wrapper, so a restore can account for it without growing the
+        (already saved, already including it) wrapper a second time."""
+        if not self.queue_body.isHidden():
+            name = "queue"
+        elif not self.app_volume_body.isHidden():
+            name = "app_volume"
+        else:
+            name = None
+        return {"drawer": name, "drawer_delta": self._app_volume_delta if name else 0}
+
+    def restore_ui_state(self, state):
+        """Re-opens the drawer saved by get_ui_state(). The wrapper's saved
+        size already includes the drawer's room, so unlike _toggle_drawer this
+        only records that room as the open delta instead of resizing: the later
+        content-driven _sync_app_volume_drawer_size() then adjusts by the real
+        difference, and closing the drawer removes exactly what it added."""
+        if not isinstance(state, dict):
+            return
+        body = {"queue": self.queue_body, "app_volume": self.app_volume_body}.get(state.get("drawer"))
+        if body is None or not body.isHidden() or self._open_drawer_body() is not None:
+            return
+        body.setVisible(True)
+        self.updateGeometry()
+        delta = state.get("drawer_delta")
+        self._app_volume_delta = delta if isinstance(delta, int) and delta > 0 else self._app_volume_room()
+        if body is self.app_volume_body:
+            self._request_app_volumes()
+            self._request_output_devices()
+        else:
+            self._request_queue()
+        self._sync_drawer_buttons()
+
+    def _persist_ui_state(self):
+        # The dashboard wrapper owns the window that saves ui_state.json. The
+        # calendar carousel's own MediaWidget copy has no such wrapper, so it
+        # (correctly) saves nothing; skipped mid-restore like every other save.
+        owner = getattr(self.parentWidget(), "main_window", None)
+        save = getattr(owner, "save_ui_state", None)
+        if callable(save) and not getattr(owner, "_restoring_ui_state", False):
+            save()
 
     def _sync_drawer_buttons(self):
         self.queue_btn.set_active(not self.queue_body.isHidden())
@@ -1071,6 +1117,10 @@ class MediaWidget(QWidget):
         lyrics_display = getattr(self.window(), 'lyrics_display', None)
         if lyrics_display is not None:
             lyrics_display.set_enabled(self._lyrics_enabled)
+            # Persisted so the toggle survives a UI restart (see save_ui_state).
+            save = getattr(self.window(), 'save_ui_state', None)
+            if callable(save):
+                save()
 
     def toggle_optimistic(self):
         self.status = "Paused" if self.status == "Playing" else "Playing"
