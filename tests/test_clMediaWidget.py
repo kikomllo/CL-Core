@@ -1022,17 +1022,14 @@ class TestUpNextRows:
         assert w.queue_rows_layout.count() == 5
         assert w.queue_caption_lbl.text() == "18 tracks, followed locally"
 
-    def test_the_first_row_is_marked_next(self, qapp, mocker):
+    def test_no_row_carries_a_next_tag(self, qapp, mocker):
         from PyQt6.QtWidgets import QLabel
         w = _widget(mocker)
         w.update_queue(self._queue(3))
 
-        def next_labels(row):
-            return [l for l in row.findChildren(QLabel) if l.text() == "NEXT"]
-
-        rows = [w.queue_rows_layout.itemAt(i).widget() for i in range(3)]
-        assert len(next_labels(rows[0])) == 1
-        assert next_labels(rows[1]) == [] and next_labels(rows[2]) == []
+        for i in range(3):
+            row = w.queue_rows_layout.itemAt(i).widget()
+            assert [l for l in row.findChildren(QLabel) if l.text() == "NEXT"] == []
 
     def test_rows_show_the_duration_as_minutes_and_seconds(self, qapp, mocker):
         from PyQt6.QtWidgets import QLabel
@@ -1050,6 +1047,67 @@ class TestUpNextRows:
         w.update_queue(self._queue(2))
 
         assert w.queue_rows_layout.count() == 2
+
+    def _with_uris(self, count=3):
+        data = self._queue(count)
+        for i, item in enumerate(data["queue"], start=1):
+            item["uri"] = f"spotify:track:{i}"
+        return data
+
+    def test_clicking_a_row_asks_for_that_track(self, qapp, mocker):
+        w = _widget(mocker)
+        w.update_queue(self._with_uris(3))
+        w.router.dispatch.reset_mock()
+
+        w.queue_rows_layout.itemAt(2).widget().clicked.emit()
+
+        w.router.dispatch.assert_called_once_with("spotify.control", silent=True, action="play_queue_item",
+                                                  uri="spotify:track:3", queue_index=2)
+
+    def test_a_real_mouse_click_on_the_row_does_it(self, qapp, mocker):
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtTest import QTest
+        w = _widget(mocker)
+        w.update_queue(self._with_uris(2))
+        row = w.queue_rows_layout.itemAt(1).widget()
+        row.resize(300, 40)
+        w.router.dispatch.reset_mock()
+
+        QTest.mouseClick(row, Qt.MouseButton.LeftButton)
+
+        w.router.dispatch.assert_called_once()
+        assert w.router.dispatch.call_args.kwargs["uri"] == "spotify:track:2"
+
+    def test_the_rows_dim_until_the_new_queue_arrives(self, qapp, mocker):
+        import pytest
+        w = _widget(mocker)
+        w.update_queue(self._with_uris(3))
+
+        w.queue_rows_layout.itemAt(0).widget().clicked.emit()
+
+        assert w.queue_caption_lbl.text() == "switching..."
+        assert w.queue_rows_opacity.opacity() == pytest.approx(0.3)
+        w.update_queue(self._with_uris(2))
+        assert w.queue_rows_opacity.opacity() == pytest.approx(1.0)
+
+    def test_a_second_click_while_switching_is_ignored(self, qapp, mocker):
+        w = _widget(mocker)
+        w.update_queue(self._with_uris(3))
+        w.queue_rows_layout.itemAt(0).widget().clicked.emit()
+        w.router.dispatch.reset_mock()
+
+        w.queue_rows_layout.itemAt(1).widget().clicked.emit()
+
+        w.router.dispatch.assert_not_called()
+
+    def test_a_row_without_a_uri_is_not_clickable(self, qapp, mocker):
+        w = _widget(mocker)
+        w.update_queue(self._queue(2))              # an older payload: no uris
+        w.router.dispatch.reset_mock()
+
+        w.queue_rows_layout.itemAt(0).widget().clicked.emit()
+
+        w.router.dispatch.assert_not_called()
 
     def test_an_empty_queue_says_so(self, qapp, mocker):
         w = _widget(mocker)
@@ -1310,3 +1368,135 @@ class TestMinimumWidthIsTheWidestOfAllStates:
         w = _widget(mocker)
         assert "__sizing__" not in w.app_volume_rows
         assert w.app_volume_layout.count() == 1  # just the "no apps" label
+
+
+class TestDrawerStateSurvivesARestart:
+    """get_ui_state / restore_ui_state: clUI.save_ui_state keeps the open drawer and load_ui_state reopens it."""
+
+    def _wrapped(self, mocker):
+        """A MediaWidget inside a stand-in wrapper that records resizes and has a main_window to save through."""
+        from PyQt6.QtWidgets import QWidget
+        from unittest.mock import MagicMock
+
+        class Wrapper(QWidget):
+            def __init__(self):
+                super().__init__()
+                self.main_window = MagicMock()
+                self.main_window._restoring_ui_state = False
+                self.resizes = []
+
+            def resizeUnscaled(self, w, h):
+                self.resizes.append((w, h))
+                self.resize(w, h)
+
+        wrapper = Wrapper()
+        w = _widget(mocker)
+        w.setParent(wrapper)
+        wrapper.resize(400, 500)
+        return wrapper, w
+
+    def test_no_drawer_open_is_the_default_state(self, qapp, mocker):
+        assert _widget(mocker).get_ui_state() == {"drawer": None, "drawer_delta": 0}
+
+    def test_the_open_drawer_and_its_height_are_reported(self, qapp, mocker):
+        w = _widget(mocker)
+        w.queue_btn.click()
+        w._app_volume_delta = 123
+
+        assert w.get_ui_state() == {"drawer": "queue", "drawer_delta": 123}
+
+    def test_app_volume_is_reported_too(self, qapp, mocker):
+        w = _widget(mocker)
+        w.app_volume_btn.click()
+
+        assert w.get_ui_state()["drawer"] == "app_volume"
+
+    def test_a_restart_reopens_the_up_next_drawer_and_asks_for_the_queue(self, qapp, mocker):
+        saved = _widget(mocker)
+        saved.queue_btn.click()
+        state = saved.get_ui_state()
+
+        fresh = _widget(mocker)
+        fresh.restore_ui_state(state)
+
+        assert fresh.queue_body.isHidden() is False
+        assert fresh.queue_btn.is_active() is True
+        fresh.router.dispatch.assert_called_with("spotify.control", action="queue", silent=True)
+
+    def test_a_restart_reopens_app_volume_and_asks_for_apps_and_devices(self, qapp, mocker):
+        fresh = _widget(mocker)
+
+        fresh.restore_ui_state({"drawer": "app_volume", "drawer_delta": 90})
+
+        assert fresh.app_volume_body.isHidden() is False
+        assert fresh.app_volume_btn.is_active() is True
+        asked = [c.args[1:] for c in fresh.router.dispatch.call_args_list] + [c.kwargs.get("action") for c in fresh.router.dispatch.call_args_list]
+        assert "list_app_volumes" in asked and "list_output_devices" in asked
+
+    def test_restoring_does_not_grow_the_wrapper_a_second_time(self, qapp, mocker):
+        wrapper, w = self._wrapped(mocker)
+
+        w.restore_ui_state({"drawer": "queue", "drawer_delta": 150})
+
+        assert wrapper.resizes == []                 # the saved size already includes the drawer
+        assert w._app_volume_delta == 150            # so closing it later shrinks by the right amount
+
+    def test_closing_a_restored_drawer_shrinks_the_wrapper_by_the_saved_height(self, qapp, mocker):
+        wrapper, w = self._wrapped(mocker)
+        w.restore_ui_state({"drawer": "queue", "drawer_delta": 150})
+        before = wrapper.height()
+
+        w.queue_btn.click()
+
+        assert wrapper.height() == before - 150
+
+    def test_a_missing_height_falls_back_to_the_live_one(self, qapp, mocker):
+        w = _widget(mocker)
+
+        w.restore_ui_state({"drawer": "queue"})
+
+        assert w._app_volume_delta == w._app_volume_room() > 0
+
+    @pytest.mark.parametrize("state", [None, {}, {"drawer": None}, {"drawer": "nope"}, "garbage", {"drawer": 3}])
+    def test_nothing_usable_leaves_the_drawers_closed(self, qapp, mocker, state):
+        w = _widget(mocker)
+
+        w.restore_ui_state(state)
+
+        assert w.queue_body.isHidden() and w.app_volume_body.isHidden()
+
+    def test_restoring_over_an_already_open_drawer_changes_nothing(self, qapp, mocker):
+        w = _widget(mocker)
+        w.queue_btn.click()
+
+        w.restore_ui_state({"drawer": "app_volume", "drawer_delta": 80})
+
+        assert w.queue_body.isHidden() is False and w.app_volume_body.isHidden() is True
+
+    def test_toggling_a_drawer_saves_the_layout(self, qapp, mocker):
+        wrapper, w = self._wrapped(mocker)
+
+        w.queue_btn.click()
+
+        wrapper.main_window.save_ui_state.assert_called_once()
+
+    def test_nothing_is_saved_while_a_snapshot_is_being_restored(self, qapp, mocker):
+        wrapper, w = self._wrapped(mocker)
+        wrapper.main_window._restoring_ui_state = True
+
+        w.queue_btn.click()
+
+        wrapper.main_window.save_ui_state.assert_not_called()
+
+    def test_the_lyrics_switch_saves_the_layout_too(self, qapp, mocker):
+        wrapper, w = self._wrapped(mocker)
+
+        w.lyrics_toggle_btn.click()
+
+        wrapper.main_window.save_ui_state.assert_called()
+
+    def test_a_widget_with_no_wrapper_just_skips_the_save(self, qapp, mocker):
+        w = _widget(mocker)
+
+        w.queue_btn.click()
+        w.lyrics_toggle_btn.click()          # no wrapper (the calendar carousel's copy): no error

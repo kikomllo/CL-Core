@@ -177,7 +177,9 @@
         "choice_index": {"type": "integer"},
         "enabled": {"type": "boolean"},
         "mode": {"type": "string"},
-        "position_ms": {"type": "integer"}
+        "position_ms": {"type": "integer"},
+        "uri": {"type": "string"},
+        "queue_index": {"type": "integer"}
       }
     }
   },

@@ -315,6 +315,37 @@ class SeekBar(QProgressBar):
         p.end()
 
 
+class QueueRow(QWidget):
+    """One Up Next entry; a click anywhere on it asks for a jump to that track. Hover tints it so it reads as a button."""
+    clicked = pyqtSignal()
+    _IDLE = "QWidget#queueRow { background: transparent; border-radius: 6px; }"
+    _HOVER = "QWidget#queueRow { background: rgba(255, 140, 0, 34); border-radius: 6px; }"
+
+    def __init__(self, clickable=True):
+        super().__init__()
+        self.setObjectName("queueRow")
+        self._clickable = clickable
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(self._IDLE)
+        if clickable:
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.setToolTip("Play this track now")
+
+    def enterEvent(self, event):
+        if self._clickable:
+            self.setStyleSheet(self._HOVER)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.setStyleSheet(self._IDLE)
+        super().leaveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._clickable and event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
+
 class MediaWidget(QWidget):
     def __init__(self, parent=None, grid_mode=False):
         super().__init__(parent)
@@ -765,7 +796,7 @@ class MediaWidget(QWidget):
                 room = self._app_volume_room()
                 self._app_volume_delta = room
                 if room > 0:
-                    wrapper.resize(wrapper.width(), height_before + room)
+                    wrapper.resizeUnscaled(wrapper.width(), height_before + room)
             if body is self.app_volume_body:
                 self._request_app_volumes()
                 self._request_output_devices()
@@ -776,9 +807,43 @@ class MediaWidget(QWidget):
             self.updateGeometry()
             delta = getattr(self, '_app_volume_delta', 0)
             if wrapper is not None and delta > 0:
-                wrapper.resize(wrapper.width(), height_before - delta)
+                wrapper.resizeUnscaled(wrapper.width(), height_before - delta)
             self._app_volume_delta = 0
         self._sync_drawer_buttons()
+        self._persist_ui_state()
+
+    # --- SAVED STATE: a UI restart reopens the drawer that was open ---
+    def get_ui_state(self):
+        """What clUI.save_ui_state keeps for this widget besides pos/size: the open drawer and the height it added."""
+        drawer = "queue" if not self.queue_body.isHidden() else "app_volume" if not self.app_volume_body.isHidden() else None
+        return {"drawer": drawer, "drawer_delta": int(getattr(self, "_app_volume_delta", 0)) if drawer else 0}
+
+    def restore_ui_state(self, state):
+        """Reopens the saved drawer WITHOUT growing the wrapper: the saved wrapper size already includes the drawer's height
+        (clUI.load_ui_state calls this before it resizes, so the show below can't trigger Qt's top-level auto-grow afterwards)."""
+        state = state if isinstance(state, dict) else {}
+        body = {"queue": self.queue_body, "app_volume": self.app_volume_body}.get(state.get("drawer"))
+        if body is None or not body.isHidden() or self._open_drawer_body() is not None:
+            return
+        body.setVisible(True)
+        self.updateGeometry()
+        delta = state.get("drawer_delta")
+        # The saved delta (already scaled for the monitor by the caller); the live one only when it's missing, since the
+        # drawer has no rows yet at this point and later content changes are re-measured by _sync_app_volume_drawer_size.
+        self._app_volume_delta = int(delta) if isinstance(delta, (int, float)) and not isinstance(delta, bool) and delta > 0 else self._app_volume_room()
+        if body is self.app_volume_body:
+            self._request_app_volumes()
+            self._request_output_devices()
+        else:
+            self._request_queue()
+        self._sync_drawer_buttons()
+
+    def _persist_ui_state(self):
+        """Saves the dashboard layout now (the drawer state is part of it). Only the dashboard copy has a wrapper; the
+        calendar carousel's copy has none, and nothing is saved while a restore is still applying a snapshot."""
+        main = getattr(self.parentWidget(), "main_window", None)
+        if main is not None and hasattr(main, "save_ui_state") and not getattr(main, "_restoring_ui_state", False):
+            main.save_ui_state()
 
     def _sync_drawer_buttons(self):
         self.queue_btn.set_active(not self.queue_body.isHidden())
@@ -802,7 +867,7 @@ class MediaWidget(QWidget):
         room = self._app_volume_room()
         diff = room - self._app_volume_delta
         if diff != 0:
-            wrapper.resize(wrapper.width(), wrapper.height() + diff)
+            wrapper.resizeUnscaled(wrapper.width(), wrapper.height() + diff)
         self._app_volume_delta = room
 
     def _request_app_volumes(self):
@@ -1071,6 +1136,7 @@ class MediaWidget(QWidget):
         lyrics_display = getattr(self.window(), 'lyrics_display', None)
         if lyrics_display is not None:
             lyrics_display.set_enabled(self._lyrics_enabled)
+        self._persist_ui_state()          # the lyrics switch is part of the saved layout too
 
     def toggle_optimistic(self):
         self.status = "Paused" if self.status == "Playing" else "Playing"
@@ -1214,11 +1280,11 @@ class MediaWidget(QWidget):
     def _end_queue_refresh(self):
         self._set_queue_refreshing(False)
 
-    def _set_queue_refreshing(self, refreshing):
+    def _set_queue_refreshing(self, refreshing, what="refreshing from Spotify..."):
         self._queue_refreshing = refreshing
         self.queue_rows_opacity.setOpacity(0.3 if refreshing else 1.0)
         if refreshing:
-            self.queue_caption_lbl.setText("refreshing from Spotify...")
+            self.queue_caption_lbl.setText(what)
         elif not self._queue_loaded:
             self.queue_caption_lbl.setText("Loading...")
         elif self._queue_total:
@@ -1250,10 +1316,20 @@ class MediaWidget(QWidget):
         self._set_queue_refreshing(False)
         self._sync_app_volume_drawer_size()
 
+    def _play_queue_item(self, index, item):
+        """A click on an Up Next row: switch to that track now (clSpotify.py skips forward to it). The rows dim
+        until the retained queue message comes back without the tracks it jumped over."""
+        if self._queue_refreshing or not item.get("uri"):
+            return
+        self._set_queue_refreshing(True, "switching...")
+        self._queue_refresh_timer.start(4000)
+        self._dispatch_control(action="play_queue_item", uri=item["uri"], queue_index=index - 1)
+
     def _create_queue_row(self, index, item):
-        row = QWidget()
+        row = QueueRow(clickable=bool(item.get("uri")))
+        row.clicked.connect(lambda index=index, item=item: self._play_queue_item(index, item))
         row_layout = QHBoxLayout(row)
-        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setContentsMargins(s(4), s(2), s(4), s(2))
         row_layout.setSpacing(s(8))
 
         number_lbl = QLabel(str(index))
@@ -1278,10 +1354,6 @@ class MediaWidget(QWidget):
 
         row_layout.addWidget(number_lbl)
         row_layout.addLayout(info_col, 1)
-        if index == 1:
-            next_lbl = QLabel("NEXT")
-            next_lbl.setStyleSheet(f"color: {Theme.C_PRIMARY}; font-size: 10px; letter-spacing: 1px; border: 1px solid rgba(255,140,0,128); border-radius: 9px; padding: 1px 7px; background: transparent;")
-            row_layout.addWidget(next_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
         row_layout.addWidget(duration_lbl)
         return row
 
