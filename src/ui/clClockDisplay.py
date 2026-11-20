@@ -146,11 +146,13 @@ class ClockDisplay(QWidget):
         return s(TIME_PX) + s(RULE_GAP) + 1 + s(RULE_GAP) + s(DATE_PX)
 
     def place(self, window_width: int, window_height: int) -> None:
-        """Centred horizontally; the time's box starts TOP px down (scaled)."""
+        """Centred horizontally; the time's box starts TOP px (scaled) down a 1080p window, measured from the
+        window's vertical centre (where the orb sits) so it stays the same distance above it on any aspect ratio."""
         s = UIScaler.get().scale
-        width = s(WIDTH)
+        width = min(s(WIDTH), window_width)
         margin = s(GLOW_MARGIN)
-        self.setGeometry(window_width // 2 - width // 2, s(TOP) - margin, width, self.content_height() + 2 * margin)
+        top = window_height // 2 - s(1080 // 2 - TOP)
+        self.setGeometry(window_width // 2 - width // 2, top - margin, width, self.content_height() + 2 * margin)
 
     # --- visibility: ticking only while shown ---
     def showEvent(self, event):

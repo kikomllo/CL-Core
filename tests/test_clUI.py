@@ -495,6 +495,24 @@ class TestAudioQuickSwitchPill:
         QApplication.processEvents()
         return pill
 
+    @pytest.mark.parametrize("scale", [0.5, 0.75, 1.0, 1.25, 1.5, 2.0])
+    def test_the_expanded_pill_keeps_round_ends_at_every_ui_scale(self, qapp, mocker, scale):
+        """The expanded capsule's border-radius used to be `diameter // 2` (physical px) scaled a second time: above scale 1.0
+        that is more than half the height, which Qt draws as sharp corners -- a black square around the icon circle."""
+        import re
+        from utils.clActionRouter import ActionRouter  # noqa: F401  (imported by clUI)
+        from clUIScaler import UIScaler
+        mocker.patch.object(UIScaler.get(), "get_scale", return_value=scale)
+        pill = self._pill(qapp, "input", "USB Mic", mocker, grow_direction="left")
+
+        pill._begin_expand()
+
+        for widget in (pill, pill.icon_btn):
+            radii = [int(r) for r in re.findall(r"border-radius:\s*(\d+)px", widget.styleSheet())]
+            assert radii, widget.styleSheet()
+            assert max(radii) <= pill.height() / 2, (scale, radii, pill.height())          # never oversized -> never sharp corners
+            assert max(radii) >= pill.height() / 2 - 1.5, (scale, radii, pill.height())    # and a real capsule, not a rounded rectangle
+
     def test_collapsed_icon_shows_the_svg_icon_not_the_device_name(self, qapp, mocker):
         pill = self._pill(qapp, "input", "USB Mic", mocker)
         assert not pill.icon_btn.icon().isNull()
@@ -2061,3 +2079,398 @@ class TestOrbBloom:
         import clUI
         positions = [t for t, _ in clUI.bloom_stops()]
         assert positions[0] == 0.0 and positions[-1] == 1.0 and positions == sorted(positions)
+
+
+class TestMediaDrawerStateSurvivesAUiRestart:
+    """The Spotify widget's open drawer (Up Next / App Volume) and the lyrics switch are saved with the layout and
+    come back when the UI restarts; the saved size already includes the drawer's height."""
+
+    @pytest.fixture(autouse=True)
+    def no_real_mqtt_thread(self, mocker):
+        import clUI
+        import ui.clMediaWidget as clMediaWidget
+        mocker.patch.object(clUI.MqttThread, "start")
+        mocker.patch.object(clMediaWidget.ActionRouter, "dispatch", return_value=True)    # never publish to the live broker
+
+    def _state(self, screen_geom, **widget_extra):
+        return {
+            "is_fullscreen": True, "current_monitor_idx": 0,
+            "screen_size": [screen_geom.width(), screen_geom.height()],
+            "active_widgets": {"widget_media_controls": {
+                "visible": True, "pos": [screen_geom.x() + 200, screen_geom.y() + 200], "size": [380, 620], "is_unpinned": False, **widget_extra}},
+        }
+
+    def _boot(self, mocker, fake_state_file, state):
+        import clUI
+        from PyQt6.QtWidgets import QApplication
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "1"})
+        mocker.patch.object(clUI.JarvisUI, "_screen_for_cursor", return_value=QApplication.primaryScreen())
+        with open(fake_state_file, "w") as f:
+            json.dump(state, f)
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            return clUI.JarvisUI()
+
+    def test_the_saved_drawer_is_open_again_after_a_restart(self, qapp, fake_state_file, mocker):
+        from PyQt6.QtWidgets import QApplication
+        geom = QApplication.primaryScreen().geometry()
+        ui = self._boot(mocker, fake_state_file, self._state(geom, state={"drawer": "queue", "drawer_delta": 140}))
+
+        media = ui.active_widgets["widget_media_controls"].content_widget
+
+        assert media.queue_body.isHidden() is False
+        assert media.queue_btn.is_active() is True
+        ui.close()
+        QApplication.processEvents()
+
+    def test_the_wrapper_keeps_its_saved_size_instead_of_growing_again(self, qapp, fake_state_file, mocker):
+        from PyQt6.QtWidgets import QApplication
+        geom = QApplication.primaryScreen().geometry()
+        ui = self._boot(mocker, fake_state_file, self._state(geom, state={"drawer": "app_volume", "drawer_delta": 140}))
+        saved_with = ui.active_widgets["widget_media_controls"].height()
+        ui.close()
+        QApplication.processEvents()
+
+        ui = self._boot(mocker, fake_state_file, self._state(geom))        # same layout, drawer closed
+        saved_without = ui.active_widgets["widget_media_controls"].height()
+
+        assert saved_with == saved_without                                  # the drawer did not add its height a second time
+        ui.close()
+        QApplication.processEvents()
+
+    def test_an_old_state_file_without_the_new_keys_still_loads(self, qapp, fake_state_file, mocker):
+        from PyQt6.QtWidgets import QApplication
+        geom = QApplication.primaryScreen().geometry()
+        ui = self._boot(mocker, fake_state_file, self._state(geom))
+
+        media = ui.active_widgets["widget_media_controls"].content_widget
+
+        assert media.queue_body.isHidden() and media.app_volume_body.isHidden()
+        ui.close()
+        QApplication.processEvents()
+
+    def test_opening_a_drawer_writes_it_to_the_state_file(self, qapp, fake_state_file, mocker):
+        import clUI
+        from PyQt6.QtWidgets import QApplication
+        geom = QApplication.primaryScreen().geometry()
+        ui = self._boot(mocker, fake_state_file, self._state(geom))
+        ui.set_ui_mode("set_fullscreen")
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            ui.active_widgets["widget_media_controls"].content_widget.queue_btn.click()
+            ui.save_ui_state()
+        with open(fake_state_file) as f:
+            saved = json.load(f)
+
+        assert saved["active_widgets"]["widget_media_controls"]["state"]["drawer"] == "queue"
+        ui.close()
+        QApplication.processEvents()
+
+    def test_the_lyrics_switch_is_saved_and_restored(self, qapp, fake_state_file, mocker):
+        import clUI
+        from PyQt6.QtWidgets import QApplication
+        geom = QApplication.primaryScreen().geometry()
+        ui = self._boot(mocker, fake_state_file, {**self._state(geom), "lyrics_enabled": False})
+
+        assert ui.lyrics_display._lyrics_enabled is False                    # restored from the file
+        ui.set_ui_mode("set_fullscreen")
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            ui.save_ui_state()
+        with open(fake_state_file) as f:
+            assert json.load(f)["lyrics_enabled"] is False                   # and written back
+        ui.close()
+        QApplication.processEvents()
+
+    def test_saving_from_overlay_carries_the_lyrics_switch_forward(self, qapp, fake_state_file, mocker):
+        import clUI
+        from PyQt6.QtWidgets import QApplication
+        geom = QApplication.primaryScreen().geometry()
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "0"})
+        with open(fake_state_file, "w") as f:
+            json.dump({**self._state(geom), "lyrics_enabled": False}, f)
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            ui = clUI.JarvisUI()
+            assert ui.is_fullscreen is False
+            ui.save_ui_state()
+        with open(fake_state_file) as f:
+            assert json.load(f)["lyrics_enabled"] is False
+        ui.close()
+        QApplication.processEvents()
+
+
+class TestEachMonitorKeepsItsOwnLayout:
+    """A restart goes back to the monitor the dashboard was on, and every monitor remembers its own arrangement: moving to a
+    screen of another shape restores what was saved for it instead of squeezing the other screen's layout in (which used to
+    pile the widgets on top of each other)."""
+
+    @pytest.fixture(autouse=True)
+    def no_real_mqtt_thread(self, mocker):
+        import clUI
+        mocker.patch.object(clUI.MqttThread, "start")
+
+    def _screen(self):
+        from PyQt6.QtWidgets import QApplication
+        return QApplication.primaryScreen()
+
+    def _boot(self, mocker, fake_state_file, state, screens=None):
+        import clUI
+        from clUIScaler import UIScaler
+        screen = self._screen()
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "1"})
+        mocker.patch.object(clUI.JarvisUI, "_screen_for_cursor", return_value=screen)
+        mocker.patch.object(UIScaler.get(), "get_stable_screens", return_value=screens or [screen])
+        with open(fake_state_file, "w") as f:
+            json.dump(state, f)
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            return clUI.JarvisUI()
+
+    def test_a_restart_returns_to_the_saved_monitor_not_the_one_under_the_mouse(self, qapp, fake_state_file, mocker):
+        screen = self._screen()
+        g = screen.geometry()
+        # two entries (the same Qt screen twice, so it works on one-monitor machines): the mouse is on the first, the saved one is the second
+        import clUI
+        layout = mocker.patch.object(clUI.JarvisUI, "refresh_layout", autospec=True)     # it re-derives the index from the screen name
+        ui = self._boot(mocker, fake_state_file, {"is_fullscreen": True, "current_monitor_idx": 1, "screen_size": [g.width(), g.height()],
+                                                  "active_widgets": {}}, screens=[screen, screen])
+
+        assert ui.current_monitor_idx == 1
+        assert 1 in [c.kwargs.get("force_monitor_idx") for c in layout.call_args_list]
+        ui.close()
+        qapp.processEvents()
+
+    def test_a_saved_monitor_whose_size_changed_falls_back_to_the_mouse(self, qapp, fake_state_file, mocker):
+        import clUI
+        screen = self._screen()
+        layout = mocker.patch.object(clUI.JarvisUI, "refresh_layout", autospec=True)
+        ui = self._boot(mocker, fake_state_file, {"is_fullscreen": True, "current_monitor_idx": 1, "screen_size": [123, 456],
+                                                  "active_widgets": {}}, screens=[screen, screen])
+
+        assert ui.current_monitor_idx == 0
+        assert 0 in [c.kwargs.get("force_monitor_idx") for c in layout.call_args_list]
+        assert 1 not in [c.kwargs.get("force_monitor_idx") for c in layout.call_args_list]
+        ui.close()
+        qapp.processEvents()
+
+    def test_a_restart_uses_the_layout_saved_for_this_screen_not_the_top_level_one(self, qapp, fake_state_file, mocker):
+        import clUI
+        screen = self._screen()
+        g = screen.geometry()
+        x, y = g.x() + int(g.width() * 0.5), g.y() + int(g.height() * 0.5)
+        state = {
+            "is_fullscreen": True, "current_monitor_idx": 0, "screen_size": [1080, 1920],      # saved last on a portrait screen
+            "active_widgets": {"widget_todo_list": {"visible": True, "pos": [10, 10], "size": [230, 100], "is_unpinned": False}},
+            "layouts": {clUI.JarvisUI._screen_key(screen): {"widget_todo_list": {"pos": [x, y], "size": [230, 100]}}},
+        }
+        ui = self._boot(mocker, fake_state_file, state)
+
+        w = ui.active_widgets["widget_todo_list"]
+        assert abs(w.x() - x) < 20 and abs(w.y() - y) < 20          # this screen's own layout, not remapped from the portrait one
+        ui.close()
+        qapp.processEvents()
+
+    def test_saving_in_fullscreen_stores_this_screens_layout_and_keeps_the_others(self, qapp, fake_state_file, mocker):
+        import clUI
+        screen = self._screen()
+        other = {"\\\\.\\DISPLAY9|1080x1920": {"widget_todo_list": {"pos": [5, 5], "size": [200, 100]}}}
+        ui = self._boot(mocker, fake_state_file, {"is_fullscreen": True, "current_monitor_idx": 0, "screen_size": [1, 1],
+                                                  "active_widgets": {}, "layouts": other})
+        ui.set_ui_mode("set_fullscreen") if not ui.is_fullscreen else None
+        todo = clUI.TodoWidget()
+        ui.spawn_widget("widget_todo_list", "To-Do List", todo)
+        ui.active_widgets["widget_todo_list"].move(120, 80)
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            ui.save_ui_state()
+        with open(fake_state_file) as f:
+            saved = json.load(f)
+
+        key = clUI.JarvisUI._screen_key(screen)
+        assert saved["layouts"][key]["widget_todo_list"]["pos"] == [120, 80]
+        assert saved["layouts"]["\\\\.\\DISPLAY9|1080x1920"] == other["\\\\.\\DISPLAY9|1080x1920"]       # the other screen is untouched
+        ui.close()
+        qapp.processEvents()
+
+    def test_nothing_is_saved_while_a_monitor_swap_is_in_progress(self, qapp, fake_state_file, mocker):
+        import clUI
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "0"})
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            ui = clUI.JarvisUI()
+            ui._is_swapping_monitors = True          # every widget is hidden and still holds the old screen's geometry
+            ui.save_ui_state()
+        assert not os.path.exists(fake_state_file)
+        ui.close()
+        qapp.processEvents()
+
+    def test_an_old_state_file_gives_its_top_level_layout_to_the_screen_it_was_saved_on(self, qapp, mocker):
+        import clUI
+        from clUIScaler import UIScaler
+        screen = self._screen()
+        g = screen.geometry()
+        mocker.patch.object(UIScaler.get(), "get_stable_screens", return_value=[screen])
+        ui = clUI.JarvisUI.__new__(clUI.JarvisUI)       # only the pure helper is needed
+
+        layouts = ui._layouts_from_state({
+            "current_monitor_idx": 0, "screen_size": [g.width(), g.height()],
+            "active_widgets": {"widget_todo_list": {"visible": True, "pos": [7, 9], "size": [230, 100], "is_unpinned": False},
+                               "widget_notes": {"visible": True, "pos": [1, 1], "size": [50, 50], "is_unpinned": True}}})
+
+        assert layouts == {f"{screen.name()}|{g.width()}x{g.height()}": {"widget_todo_list": {"pos": [7, 9], "size": [230, 100]}}}
+
+
+class TestOverlappingWidgetsArePacked:
+    """Widgets remapped onto a screen of another shape (with no layout of its own saved there) must never sit on top of each
+    other: they are packed into rows, like a website wrapping at a breakpoint. Non-overlapping layouts are left alone."""
+
+    @pytest.fixture
+    def ui(self, qapp, mocker):
+        import clUI
+        from PyQt6.QtWidgets import QWidget
+        mocker.patch.object(clUI.MqttThread, "start")
+        mocker.patch.dict(os.environ, {"JARVIS_REBOOT": "0"})
+        ui = clUI.JarvisUI()
+        ui.setMinimumSize(0, 0)                          # the overlay box is fixed-size; fullscreen lifts that (set_ui_mode)
+        ui.setMaximumSize(16777215, 16777215)
+        ui.resizeUnscaled(1080, 1920)
+
+        class Fake(QWidget):
+            is_unpinned = False
+
+            def resizeUnscaled(self, w, h):
+                self.resize(w, h)
+
+        def add(wid, x, y, w, h):
+            f = Fake(ui)
+            f.setGeometry(x, y, w, h)
+            f.show()
+            ui.active_widgets[wid] = f
+            return f
+
+        ui.add = add
+        yield ui
+        ui.active_widgets.clear()
+        ui.close()
+        qapp.processEvents()
+
+    @staticmethod
+    def _overlaps(ws):
+        return any(a.geometry().intersected(b.geometry()).width() > 4 and a.geometry().intersected(b.geometry()).height() > 4
+                   for i, a in enumerate(ws) for b in ws[i + 1:])
+
+    def test_overlapping_widgets_are_packed_without_overlap_and_inside_the_window(self, ui):
+        a, b, c = ui.add("a", 100, 100, 300, 400), ui.add("b", 150, 120, 300, 300), ui.add("c", 120, 300, 300, 250)
+        assert self._overlaps([a, b, c])
+
+        assert ui._resolve_widget_overlaps() is True
+
+        assert not self._overlaps([a, b, c])
+        for w in (a, b, c):
+            assert 0 <= w.x() and w.x() + w.width() <= ui.width() and 0 <= w.y() and w.y() + w.height() <= ui.height()
+
+    def test_a_layout_that_does_not_overlap_is_left_alone(self, ui):
+        a, b = ui.add("a", 20, 20, 200, 200), ui.add("b", 400, 20, 200, 200)
+
+        assert ui._resolve_widget_overlaps() is False
+
+        assert (a.pos().x(), a.pos().y(), b.pos().x(), b.pos().y()) == (20, 20, 400, 20)
+
+    def test_a_widget_wider_than_the_window_is_narrowed_to_fit(self, ui):
+        a, b = ui.add("a", 0, 0, 2000, 100), ui.add("b", 10, 10, 200, 100)
+
+        ui._resolve_widget_overlaps()
+
+        assert a.width() <= ui.width()
+
+    def test_unpinned_widgets_are_not_touched(self, ui):
+        a, b = ui.add("a", 100, 100, 300, 300), ui.add("b", 120, 120, 300, 300)
+        b.is_unpinned = True
+
+        assert ui._resolve_widget_overlaps() is False
+
+    def test_a_canvas_change_restores_the_new_screens_own_saved_layout(self, ui, mocker, fake_state_file):
+        import clUI
+        from PyQt6.QtWidgets import QApplication
+        a, b = ui.add("a", 50, 50, 200, 200), ui.add("b", 300, 50, 200, 200)
+        screen = QApplication.primaryScreen()
+        g = screen.geometry()
+        ui.is_fullscreen = True
+        ui.resizeUnscaled(g.width(), g.height())
+        ui._widgets_canvas = (1080, 1920)                  # the previous (portrait) canvas
+        layout = {clUI.JarvisUI._screen_key(screen): {"a": {"pos": [600, 400], "size": [250, 150]}, "b": {"pos": [100, 700], "size": [250, 150]}}}
+        with open(fake_state_file, "w") as f:
+            json.dump({"layouts": layout}, f)
+        mocker.patch.object(ui, "_target_screen", return_value=screen)
+        mocker.patch.object(ui, "screen", return_value=screen)         # the window may sit on another monitor in this test process
+        mocker.patch.object(ui, "save_ui_state")
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            ui._fit_widgets_to_window()
+
+        assert (a.x(), a.y(), a.width(), a.height()) == (600, 400, 250, 150)
+        assert (b.x(), b.y()) == (100, 700)
+
+    def test_a_canvas_change_with_no_saved_layout_never_piles_widgets_up(self, ui, mocker, fake_state_file):
+        import clUI
+        from PyQt6.QtWidgets import QApplication
+        screen = QApplication.primaryScreen()
+        g = screen.geometry()
+        # a portrait layout: widgets stacked down the left side
+        ws = [ui.add(n, 20, 20 + i * 260, 300, 240) for i, n in enumerate("abc")]
+        ui.is_fullscreen = True
+        ui.resizeUnscaled(g.width(), g.height())
+        ui._widgets_canvas = (1080, 1920)
+        with open(fake_state_file, "w") as f:
+            json.dump({}, f)
+        mocker.patch.object(ui, "_target_screen", return_value=screen)
+        mocker.patch.object(ui, "screen", return_value=screen)         # the window may sit on another monitor in this test process
+        mocker.patch.object(ui, "save_ui_state")
+
+        with patch.object(clUI, "STATE_FILE", fake_state_file):
+            ui._fit_widgets_to_window()
+
+        assert not self._overlaps(ws)
+
+
+class TestFullscreenLandsOnTheRightMonitor:
+    """On Windows showFullScreen() on a never-shown window can land on the PRIMARY monitor whatever move()/setScreen() said (a restart
+    with the dashboard on the second monitor opened on the wrong one). _land_on_target_screen re-asserts once; _on_target_screen keeps
+    a window on the wrong screen from saving or remapping anything."""
+
+    def _ui(self, mocker, current_name, target_name):
+        import clUI
+        from unittest.mock import MagicMock
+        ui = clUI.JarvisUI.__new__(clUI.JarvisUI)
+        current, target = MagicMock(), MagicMock()
+        current.name.return_value, target.name.return_value = current_name, target_name
+        mocker.patch.object(clUI.JarvisUI, "screen", return_value=current)
+        mocker.patch.object(clUI.JarvisUI, "_target_screen", return_value=target)
+        for name in ("showNormal", "setGeometry", "showFullScreen", "windowHandle"):
+            mocker.patch.object(clUI.JarvisUI, name)
+        mocker.patch("clUI.QApplication.processEvents")
+        return ui, target
+
+    def test_a_window_that_landed_on_the_wrong_screen_is_moved_to_the_target(self, mocker):
+        import clUI
+        ui, target = self._ui(mocker, "27B1", "SyncMaster")
+        geom = object()
+
+        ui._land_on_target_screen(target, geom)
+
+        clUI.JarvisUI.showNormal.assert_called_once()
+        clUI.JarvisUI.windowHandle.return_value.setScreen.assert_called_once_with(target)
+        clUI.JarvisUI.setGeometry.assert_called_once_with(geom)
+        clUI.JarvisUI.showFullScreen.assert_called_once()
+
+    def test_a_window_already_on_the_target_screen_is_left_alone(self, mocker):
+        import clUI
+        ui, target = self._ui(mocker, "SyncMaster", "SyncMaster")
+
+        ui._land_on_target_screen(target, object())
+
+        clUI.JarvisUI.showNormal.assert_not_called()
+        clUI.JarvisUI.showFullScreen.assert_not_called()
+
+    def test_on_target_screen_reflects_whether_the_window_is_where_it_should_be(self, mocker):
+        ui, _ = self._ui(mocker, "27B1", "SyncMaster")
+        assert ui._on_target_screen() is False
+        ui, _ = self._ui(mocker, "SyncMaster", "SyncMaster")
+        assert ui._on_target_screen() is True

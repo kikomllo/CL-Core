@@ -449,7 +449,7 @@ class DraggableWidget(QWidget):
         new_w = max(self.width(), hint.width())
         new_h = max(self.height(), hint.height())
         if (new_w, new_h) != (self.width(), self.height()):
-            self.resize(new_w, new_h)
+            self.resizeUnscaled(new_w, new_h)
             # Persist this grow, the same way mouseReleaseEvent does after a
             # manual drag-resize -- otherwise a size only ever reached
             # automatically here (e.g. switching to a page whose content
@@ -1163,7 +1163,7 @@ class LyricsDisplay(QWidget):
         # Stays horizontally centered as it grows -- the box is already
         # centered on screen by JarvisUI.refresh_layout().
         old_center_x = self.x() + self.width() // 2
-        self.resize(new_width, self.height())
+        self.resizeUnscaled(new_width, self.height())
         self.move(old_center_x - new_width // 2, self.y())
 
     def set_lyrics(self, title, artist, found, lines):
@@ -1490,12 +1490,23 @@ class IconPill(QWidget):
         self.setStyleSheet("background: transparent; border: none;")
         self.set_sizes(self.diameter, self.expanded_width)
 
+    def _capsule_radius(self) -> int:
+        """The border-radius (in design px: a stylesheet is scaled when set) of a capsule exactly `diameter` physical px tall.
+        It must never scale to more than half the height: Qt draws an oversized radius as SHARP corners, which on the expanded
+        pill showed as a black square around the icon circle (the old `diameter // 2` was physical px scaled a second time)."""
+        scaler = UIScaler.get()
+        radius = int(self.diameter / 2 / max(scaler.get_scale(), 0.01))
+        while radius > 0 and scaler.scale(radius) > self.diameter / 2:
+            radius -= 1
+        return radius
+
     def set_sizes(self, diameter: int, expanded_width: int):
         self.diameter = diameter
         self._max_expanded_width = expanded_width
         self.expanded_width = self._resolve_expanded_width(expanded_width)
-        self.icon_btn.setFixedSize(diameter, diameter)
-        self.icon_btn.setStyleSheet(Theme.get_style("IconPillCircle", radius=diameter // 2))
+        self.icon_btn.setFixedSizeUnscaled(diameter, diameter)     # diameter is already physical px
+        # the stylesheet is scaled when set, so its radius is in design px
+        self.icon_btn.setStyleSheet(Theme.get_style("IconPillCircle", radius=self._capsule_radius()))
 
         icon_size = max(10, diameter - self._icon_padding)
         try:
@@ -1505,7 +1516,7 @@ class IconPill(QWidget):
             logging.warning(f"Failed to load pill icon '{self._icon_path}': {e}")
 
         self._target_expanded = False
-        self.setFixedHeight(diameter)
+        self.setFixedHeightUnscaled(diameter)
         self.setPillWidth(diameter)
 
     def set_anchor(self, anchor_x: int, y: int):
@@ -1525,7 +1536,7 @@ class IconPill(QWidget):
         return self.width()
 
     def setPillWidth(self, w: int):
-        self.setFixedWidth(w)
+        self.setFixedWidthUnscaled(w)
         # Margin and the label's own (explicitly set, not layout-negotiated
         # -- MarqueeLabel's minimumSizeHint floor is a fixed 50px regardless
         # of stretch factor) width are both sized off the actual animated
@@ -1548,7 +1559,7 @@ class IconPill(QWidget):
         else:
             margins = (gap, 0, 0, 0) if self.grow_direction == "left" else (0, 0, gap, 0)
             self.layout().setContentsMargins(*margins)
-            self.label.setFixedWidth(label_w)
+            self.label.setFixedWidthUnscaled(label_w)
             if self.label.isHidden():
                 self.label.setText(self._label_text())
                 self.label.show()
@@ -1568,7 +1579,7 @@ class IconPill(QWidget):
 
     def _begin_expand(self):
         self._target_expanded = True
-        self.setStyleSheet(Theme.get_style("IconPill", radius=self.diameter // 2))
+        self.setStyleSheet(Theme.get_style("IconPill", radius=self._capsule_radius()))
         self._animate_to(self.expanded_width)
 
     def leaveEvent(self, event):
@@ -1805,7 +1816,7 @@ class JarvisUI(QWidget):
         y_pos = screen_geom.bottom() - height - 20
         
         self.setGeometry(x_pos, y_pos, width, height)
-        self.setFixedSize(width, height)
+        self.setFixedSizeUnscaled(width, height)
         
         self.is_fullscreen = False
         self.state = "IDLE"
@@ -1986,6 +1997,7 @@ class JarvisUI(QWidget):
         saved_state = self.load_ui_state(restore_widgets=False)
 
         if is_reboot and saved_state and saved_state.get("is_fullscreen", False):
+            self._boot_monitor = (saved_state.get("current_monitor_idx"), saved_state.get("screen_size"))
             self.set_ui_mode("set_fullscreen")
 
     def _reflow_widget_dock(self):
@@ -2036,29 +2048,43 @@ class JarvisUI(QWidget):
         self.btn_calendar.setStyleSheet(Theme.get_style("CalendarButton"))
 
         # Text Input (positioned here, ahead of its old spot below, so the
-        # audio pills and widget dock can be laid out relative to it)
-        box_width = s(600)
+        # audio pills and widget dock can be laid out relative to it).
+        # Responsive: the bar is at most 600 wide but never wider than the window minus its gutters.
+        gutter = s(20)
+        box_width = min(s(600), win_w - 2 * gutter)
         box_x = win_w // 2 - (box_width // 2)
         box_y = win_h - s(80)
         box_height = s(40)
         self.text_input.setGeometry(box_x, box_y, box_width, box_height)
 
-        # Horizontal row centered in the left margin, vertically centered on the text bar.
+        # The dock is one row centred in the left margin beside the text bar. Like a flex row that wraps: when
+        # that margin is too narrow for the whole row (a portrait or narrow window), it wraps onto its own row
+        # centred above the bar instead of overlapping it.
         widget_pill_diameter = s(48)
         widget_pill_expanded_width = s(170)  # unused: WidgetTogglePill fits its own label width instead
         widget_dock_left_margin = s(20)
         widget_dock_bar_gap = s(20)
 
         self._widget_dock_gap = s(12)
-        self._widget_dock_y = box_y + box_height // 2 - widget_pill_diameter // 2
-        self._widget_dock_center_x = (widget_dock_left_margin + (box_x - widget_dock_bar_gap)) // 2
+        n_pills = len(self.widget_toggle_pills)
+        dock_width = n_pills * widget_pill_diameter + max(0, n_pills - 1) * self._widget_dock_gap
+        side_room = box_x - widget_dock_bar_gap - widget_dock_left_margin
+        self.layout_compact = side_room < dock_width
+        if self.layout_compact:
+            self._widget_dock_y = box_y - widget_pill_diameter - s(12)
+            self._widget_dock_center_x = win_w // 2
+            stack_top = self._widget_dock_y            # what the audio pills and lyrics stack above
+        else:
+            self._widget_dock_y = box_y + box_height // 2 - widget_pill_diameter // 2
+            self._widget_dock_center_x = (widget_dock_left_margin + (box_x - widget_dock_bar_gap)) // 2
+            stack_top = box_y
 
         for pill in self.widget_toggle_pills:
             pill.set_sizes(widget_pill_diameter, widget_pill_expanded_width)
         self._reflow_widget_dock()
 
         # Audio quick-switch pills -- collapsed to small circles, centered as
-        # a pair directly above the text bar; each expands outward on hover
+        # a pair directly above the text bar (or above the wrapped dock row); each expands outward on hover
         # (mic left, speaker right) so they never grow into each other's
         # space, and stay clear of the reminder widget's bottom-right corner.
         pill_diameter = s(35)
@@ -2066,7 +2092,7 @@ class JarvisUI(QWidget):
         pill_circle_gap = s(10)
         pair_collapsed_width = pill_diameter * 2 + pill_circle_gap
         pair_left_x = win_w // 2 - pair_collapsed_width // 2
-        pill_y = box_y - pill_diameter - s(10)
+        pill_y = stack_top - pill_diameter - s(10)
 
         self.pill_mic.set_sizes(pill_diameter, pill_expanded_width)
         self.pill_speaker.set_sizes(pill_diameter, pill_expanded_width)
@@ -2082,7 +2108,7 @@ class JarvisUI(QWidget):
         # LyricsDisplay); reserving its geometry unconditionally here is
         # harmless since a hidden widget occupies no visible space.
         if hasattr(self, 'lyrics_display'):
-            lyrics_width = s(700)
+            lyrics_width = min(s(700), win_w - 2 * gutter)
             lyrics_height = s(110)
             lyrics_x = win_w // 2 - lyrics_width // 2
             lyrics_y = pill_y - lyrics_height - s(80)
@@ -2118,10 +2144,150 @@ class JarvisUI(QWidget):
             if hasattr(widget, '_unscaled_font'):
                 widget.setFont(widget._unscaled_font)
 
-        rw_w = s(300)
+        rw_w = min(s(300), win_w - 2 * gutter)
         rw_h = s(150)
         if hasattr(self, 'reminder_widget'):
-            self.reminder_widget.setGeometry(win_w - rw_w - 20, win_h - rw_h - 20, rw_w, rw_h)
+            # Bottom-right corner; when the layout is compact the bottom is the text bar's, so it goes top-right.
+            rw_y = 20 if self.layout_compact else win_h - rw_h - 20
+            self.reminder_widget.setGeometry(win_w - rw_w - 20, rw_y, rw_w, rw_h)
+
+        self._fit_widgets_to_window()
+
+    # --- one layout per monitor ---------------------------------------------------------------
+    @staticmethod
+    def _screen_key(screen):
+        """Identifies a physical screen across restarts: its name and size ("\\\\.\\DISPLAY2|1080x1920")."""
+        if screen is None:
+            return "unknown"
+        g = screen.geometry()
+        return f"{screen.name()}|{g.width()}x{g.height()}"
+
+    @staticmethod
+    def _valid_entry(entry):
+        try:
+            return (isinstance(entry, dict) and len(entry["pos"]) == 2 and len(entry["size"]) == 2
+                    and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (*entry["pos"], *entry["size"])))
+        except (KeyError, TypeError):
+            return False
+
+    def _layouts_from_state(self, state):
+        """{screen key: {widget id: {"pos": [x, y], "size": [w, h]}}} from a loaded ui_state dict. Each monitor keeps its own
+        arrangement: positions are pixels of THAT screen, so moving to a screen of another shape restores what was there
+        instead of squeezing the other screen's layout into it. A file from before this existed has only the top-level
+        geometry, which belongs to the screen it was saved on (current_monitor_idx / screen_size)."""
+        layouts = {k: dict(v) for k, v in (state.get("layouts") or {}).items() if isinstance(v, dict)}
+        size = state.get("screen_size")
+        idx = state.get("current_monitor_idx", 0)
+        if not layouts and isinstance(size, list) and len(size) == 2 and isinstance(idx, int):
+            screens = UIScaler.get().get_stable_screens()
+            legacy = {wid: {"pos": i["pos"], "size": i["size"]} for wid, i in (state.get("active_widgets") or {}).items()
+                      if isinstance(i, dict) and not i.get("is_unpinned") and self._valid_entry(i)}
+            if legacy and 0 <= idx < len(screens):
+                layouts[f"{screens[idx].name()}|{size[0]}x{size[1]}"] = legacy
+        return layouts
+
+    def _saved_layouts(self):
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                return self._layouts_from_state(json.load(f))
+        except Exception:
+            return {}
+
+    def _target_screen(self):
+        """The screen the dashboard is on (or moving to): current_monitor_idx is authoritative in fullscreen, the window's own
+        screen can lag behind a monitor swap."""
+        screens = UIScaler.get().get_stable_screens()
+        idx = getattr(self, 'current_monitor_idx', 0)
+        return screens[idx] if isinstance(idx, int) and 0 <= idx < len(screens) else self.screen()
+
+    def _on_target_screen(self):
+        """False while the window sits on a different screen than the one it is meant for (a fullscreen landing on the wrong
+        monitor, before it is corrected): nothing may be saved or remapped from that state."""
+        target, current = self._target_screen(), self.screen()
+        return target is None or current is None or target.name() == current.name()
+
+    def _land_on_target_screen(self, target_screen, geom):
+        """Windows can put a never-shown window fullscreen on the PRIMARY monitor whatever move()/setScreen() said (seen on a
+        restart with the dashboard on the second monitor). Re-asserts once, the way that is known to land: normal state on the
+        target screen first, then fullscreen again."""
+        QApplication.processEvents()
+        current = self.screen()
+        if target_screen is None or current is None or current.name() == target_screen.name():
+            return
+        logging.warning(f"[UI] fullscreen landed on {current.name()}, moving it to {target_screen.name()}")
+        self.showNormal()
+        if self.windowHandle():
+            self.windowHandle().setScreen(target_screen)
+        self.setGeometry(geom)
+        self.showFullScreen()
+        QApplication.processEvents()
+
+    def _resolve_widget_overlaps(self):
+        """Pinned widgets that sit on top of each other (a layout remapped from a screen of another shape, with no layout of
+        its own saved for this one) are packed into rows, left to right, wrapping at the window's width, in their old reading
+        order: the dashboard's wrap-at-a-breakpoint rule. A layout that does not overlap is left alone. True if it moved any."""
+        W, H = self.width(), self.height()
+        ws = [w for w in self.active_widgets.values() if not getattr(w, 'is_unpinned', False) and not w.isHidden()]
+
+        def overlap(a, b):
+            r = a.geometry().intersected(b.geometry())
+            return r.width() > 4 and r.height() > 4
+
+        if not any(overlap(a, b) for i, a in enumerate(ws) for b in ws[i + 1:]):
+            return False
+        gutter, gap = UIScaler.get().scale(20), UIScaler.get().scale(12)
+        x = y = gutter
+        row_h = 0
+        for w in sorted(ws, key=lambda w: (w.y(), w.x())):
+            if w.width() > W - 2 * gutter:
+                w.resizeUnscaled(max(1, W - 2 * gutter), w.height())
+            if x > gutter and x + w.width() > W - gutter:
+                x, y, row_h = gutter, y + row_h + gap, 0
+            w.move(x, max(0, min(y, H - w.height())))
+            x += w.width() + gap
+            row_h = max(row_h, w.height())
+        return True
+
+    def _fit_widgets_to_window(self):
+        """Keeps the pinned dashboard widgets usable on whatever canvas the window now has (max-width: 100%):
+        when the canvas changed (a swap to a monitor of another size or orientation) positions are remapped
+        proportionally and sizes follow the UI scale uniformly (never stretched per axis), then every widget is
+        clamped fully inside the window. Skipped until the window really is fullscreen-sized: during the
+        overlay <-> fullscreen transition it is briefly the tiny overlay box, which would crush every position
+        toward (0,0) (see the note in __init__ about load_ui_state)."""
+        if not getattr(self, 'is_fullscreen', False) or getattr(self, '_restoring_ui_state', False):
+            return
+        W, H = self.width(), self.height()
+        screen = self.screen()
+        if screen and (W < screen.geometry().width() * 0.9 or H < screen.geometry().height() * 0.9):
+            return
+        prev = getattr(self, '_widgets_canvas', None)
+        self._widgets_canvas = (W, H)
+        scaler = UIScaler.get()
+        remap = prev is not None and prev != (W, H) and prev[0] > 0 and prev[1] > 0
+        uni = scaler.scale_for(W, H) / scaler.scale_for(*prev) if remap else 1.0
+        # Moving to a screen that has a layout of its own saved: restore exactly that, no remapping.
+        own = self._saved_layouts().get(self._screen_key(self._target_screen()), {}) if remap else {}
+        pinned = [(wid, w) for wid, w in self.active_widgets.items() if not getattr(w, 'is_unpinned', False)]
+        before = {wid: w.geometry() for wid, w in pinned}
+        remapped = False
+        for wid, w in pinned:
+            if remap and self._valid_entry(own.get(wid)):
+                w.resizeUnscaled(min(W, int(own[wid]["size"][0])), min(H, int(own[wid]["size"][1])))
+                w.move(int(own[wid]["pos"][0]), int(own[wid]["pos"][1]))
+            elif remap:
+                w.resizeUnscaled(int(w.width() * uni), int(w.height() * uni))
+                w.move(int(w.x() * W / prev[0]), int(w.y() * H / prev[1]))
+                remapped = True
+        self._last_fit_remapped = remapped          # a monitor swap resolves again once its (then hidden) widgets are shown
+        if remapped:
+            self._resolve_widget_overlaps()
+        for wid, w in pinned:
+            if w.width() > W or w.height() > H:
+                w.resizeUnscaled(min(w.width(), W), min(w.height(), H))
+            w.move(max(0, min(w.x(), W - w.width())), max(0, min(w.y(), H - w.height())))
+        if any(w.geometry() != before[wid] for wid, w in pinned):
+            self.save_ui_state()
 
     def _handle_feedback(self, data):
         device = data.get("device")
@@ -2277,7 +2443,7 @@ class JarvisUI(QWidget):
     def _calendar_drawer_width(win_w):
         """The side drawer is 400 px at 1080p (the width its day squares and sheet are designed for)."""
         s = UIScaler.get().scale
-        return s(400) if win_w >= 1920 else s(350)
+        return min(s(400) if win_w >= 1920 else s(350), int(win_w * 0.9))
 
     def _toggle_calendar(self):
         if not getattr(self, 'is_fullscreen', False):
@@ -2636,7 +2802,7 @@ class JarvisUI(QWidget):
         if hasattr(content_widget, 'get_standalone_min_size'):
             min_w, min_h = content_widget.get_standalone_min_size()
             natural = wrapper.sizeHint()
-            wrapper.resize(max(natural.width(), min_w), max(natural.height(), min_h))
+            wrapper.resizeUnscaled(max(natural.width(), min_w), max(natural.height(), min_h))
 
         # A widget closed earlier this session (close_draggable_widget) remembers where it
         # was -- reopening it should land back there, not re-center, since ui_state.json
@@ -2644,7 +2810,7 @@ class JarvisUI(QWidget):
         remembered = self._closed_widget_geometry.get(widget_id)
         if remembered:
             rw, rh = remembered["size"]
-            wrapper.resize(rw, rh)
+            wrapper.resizeUnscaled(rw, rh)
 
         # Position in center of screen by default
         if is_standalone:
@@ -2674,6 +2840,7 @@ class JarvisUI(QWidget):
                 wrapper.move(cx, cy)
         
         self.active_widgets[widget_id] = wrapper
+        self._fit_widgets_to_window()      # a remembered geometry from another monitor must not reopen off-screen
         if not getattr(self, '_restoring_ui_state', False):
             # Skip mid-restore: would overwrite on-disk state with an incomplete snapshot.
             self.save_ui_state()
@@ -2794,8 +2961,8 @@ class JarvisUI(QWidget):
             old_geom = None
 
             if is_monitor_swap:
+                self.save_ui_state()          # the screen being left, while it is still the target
                 self.current_monitor_idx = (getattr(self, 'current_monitor_idx', 0) + 1) % len(screens)
-                self.save_ui_state()
                 UIScaler.get().set_active_monitor(self.current_monitor_idx)
 
                 # Save widget visibility before hiding
@@ -2821,6 +2988,15 @@ class JarvisUI(QWidget):
                     if s.name() == active_name:
                         self.current_monitor_idx = i
                         break
+
+                # A restart (JARVIS_REBOOT) goes back to the monitor the dashboard was on, not wherever the mouse happens to be;
+                # only if that screen is still there with the size it was saved with.
+                boot_idx, boot_size = getattr(self, '_boot_monitor', None) or (None, None)
+                self._boot_monitor = None
+                if isinstance(boot_idx, int) and 0 <= boot_idx < len(screens):
+                    g = screens[boot_idx].geometry()
+                    if not boot_size or [g.width(), g.height()] == list(boot_size):
+                        self.current_monitor_idx = boot_idx
                 
                 UIScaler.get().set_active_monitor(self.current_monitor_idx)
                 
@@ -2859,7 +3035,7 @@ class JarvisUI(QWidget):
             
             # Using move and resize exactly as proven in the test script
             self.move(geom.topLeft())
-            self.resize(geom.width(), geom.height())
+            self.resizeUnscaled(geom.width(), geom.height())
             
             # Reset visualizer to IDLE before transitioning — prevents stale RECORDING state
             # from a previous TTS+mic cycle being inherited by the fullscreen view
@@ -2940,7 +3116,13 @@ class JarvisUI(QWidget):
 
             logging.debug(f"[DEBUG UI] Calling showFullScreen(). Current focus: {self.hasFocus()}")
             if sys.platform == "win32":
+                if not is_monitor_swap:
+                    # showFullScreen() on a window that was never shown lands on the primary monitor, whatever move()/setScreen()
+                    # said: showing it normally on the target screen first makes it stay there.
+                    self.show()
+                    QApplication.processEvents()
                 self.showFullScreen()
+                self._land_on_target_screen(target_screen, geom)
             else:
                 # Real EWMH fullscreen (_NET_WM_STATE_FULLSCREEN, what
                 # showFullScreen() sets) puts GNOME/Mutter's window in a
@@ -2959,6 +3141,9 @@ class JarvisUI(QWidget):
                 # Re-enable paint events, restore visibility, and force a repaint
                 self._is_swapping_monitors = False
                 self.setUpdatesEnabled(True)
+                if getattr(self, '_last_fit_remapped', False):
+                    self._resolve_widget_overlaps()      # no layout of its own for this screen: never leave widgets piled up
+                self.save_ui_state()      # the swap's single save: this screen's layout, the new monitor index
                 
                 if getattr(self, 'state', 'IDLE') == 'IDLE':
                     self.visualizer.show()
@@ -3070,7 +3255,7 @@ class JarvisUI(QWidget):
             y_pos = screen_geom.bottom() - height - 20
             
             self.showNormal()
-            self.setFixedSize(width, height)
+            self.setFixedSizeUnscaled(width, height)
             self.setGeometry(x_pos, y_pos, width, height)
             
             if sys.platform == "win32":
@@ -3164,6 +3349,10 @@ class JarvisUI(QWidget):
             QApplication.instance().quit()
 
     def save_ui_state(self):
+        # Mid monitor swap every widget is hidden and still holds the OLD screen's geometry: saving that would overwrite the
+        # new screen's own layout. The swap saves once, when it is done.
+        if getattr(self, '_is_swapping_monitors', False):
+            return
         try:
             is_fullscreen = getattr(self, 'is_fullscreen', False)
 
@@ -3176,6 +3365,13 @@ class JarvisUI(QWidget):
                         "size": [wrapper.width(), wrapper.height()],
                         "is_unpinned": getattr(wrapper, "is_unpinned", False)
                     }
+                    # A widget's own extra state (the media widget's open drawer); optional per widget.
+                    try:
+                        get_state = getattr(wrapper.content_widget, "get_ui_state", None)
+                        if get_state:
+                            active_widgets_data[wid]["state"] = get_state()
+                    except Exception as e:
+                        logging.error(f"Failed to read {wid}'s UI state: {e}")
 
                 reminder_data = {
                     "visible": self.reminder_widget.isVisible() if hasattr(self, 'reminder_widget') else False
@@ -3189,9 +3385,16 @@ class JarvisUI(QWidget):
                 # otherwise pair every widget's real (fullscreen) position
                 # with a tiny "canvas" size, corrupting the scale math on the
                 # next restore.
-                target_screen = self.screen()
+                target_screen = self._target_screen()
                 screen_size = [target_screen.geometry().width(), target_screen.geometry().height()] if target_screen else [self.width(), self.height()]
                 current_monitor_idx = getattr(self, 'current_monitor_idx', 0)
+                lyrics_enabled = bool(getattr(getattr(self, 'lyrics_display', None), '_lyrics_enabled', True))
+                # This screen's own arrangement (pinned widgets only: an unpinned one has global coordinates); the other
+                # screens' layouts are carried forward untouched.
+                layouts = self._saved_layouts()
+                if self._on_target_screen():
+                    layouts[self._screen_key(target_screen)] = {
+                        wid: {"pos": d["pos"], "size": d["size"]} for wid, d in active_widgets_data.items() if not d["is_unpinned"]}
             else:
                 # Overlay force-hides every widget/drawer -- that's a
                 # transient view change, not the user closing anything, so a
@@ -3211,8 +3414,12 @@ class JarvisUI(QWidget):
                 carousel_idx = existing.get("carousel_tab", 0)
                 screen_size = existing.get("screen_size", [self.width(), self.height()])
                 current_monitor_idx = existing.get("current_monitor_idx", getattr(self, 'current_monitor_idx', 0))
+                lyrics_enabled = existing.get("lyrics_enabled", True)
+                layouts = self._layouts_from_state(existing)
 
             state_payload = {
+                "lyrics_enabled": lyrics_enabled,
+                "layouts": layouts,
                 "drawer_open": drawer_open,
                 "carousel_tab": carousel_idx,
                 "reminder_widget": reminder_data,
@@ -3252,13 +3459,18 @@ class JarvisUI(QWidget):
                     self.calendar_drawer.carousel.stack.setCurrentIndex(carousel_tab)
                     self.calendar_drawer.carousel.update_indicator()
                     
+            # Lyrics on/off survives a restart too
+            if isinstance(state.get("lyrics_enabled"), bool) and hasattr(self, 'lyrics_display'):
+                self.lyrics_display.set_enabled(state["lyrics_enabled"])
+
             # 2. Drawer open/closed state
             drawer_state = state.get("drawer_open", False)
             if drawer_state and not self.calendar_is_open:
                 self._toggle_calendar()
                 
-            self.current_monitor_idx = state.get("current_monitor_idx", 0)
-                
+            if not getattr(self, 'is_fullscreen', False):      # in fullscreen set_ui_mode already picked the screen it is on
+                self.current_monitor_idx = state.get("current_monitor_idx", 0)
+
             widgets_state = state.get("active_widgets", {})
             # 3. Reminder popup -- gated the same way as the draggable
             # widgets below (restore_widgets=False on the very first boot
@@ -3280,6 +3492,8 @@ class JarvisUI(QWidget):
             if restore_widgets:
                 self._restoring_ui_state = True
                 active_state = state.get("active_widgets", {})
+                screen_layout = self._layouts_from_state(state).get(self._screen_key(self.screen()), {})
+                used_remap = False
                 for widget_id, info in active_state.items():
                     is_visible = info.get("visible", False)
                     pos = info.get("pos")
@@ -3330,28 +3544,43 @@ class JarvisUI(QWidget):
                         canvas_w = target_screen.geometry().width() if target_screen else self.width()
                         canvas_h = target_screen.geometry().height() if target_screen else self.height()
 
-                        if pos and len(pos) == 2:
-                            prev_screen = state.get("screen_size", [1920, 1080]) # Fallback for old states
-                            scale_x = canvas_w / max(1, prev_screen[0])
-                            scale_y = canvas_h / max(1, prev_screen[1])
+                        prev_screen = state.get("screen_size", [1920, 1080])   # fallback for old states
+                        saved_screen = prev_screen
 
-                            p_x = int(pos[0] * scale_x)
-                            p_y = int(pos[1] * scale_y)
+                        # This screen has a layout of its own saved: use it exactly, never remap another screen's.
+                        if self._valid_entry(screen_layout.get(widget_id)) and not info.get("is_unpinned", False):
+                            pos, size = screen_layout[widget_id]["pos"], screen_layout[widget_id]["size"]
+                            prev_screen = [canvas_w, canvas_h]
+                        elif list(prev_screen) != [canvas_w, canvas_h]:
+                            used_remap = True
 
-                            # Clamp to current screen bounds
-                            p_x = max(0, min(p_x, canvas_w - 50))
-                            p_y = max(0, min(p_y, canvas_h - 50))
-
-                            w.move(p_x, p_y)
+                        # A widget's own saved state (the media widget's open drawer) goes back BEFORE the resize below: the saved size
+                        # already includes the drawer's height, and showing it after the resize would make Qt auto-grow the window again.
+                        restore = getattr(w.content_widget, "restore_ui_state", None) if not already_existed else None
+                        if restore:
+                            try:
+                                own = dict(info.get("state") or {})
+                                if isinstance(own.get("drawer_delta"), (int, float)):     # a pixel height: follows the UI scale like the size
+                                    own["drawer_delta"] = int(own["drawer_delta"] * UIScaler.get().scale_for(canvas_w, canvas_h) / UIScaler.get().scale_for(*saved_screen))
+                                restore(own)
+                            except Exception as e:
+                                logging.error(f"Failed to restore {widget_id}'s UI state: {e}")
 
                         if size and len(size) == 2:
-                            # Scale the saved size to match the current monitor proportions just like we do for position
-                            prev_screen = state.get("screen_size", [1920, 1080])
+                            # Size follows the UI scale uniformly (a 350x400 widget saved on a landscape monitor must
+                            # not be stretched per axis on a portrait one), never larger than the screen.
+                            uni = UIScaler.get().scale_for(canvas_w, canvas_h) / UIScaler.get().scale_for(*prev_screen)
+                            w.resizeUnscaled(min(canvas_w, int(size[0] * uni)), min(canvas_h, int(size[1] * uni)))
+
+                        if pos and len(pos) == 2:
                             scale_x = canvas_w / max(1, prev_screen[0])
                             scale_y = canvas_h / max(1, prev_screen[1])
-                            s_w = int(size[0] * scale_x)
-                            s_h = int(size[1] * scale_y)
-                            w.resize(s_w, s_h)
+
+                            # Proportional position, clamped so the whole widget stays on the screen
+                            p_x = max(0, min(int(pos[0] * scale_x), canvas_w - w.width()))
+                            p_y = max(0, min(int(pos[1] * scale_y), canvas_h - w.height()))
+
+                            w.move(p_x, p_y)
 
                         # Bidirectional: also re-pin a widget saved as pinned but
                         # currently unpinned (e.g. forced so by an overlay-mode spawn).
@@ -3377,7 +3606,10 @@ class JarvisUI(QWidget):
                                 w.raise_(); self._enforce_z_order()
                             else:
                                 w.hide()
+                if used_remap:
+                    self._resolve_widget_overlaps()      # no layout of its own for this screen: never leave widgets piled up
                 self._restoring_ui_state = False
+                self._widgets_canvas = None   # restore already mapped everything to this canvas; the next layout re-records it
 
             return state
         except Exception as e:

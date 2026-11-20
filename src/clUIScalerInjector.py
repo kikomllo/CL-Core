@@ -27,17 +27,23 @@ def inject_scaler():
             _orig_setFixedSize(self, scaler.scale(args[0]), scaler.scale(args[1]))
     QWidget.setFixedSize = _scaled_setFixedSize
 
+    # Callers that already hold physical pixels (a value from UIScaler.scale(), a widget's own width()) must not
+    # be scaled a second time: these bypass the patches above, like resizeUnscaled.
+    QWidget.setFixedSizeUnscaled = lambda self, w, h: _orig_setFixedSize(self, int(w), int(h))
+
     # Fixed Height
     _orig_setFixedHeight = QWidget.setFixedHeight
     def _scaled_setFixedHeight(self, h):
         _orig_setFixedHeight(self, UIScaler.get().scale(h))
     QWidget.setFixedHeight = _scaled_setFixedHeight
+    QWidget.setFixedHeightUnscaled = lambda self, h: _orig_setFixedHeight(self, int(h))
 
     # Fixed Width
     _orig_setFixedWidth = QWidget.setFixedWidth
     def _scaled_setFixedWidth(self, w):
         _orig_setFixedWidth(self, UIScaler.get().scale(w))
     QWidget.setFixedWidth = _scaled_setFixedWidth
+    QWidget.setFixedWidthUnscaled = lambda self, w: _orig_setFixedWidth(self, int(w))
 
     # Minimum Size
     _orig_setMinimumSize = QWidget.setMinimumSize

@@ -68,21 +68,20 @@ class UIScaler:
                 return i
         return 0
 
+    def scale_for(self, width, height):
+        """The one fluid unit (the page's `rem`): the long side is measured against 1920 and the short side against
+        1080, so a screen gets the same scale whichever way it is turned (1080x1920 is 1.0, not the 0.56 a fixed
+        landscape reference gave, which shrank everything to a strip). min() keeps it from bleeding off-screen."""
+        long_side, short_side = max(width, height), min(width, height)
+        return min(long_side / self.base_res[0], short_side / self.base_res[1])
+
     def refresh_monitors(self):
         self.monitors = []
         screens = self.get_stable_screens()
         for i, screen in enumerate(screens):
             geom = screen.geometry()
-            # Calculate scale based on height/width relative to 1920x1080
-            # Use the minimum of both to prevent bleeding off-screen while maintaining proportions
-            scale_w = geom.width() / self.base_res[0]
-            scale_h = geom.height() / self.base_res[1]
-            scale = min(scale_w, scale_h)
-            
-            # Allow downscaling so the UI appears proportionally the same size
-            # on smaller resolution monitors.
-            pass
-            
+            scale = self.scale_for(geom.width(), geom.height())
+
             self.monitors.append({
                 "index": i,
                 "width": geom.width(),

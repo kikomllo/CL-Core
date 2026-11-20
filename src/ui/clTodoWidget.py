@@ -166,7 +166,7 @@ class TodoWidget(QWidget):
         # Center dialog
         dlg_width = s(250)
         dlg_height = s(150)
-        self.list_dialog.resize(dlg_width, dlg_height)
+        self.list_dialog.resizeUnscaled(dlg_width, dlg_height)
         
         # Map to global properly for popup
         if self.parentWidget():
