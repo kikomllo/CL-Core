@@ -1,14 +1,24 @@
 # Google Calendar integration — draft plan
 
-Status: **draft, nothing built.** Groundwork already in the repo is listed in `docs/context/calendar.md` ("Google Calendar integration"): the Google-shaped event model, `source`/read-only handling, the hollow-dot/GOOGLE-tag presentation, and the hidden sync label (`CalendarWidget.set_sync_status`).
+Status: **draft, nothing built; the four open decisions were answered on 2026-11-21 (see "Decisions made" at the end).** Groundwork already in the repo is listed in `docs/context/calendar.md` ("Google Calendar integration"): the Google-shaped event model, `source`/read-only handling, the hollow-dot/GOOGLE-tag presentation, and the hidden sync label (`CalendarWidget.set_sync_status`).
 
 ## Goals
 
 1. Google events show in the drawer calendar, the day sheet, the voice briefing and "what's on my calendar" — with no UI rewrite.
-2. Read-only first (phase 1); create/edit/delete of Google events later (phase 2).
-3. Same rules as the rest of CL-Core: its own process, MQTT only, no secrets in the repo, works on Windows and Linux, light on CPU/RAM, never touches the network from tests.
+2. Read-only first (phase 1) to prove the auth and sync; create/edit/delete of Google events right after (phase 2), because the real goal needs it: events created on one device must appear on every other one.
+3. **The same calendar on several devices**, with Google as the hub (see "Multiple devices").
+4. Same rules as the rest of CL-Core: its own process, MQTT only, no secrets in the repo, works on Windows and Linux, light on CPU/RAM, never touches the network from tests.
 
-Non-goals: webhooks/push notifications (need a public URL), multiple Google accounts, a full recurrence editor, other providers.
+Non-goals: webhooks/push notifications (need a public URL), multiple Google accounts, a full recurrence editor. Other providers: not now; a **CL-Core account** option is a possible later step, so keep `source` and the single merge point provider-neutral (nothing Google-specific may leak into `clCalendarEvents` or the UI beyond what `source: "google"` already carries).
+
+## Multiple devices
+
+There is no CL-Core server and no CL-Core account. Google *is* the sync hub:
+
+- Every machine runs its own `clGoogleCalendar.py`, signs in itself (one Connect click per machine) and keeps its own cache, so each works offline.
+- The same OAuth client works everywhere: copy `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` into each machine's `.env` (gitignored, so it travels by hand, never through git). Tokens are per machine (`data/gcal/token.json`) and are not shared.
+- A change made on one device shows on the others at their next poll (`sync_interval_s`, default 5 min; `sync_now` or a wake from sleep refreshes sooner). No push without a public URL, so a few minutes of delay is expected.
+- **Local events stay on their machine.** That is why new events default to Google once write-back exists (decision 2); the local calendar remains for offline/private events, and an optional "push my local events to Google" is a phase-3 extra.
 
 ## Architecture
 
@@ -64,10 +74,10 @@ Add the three `gcal` actions to `config/actions.json` so the UI uses `ActionRout
 
 - **Phase 1**
   - Sync label (`set_sync_status`): "Google · 2 min", "Google · offline", "Reconnect Google" — driven by the retained `gcal/status`; hidden when disconnected/never configured.
-  - **Settings → new "Calendar" tab** (next to Presence): Connect / Disconnect, account email, last sync + "Sync now", a checkbox per calendar (default: primary only), past/future window, interval. Follows the existing tab pattern (`_create_scroll_tab`, settings written through `_update_core_json("calendar_settings", …)` — it saves live, no module reboot needed because the service watches `core.json`, or a "Save & Reboot Calendar" if watching proves awkward).
+  - **Settings → new "Calendar" tab** (next to Presence): Connect / Disconnect, account email, last sync + "Sync now", past/future window, interval (phase 1 syncs the **primary calendar only**; choosing calendars is a button on the calendar itself, phase 3). Follows the existing tab pattern (`_create_scroll_tab`, settings written through `_update_core_json("calendar_settings", …)` — it saves live, no module reboot needed because the service watches `core.json`, or a "Save & Reboot Calendar" if watching proves awkward).
   - Nothing else: the hollow dot, GOOGLE tag and read-only behaviour already exist.
 - **Phase 2**
-  - The `+` dialog gains a destination (Local / each writable Google calendar); default from `calendar_settings.default_new_event_target`. Voice "add to calendar" uses the same default.
+  - The `+` dialog gains a destination; **default is Google's primary calendar** (decision 2), from `calendar_settings.default_new_event_target`. Voice "add to calendar" uses the same default. With only the primary calendar connected it is a Local / Google choice; the full picker comes with phase 3.
   - `is_editable` becomes `source == "local" or (source == "google" and not readOnly)`; delete/edit dialogs route by source.
   - **Fix the edit path first:** today an edit re-sends only title + time to `handle_calendar_create`, which rewrites the whole file and silently drops `description`/`end`. Edits must merge into the existing event, or Google events would lose data.
   - Optimistic update in the cache, then the real request, then a resync; a failure restores the event and publishes `gcal/status.error`, which the UI shows briefly.
@@ -83,8 +93,8 @@ Add the three `gcal` actions to `config/actions.json` so the UI uses `ActionRout
     "sync_interval_s": 300,
     "past_days": 30,
     "future_days": 365,
-    "calendars": ["primary"],
-    "default_new_event_target": "local"
+    "calendars": ["primary"],             // the calendars shown; phase 3's button edits this list
+    "default_new_event_target": "google:primary"   // "local" | "google:<calendar id>"; "local" until write-back exists
   }
 }
 ```
@@ -95,7 +105,8 @@ Add the three `gcal` actions to `config/actions.json` so the UI uses `ActionRout
 |---|---|---|
 | **1. Read-only sync** | service + auth + cache + merge refactor + sync label + Settings tab + tests + setup doc | A Google account connects from Settings; its events appear in the drawer, the day sheet, and the morning briefing; disconnecting removes them; offline start still shows the cached ones. |
 | **2. Write-back** | destination picker, edit-merge fix, create/edit/delete via the API, `calendar.events` scope upgrade | Create/edit/delete a Google event from the dashboard and see it in Google; failures roll back visibly. |
-| **3. Extras** | calendar colours, recurring "this and following", all-day creation, optional push of local events | As requested. |
+| **3. Several calendars** | A **button on the calendar** (header, next to Today) opens a small list of the account's calendars (name, colour dot, checkbox) to choose which are shown; each calendar's events get its own colour (Google's `colorId`/calendar colour) so they can be told apart; the `+` dialog gets a **calendar switch** (a dropdown of the writable calendars, remembering the last choice) to pick where a new event goes. Writes the `calendars` list in `core.json`; the service starts syncing the newly enabled ones at once. | Tick a second calendar and its events appear, coloured; create an event in it from the dialog and see it in Google. |
+| **4. Extras** | recurring "this and following", all-day creation, optional push of local events to Google | As requested. |
 
 ## Tests (all offline)
 
@@ -111,9 +122,11 @@ Add the three `gcal` actions to `config/actions.json` so the UI uses `ActionRout
 - Data privacy: events are cached in `data/gcal/` (gitignored); `Disconnect` should delete the token and the cache.
 - Timezones: Google returns offsets; `clCalendarEvents` already converts to local wall-clock. All-day events must stay date-only (never converted through a timezone).
 
-### Decisions needed
+### Decisions made (2026-11-21)
 
-1. Read-only first, as above — or go straight to write-back?
-2. Primary calendar only to start, or let the Settings tab pick several?
-3. Where should new events go by default once write-back exists: local or Google?
-4. OK to use plain REST via `httpx` instead of Google's client libraries?
+1. **Google sign-in first.** CL-Core's own accounts are a possible later step (keep the code provider-neutral, see Non-goals). Order: read-only (phase 1) to de-risk auth and sync, then write-back (phase 2) straight after, since the multi-device goal needs it.
+2. **New events go to Google by default** once write-back exists.
+3. **Primary calendar only at first; several calendars later, as a button on the calendar plus a calendar switch in the create-event dialog** (phase 3), not a Settings checklist.
+4. **Plain REST via `httpx`**, as drafted (recommended: it is already a dependency, and Google's client stack adds ~10 packages for four REST calls). Fallback if the OAuth helper gets fiddly: `google-auth` + `google-auth-oauthlib`, never the discovery client.
+
+Still open before phase 1 is demoed: publish the Google app as "In production" (unverified) so refresh tokens do not expire after 7 days (see Risks).

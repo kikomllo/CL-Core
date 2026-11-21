@@ -50,6 +50,8 @@ Detailed notes live in separate files so they're only loaded when relevant:
 - `data/ui_state.json` is one shared file; don't point test instances of the UI at it.
 - Never use broad `pkill -f` patterns; they can match the user's live session.
 
+**What is still to implement is tracked in `docs/todo.md`** (every plan, owner to-dos and tech debt in one checklist): when you finish a planned item tick it there and move it to "Done recently"; when a new plan or idea is written, add it. The smart-devices plan (colour button, LSC/Tuya plug, schedules) is `docs/smart_devices_plan.md`; the Google Calendar plan is `docs/google_calendar_plan.md`.
+
 The bridge plan and status is in `docs/claude_bridge_plan.md`. The voice latency / local TTS / barge-in plan and status (including what is mid-flight) is in `docs/voice_latency_plan.md`. The Ultron switch (voice on every device, then theme and persona) is planned in `docs/ultron_plan.md`.
 
 **Standing instruction for any Claude Code session working in this repo**: when the JARVIS ecosystem is running live, speak a short, one-sentence summary of what you did or what's needed next at the end of every turn by publishing to `jarvis/sys/speak`, unconditionally — not only when reached through the voice bridge. The one exception: if your system prompt says the host application already reads your answers aloud (the bridged voice session), do not run this; the bridge speaks every final answer itself and would double it:

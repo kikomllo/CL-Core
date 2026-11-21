@@ -39,7 +39,7 @@ Orange marks *surfaces*: cell/sheet/pill borders, the sheet's tint, hairlines, t
 
 Done so far: the event model above (all-day, tz-aware, `source`, read-only handling), the hollow-ring/GOOGLE-tag presentation, and the (hidden) sync label. Not done: OAuth, sync, any config keys.
 
-Full draft plan (architecture, auth, sync, phases, tests, open questions): `docs/google_calendar_plan.md`.
+Full draft plan (architecture, auth, sync, phases, tests, open questions): `docs/google_calendar_plan.md`. Decided 2026-11-21: Google sign-in on every device (Google is the sync hub, no CL-Core server), new events default to Google, primary calendar first, then a calendar-header button to choose shown calendars and a calendar switch in the create-event dialog; CL-Core's own accounts may come later, so keep the merge point provider-neutral.
 
 Planned shape, following the MQTT-only rule:
 - A new `src/clGoogleCalendar.py` service owns OAuth tokens and the Google API. It never touches the UI directly.
