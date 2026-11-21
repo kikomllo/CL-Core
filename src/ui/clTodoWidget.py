@@ -223,7 +223,9 @@ class TodoWidget(QWidget):
                     pass
                     
         self.tabs.blockSignals(True)
+        page = self.tabs.widget(idx)
         self.tabs.removeTab(idx)
+        page.deleteLater()                           # removeTab alone leaves the page (and its rows) alive
 
         # Select another tab if one still exists -- count() was being
         # compared > 1 here, which treated exactly one remaining real list
@@ -322,80 +324,21 @@ class TodoWidget(QWidget):
             
         self.grouped_todos = grouped_todos
 
-        # Clear existing tabs completely. Blocked: adding the first-ever tab
-        # to an empty QTabWidget fires currentChanged(0) synchronously (Qt's
-        # own auto-select-on-first-add behavior), which on_tab_changed()
-        # picks up and uses to overwrite current_list_name -- clobbering
-        # whichever list the user actually had open with whatever list
-        # happens to be first in this refresh, before the "restore the
-        # previous selection" loop below ever runs. Every status refresh
-        # (i.e. every task interaction) was silently bouncing the view back
-        # to that first list as a result.
+        # Synced in place, never torn down: rebuilding every row on each refresh (every task added, ticked or
+        # deleted) left all of them unlaid-out for a moment (squeezed together, then spread out ~200 ms later,
+        # every time) and leaked the old pages (QTabWidget.clear() does not delete them). Only the rows that
+        # changed are touched. Signals stay blocked while tabs are added or removed: adding the first tab to an
+        # empty QTabWidget fires currentChanged(0), which on_tab_changed() would use to overwrite
+        # current_list_name with whichever list is first in this payload, before the restore loop below runs.
         self.tabs.blockSignals(True)
-        self.tabs.clear()
+        for i in reversed(range(self.tabs.count())):
+            if self.tabs.tabText(i) not in grouped_todos:
+                page = self.tabs.widget(i)
+                self.tabs.removeTab(i)
+                page.deleteLater()
 
         for list_name, tasks in grouped_todos.items():
-            scroll = self.create_tab(list_name)
-            layout = scroll.scroll_layout
-            
-            if not tasks:
-                lbl = QLabel("No pending tasks.")
-                lbl.setStyleSheet(Theme.get_style("DimLabel"))
-                layout.addWidget(lbl)
-                layout.addStretch()
-                continue
-                
-            for t in tasks:
-                task_widget = QWidget()
-                task_widget.setMinimumHeight(32)
-                task_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-                task_layout = QHBoxLayout(task_widget)
-                task_layout.setContentsMargins(0, 0, 0, 0)
-                task_layout.setSpacing(s(8))
-                
-                chk = RingCheckBox()
-                
-                lbl = QLabel(t["task"])
-                lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-                lbl.setMinimumHeight(24)
-                lbl.setWordWrap(True)
-                lbl.setStyleSheet("padding: 2px 0px;")
-                # Selectable text needs its own left-click handling (drag to
-                # select), so it can't also be the row's "click anywhere to
-                # toggle" hit area.
-                lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                lbl.setCursor(Qt.CursorShape.IBeamCursor)
-
-                is_completed = t.get("completed", False)
-                chk.setChecked(is_completed)
-                if is_completed:
-                    lbl.setStyleSheet(lbl.styleSheet() + " color: " + Theme.C_TEXT_DIM + "; text-decoration: line-through;")
-
-                task_layout.addWidget(chk, 0, Qt.AlignmentFlag.AlignVCenter)
-                task_layout.addWidget(lbl, 1, Qt.AlignmentFlag.AlignVCenter)
-
-                # Left click anywhere on the row (except the selectable label
-                # itself) toggles complete, same as before.
-                task_widget.mouseReleaseEvent = lambda e, c=chk: (
-                    c.setChecked(not c.isChecked()) if e.button() == Qt.MouseButton.LeftButton else None
-                )
-                # Right click deletes, but only for an already-completed
-                # task -- an incomplete one is a no-op (left click covers
-                # marking it complete). Uses Qt's context-menu signal
-                # instead of a RightButton check inside mouseReleaseEvent --
-                # Qt's own context-menu event races that override instead
-                # of going through it.
-                def _right_click_delete(pos, tid=t["id"], completed=is_completed):
-                    if completed:
-                        self.delete_task(tid)
-                task_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-                task_widget.customContextMenuRequested.connect(_right_click_delete)
-                lbl.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-                lbl.customContextMenuRequested.connect(_right_click_delete)
-                chk.stateChanged.connect(lambda state, tid=t["id"]: self.toggle_task(tid, state))
-                layout.addWidget(task_widget)
-                
-            layout.addStretch()
+            self._sync_rows(self.create_tab(list_name), tasks)
 
         self.tabs.blockSignals(False)
 
@@ -417,6 +360,94 @@ class TodoWidget(QWidget):
         # buttons instead of growing to fit them (see clLightControlWidget).
         # No self.adjustSize() here -- see _force_resize below for why.
         QTimer.singleShot(50, self._force_resize)
+
+    def _sync_rows(self, page, tasks):
+        """Makes the page's rows match `tasks` (already in display order): rows that are still right are left alone,
+        new ones are added, vanished ones removed, changed ones updated, and moved ones re-inserted."""
+        layout = page.scroll_layout
+        rows = page.__dict__.setdefault("todo_rows", {})
+        if not page.__dict__.get("todo_stretch"):
+            layout.addStretch()                      # one spacer at the end; rows are inserted before it
+            page.todo_stretch = True
+
+        wanted = {t["id"] for t in tasks}
+        for tid in [k for k in rows if k not in wanted]:
+            row = rows.pop(tid)
+            layout.removeWidget(row)
+            row.hide()
+            row.deleteLater()
+
+        for pos, t in enumerate(tasks):
+            row = rows.get(t["id"])
+            if row is None:
+                row = rows[t["id"]] = self._make_row(t)
+                layout.insertWidget(pos, row)
+                continue
+            self._update_row(row, t)
+            if layout.indexOf(row) != pos:
+                layout.removeWidget(row)
+                layout.insertWidget(pos, row)
+
+    def _make_row(self, t):
+        task_widget = QWidget()
+        task_widget.setMinimumHeight(32)
+        task_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        task_layout = QHBoxLayout(task_widget)
+        task_layout.setContentsMargins(0, 0, 0, 0)
+        task_layout.setSpacing(s(8))
+
+        chk = RingCheckBox()
+        lbl = QLabel()
+        lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        lbl.setMinimumHeight(24)
+        lbl.setWordWrap(True)
+        # Selectable text needs its own left-click handling (drag to
+        # select), so it can't also be the row's "click anywhere to
+        # toggle" hit area.
+        lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        lbl.setCursor(Qt.CursorShape.IBeamCursor)
+
+        task_layout.addWidget(chk, 0, Qt.AlignmentFlag.AlignVCenter)
+        task_layout.addWidget(lbl, 1, Qt.AlignmentFlag.AlignVCenter)
+        task_widget.todo_id, task_widget.chk, task_widget.lbl = t["id"], chk, lbl
+        self._update_row(task_widget, t)
+
+        # Left click anywhere on the row (except the selectable label
+        # itself) toggles complete, same as before.
+        task_widget.mouseReleaseEvent = lambda e, c=chk: (
+            c.setChecked(not c.isChecked()) if e.button() == Qt.MouseButton.LeftButton else None
+        )
+        # Right click deletes, but only for an already-completed
+        # task -- an incomplete one is a no-op (left click covers
+        # marking it complete). Uses Qt's context-menu signal
+        # instead of a RightButton check inside mouseReleaseEvent --
+        # Qt's own context-menu event races that override instead
+        # of going through it. Reads the row's current state, since rows are reused across refreshes.
+        def _right_click_delete(pos, row=task_widget):
+            if row.completed:
+                self.delete_task(row.todo_id)
+        task_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        task_widget.customContextMenuRequested.connect(_right_click_delete)
+        lbl.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        lbl.customContextMenuRequested.connect(_right_click_delete)
+        chk.stateChanged.connect(lambda state, tid=t["id"]: self.toggle_task(tid, state))
+        return task_widget
+
+    def _update_row(self, row, t):
+        """Brings an existing row up to date with the task; touches nothing that is already right."""
+        completed = t.get("completed", False)
+        if row.lbl.text() != t["task"]:
+            row.lbl.setText(t["task"])
+        if row.chk.isChecked() != completed:
+            row.chk.blockSignals(True)               # the backend already knows; don't dispatch a toggle back
+            row.chk.setChecked(completed)
+            row.chk.blockSignals(False)
+        if getattr(row, "completed", None) != completed:
+            row.completed = completed
+            style = "padding: 2px 0px;"
+            if completed:
+                style += " color: " + Theme.C_TEXT_DIM + "; text-decoration: line-through;"
+            row.lbl.setStyleSheet(style)
 
     def _force_resize(self):
         # No self.adjustSize() here -- this widget is a layout-managed

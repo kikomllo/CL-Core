@@ -393,3 +393,127 @@ class TestCheckboxIsACircle:
         chk.click()
 
         assert seen == [2, 0]
+
+
+def _tasks(*names, done=()):
+    return {"todos": [{"id": f"t{n}", "task": f"Task {n}", "list_name": "Todo", "completed": n in done} for n in names]}
+
+
+def _rows(w, index=0):
+    layout = w.tabs.widget(index).scroll_layout
+    return [layout.itemAt(i).widget() for i in range(layout.count()) if layout.itemAt(i).widget()]
+
+
+def _flush_deletes():
+    from PyQt6.QtCore import QEvent
+    from PyQt6.QtWidgets import QApplication
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+class TestRefreshUpdatesRowsInPlace:
+    """Every refresh (a task added, ticked or deleted) used to tear down and rebuild every row: all of them sat
+    unlaid-out for a moment (squeezed together, then spread out ~200 ms later, every single time) and the old
+    pages leaked, since QTabWidget.clear() does not delete them. Rows that did not change must be left alone."""
+
+    def test_an_unchanged_refresh_keeps_the_very_same_rows(self, qapp, mocker):
+        w = _widget(mocker)
+        w.update_status(_tasks(1, 2, 3))
+        before = _rows(w)
+        w.update_status(_tasks(1, 2, 3))
+        assert _rows(w) == before
+
+    def test_adding_a_task_keeps_the_existing_rows_and_adds_one(self, qapp, mocker):
+        w = _widget(mocker)
+        w.update_status(_tasks(1, 2))
+        before = _rows(w)
+        w.update_status(_tasks(1, 2, 3))
+        after = _rows(w)
+        assert after[:2] == before and len(after) == 3
+
+    def test_a_deleted_task_loses_its_row_and_the_others_stay(self, qapp, mocker):
+        w = _widget(mocker)
+        w.update_status(_tasks(1, 2, 3))
+        r1, r2, r3 = _rows(w)
+        w.update_status(_tasks(1, 3))
+        assert _rows(w) == [r1, r3]
+
+    def test_repeated_refreshes_do_not_pile_up_widgets(self, qapp, mocker):
+        from PyQt6.QtWidgets import QLabel
+        w = _widget(mocker)
+        for n in range(1, 8):
+            w.update_status(_tasks(*range(1, n + 1)))
+        _flush_deletes()
+        assert len(w.tabs.findChildren(QLabel)) == 7
+
+    def test_removed_rows_are_deleted_not_left_behind(self, qapp, mocker):
+        from PyQt6.QtWidgets import QLabel
+        w = _widget(mocker)
+        w.update_status(_tasks(1, 2, 3))
+        w.update_status(_tasks(1))
+        _flush_deletes()
+        assert len(w.tabs.findChildren(QLabel)) == 1
+
+    def test_the_text_of_an_edited_task_is_updated_in_place(self, qapp, mocker):
+        from PyQt6.QtWidgets import QLabel
+        w = _widget(mocker)
+        w.update_status(_tasks(1))
+        row = _rows(w)[0]
+        data = _tasks(1)
+        data["todos"][0]["task"] = "Renamed"
+        w.update_status(data)
+        assert _rows(w) == [row] and row.findChild(QLabel).text() == "Renamed"
+
+    def test_order_follows_the_payload_when_a_task_is_completed(self, qapp, mocker):
+        w = _widget(mocker)
+        w.update_status(_tasks(1, 2, 3))
+        r1, r2, r3 = _rows(w)
+        w.update_status(_tasks(2, 3, 1, done=(1,)))        # the backend sorts completed tasks last
+        assert _rows(w) == [r2, r3, r1]
+
+    def test_completing_a_task_ticks_and_strikes_it_without_sending_a_toggle_back(self, qapp, mocker):
+        from PyQt6.QtWidgets import QCheckBox, QLabel
+        w = _widget(mocker)
+        w.update_status(_tasks(1, 2))
+        w.router.dispatch.reset_mock()
+        w.update_status(_tasks(1, 2, done=(1,)))
+        row = _rows(w)[0]
+        assert row.findChild(QCheckBox).isChecked()
+        assert "line-through" in row.findChild(QLabel).styleSheet()
+        w.router.dispatch.assert_not_called()
+
+    def test_unticking_removes_the_strike_again(self, qapp, mocker):
+        from PyQt6.QtWidgets import QCheckBox, QLabel
+        w = _widget(mocker)
+        w.update_status(_tasks(1, done=(1,)))
+        w.update_status(_tasks(1))
+        row = _rows(w)[0]
+        assert not row.findChild(QCheckBox).isChecked()
+        assert "line-through" not in row.findChild(QLabel).styleSheet()
+
+    def test_right_click_delete_follows_the_rows_current_state(self, qapp, mocker):
+        """The row is reused, so the handler must not remember the state it was created with."""
+        from PyQt6.QtWidgets import QLabel
+        w = _widget(mocker)
+        w.update_status(_tasks(1))
+        row = _rows(w)[0]
+        row.findChild(QLabel).customContextMenuRequested.emit(row.rect().center())
+        w.router.dispatch.assert_not_called()                      # still open: nothing to delete
+        w.update_status(_tasks(1, done=(1,)))
+        row.findChild(QLabel).customContextMenuRequested.emit(row.rect().center())
+        w.router.dispatch.assert_called_with("todo.delete", id="t1")
+
+    def test_a_list_that_disappears_loses_its_tab(self, qapp, mocker):
+        w = _widget(mocker)
+        w.update_status({"todos": [
+            {"id": "a1", "task": "A", "list_name": "List A", "completed": False},
+            {"id": "b1", "task": "B", "list_name": "List B", "completed": False}]})
+        w.update_status({"todos": [{"id": "b1", "task": "B", "list_name": "List B", "completed": False}]})
+        assert [w.tabs.tabText(i) for i in range(w.tabs.count())] == ["List B"]
+
+    def test_the_stretch_stays_last_so_rows_never_spread_out(self, qapp, mocker):
+        w = _widget(mocker)
+        w.update_status(_tasks(1, 2))
+        w.update_status(_tasks(1, 2, 3))
+        layout = w.tabs.widget(0).scroll_layout
+        assert layout.itemAt(layout.count() - 1).widget() is None          # the spacer
+        assert layout.count() == 4
