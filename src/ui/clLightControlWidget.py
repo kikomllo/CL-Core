@@ -6,6 +6,7 @@ from PyQt6.QtCore import QTimer, QSize, Qt
 from PyQt6.QtGui import QColor
 from utils.clActionRouter import ActionRouter
 from clUIScaler import UIScaler
+from ui.clColourPicker import ColourButton, ColourPicker, colour_of_command, display_colour
 
 def s(val):
     return UIScaler.get().scale(val)
@@ -72,6 +73,8 @@ class LightControlWidget(QWidget):
         self.layout.addWidget(btn)
         
         self.light_rows = {}
+        self._picker = None                  # the open colour popup and which light it is for
+        self._picker_target = None
 
     def update_scaling(self):
         self.layout.setContentsMargins(s(15), s(8), s(15), 0)
@@ -87,6 +90,8 @@ class LightControlWidget(QWidget):
                 row_data["indicator_holder"].setFixedWidth(self.INDICATOR_WIDTH)
             if "toggle_btn" in row_data:
                 row_data["toggle_btn"].setFixedSize(26, 26)
+            if "colour_btn" in row_data:
+                row_data["colour_btn"].setFixedSize(26, 26)
             if "delete_btn" in row_data:
                 row_data["delete_btn"].setFixedSize(26, 26)
         if hasattr(self, 'lights_container'):
@@ -97,6 +102,10 @@ class LightControlWidget(QWidget):
         # computing its own grow-only resize off self.sizeHint() --
         # snapping this widget to its own sizeHint here would undo that
         # and fight the wrapper's actual (larger, grow-only) size.
+
+    def hideEvent(self, event):
+        self._close_colour_picker()                  # a popup must not outlive the widget it hangs from
+        super().hideEvent(event)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -113,12 +122,78 @@ class LightControlWidget(QWidget):
         except Exception as e:
             logging.error(f"Failed to publish light control: {e}")
 
+    # --- colour button ---
+    def _refresh_colour_button(self, row_data):
+        """Shows the light's own colour on its button, hides the button for a light without colour, and disables it
+        while the light is unreachable."""
+        btn = row_data["colour_btn"]
+        has_colour = row_data.get("colour", True)
+        btn.setVisible(has_colour)
+        btn.setEnabled(not row_data.get("is_offline"))
+        btn.set_light(display_colour(row_data.get("rgb"), row_data.get("kelvin")), row_data.get("is_on", False))
+
+    def _open_colour_picker(self, target_name):
+        row_data = self.light_rows.get(target_name)
+        if row_data is None:
+            return
+        reopen = self._picker_target != target_name          # a second click on the same button just closes it
+        self._close_colour_picker()
+        if not reopen:
+            return
+        picker = ColourPicker(row_data["name"], row_data.get("brand", ""), {
+            "brightness": row_data.get("brightness"), "kelvin": row_data.get("kelvin"),
+            "brand_label": {"wiz": "WiZ", "tapo": "Tapo"}.get(row_data.get("brand", ""), "")}, parent=self)
+        picker.chosen.connect(lambda fields, t=target_name: self._send_colour(t, fields))
+        picker.destroyed.connect(lambda _=None, t=target_name: self._picker_closed(t))
+        self._picker, self._picker_target = picker, target_name
+        row_data["colour_btn"].set_open(True)
+        picker.show_near(row_data["colour_btn"])
+
+    def _picker_closed(self, target_name):
+        if self._picker_target == target_name:
+            self._picker = self._picker_target = None
+        row_data = self.light_rows.get(target_name)
+        if row_data is not None:
+            try:
+                row_data["colour_btn"].set_open(False)
+            except RuntimeError:                              # the row was deleted along with the popup
+                pass
+
+    def _close_colour_picker(self):
+        picker, self._picker, self._picker_target = self._picker, None, None
+        if picker is not None:
+            try:
+                picker.close()
+            except RuntimeError:
+                pass
+
+    def _send_colour(self, target_name, fields):
+        """A choice in the popup: an on command (a colour also turns the light on) with colour / temperature /
+        brightness, the same light.set that voice sends. The button follows at once; the next status confirms."""
+        try:
+            self.router.dispatch("light.set", action="on", light_target=target_name, silent=True, **fields)
+        except Exception as e:
+            logging.error(f"Failed to publish light colour: {e}")
+            return
+        row_data = self.light_rows.get(target_name)
+        if row_data is None:
+            return
+        row_data["is_on"] = True
+        rgb = colour_of_command(fields, row_data.get("brand", ""))
+        if rgb:                                               # a white shows as its tint; the status brings the real values
+            row_data["rgb"], row_data["kelvin"] = list(rgb), None
+        if "lum" in fields:
+            row_data["brightness"] = fields["lum"]
+        self._refresh_colour_button(row_data)
+
     def _delete_light(self, target_name):
         import paho.mqtt.publish as publish
         try:
             self.router.dispatch("system.discovery", action="intent_remove_light", target_str=target_name)
         except Exception as e:
             logging.error(f"Failed to publish delete: {e}")
+        if self._picker_target == target_name:
+            self._close_colour_picker()
         if target_name in self.light_rows:
             row_data = self.light_rows.pop(target_name)
             row_data["widget"].deleteLater()
@@ -214,6 +289,8 @@ class LightControlWidget(QWidget):
         new_targets = {l.get("name", "").lower().replace(" ", "_") for l in lights}
         for old_target in list(self.light_rows.keys()):
             if old_target not in new_targets:
+                if self._picker_target == old_target:
+                    self._close_colour_picker()
                 self.light_rows[old_target]["widget"].deleteLater()
                 del self.light_rows[old_target]
             
@@ -222,11 +299,15 @@ class LightControlWidget(QWidget):
             is_on = l.get("is_on", False)
             is_offline = l.get("offline", False)
             
+            colour_fields = {"brand": l.get("brand", ""), "colour": l.get("colour", True), "rgb": l.get("rgb"),
+                             "kelvin": l.get("kelvin"), "brightness": l.get("brightness")}
             if target_name in self.light_rows:
                 row_data = self.light_rows[target_name]
                 row_data["is_on"] = is_on
                 row_data["is_offline"] = is_offline
+                row_data.update(colour_fields)
                 self._update_indicator(row_data["indicator"], is_on, is_offline)
+                self._refresh_colour_button(row_data)
             else:
                 row = QWidget()
                 row_layout = QHBoxLayout(row)
@@ -257,9 +338,13 @@ class LightControlWidget(QWidget):
                 delete_btn.setStyleSheet(Theme.get_style("SmallDangerButton"))
                 delete_btn.clicked.connect(lambda checked, t=target_name: self._delete_light(t))
                 
+                colour_btn = ColourButton()
+                colour_btn.clicked.connect(lambda checked=False, t=target_name: self._open_colour_picker(t))
+
                 row_layout.addWidget(indicator_holder)
                 row_layout.addWidget(name_lbl)
                 row_layout.addStretch()
+                row_layout.addWidget(colour_btn)
                 row_layout.addWidget(toggle_btn)
                 row_layout.addWidget(delete_btn)
 
@@ -271,9 +356,13 @@ class LightControlWidget(QWidget):
                     "indicator_holder": indicator_holder,
                     "toggle_btn": toggle_btn,
                     "delete_btn": delete_btn,
+                    "colour_btn": colour_btn,
+                    "name": l.get("name", "Unknown"),
                     "is_on": is_on,
-                    "is_offline": is_offline
+                    "is_offline": is_offline,
+                    **colour_fields,
                 }
+                self._refresh_colour_button(self.light_rows[target_name])
             
         self.lights_container.adjustSize()
         # Deferred resize ensures the parent wrapper picks up the new layout geometry

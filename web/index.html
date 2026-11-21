@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JARVIS</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<canvas id="orb"></canvas>
+<div id="clock" aria-hidden="true">
+  <div class="time"><span id="clk-h">00</span><span class="colon">:</span><span id="clk-m">00</span><span class="secs" id="clk-s">00</span></div>
+  <div class="rule"></div>
+  <div class="date" id="clk-date"></div>
+</div>
+<div id="lyrics" hidden></div>
+<div id="widgets"></div>
+<div id="dock">
+  <div class="left-zone"><div class="pill-row" id="pills"></div></div>
+  <label class="text-bar"><input id="cmd" type="text" autocomplete="off" spellcheck="false" placeholder="Say “hey jarvis”, or type a command" aria-label="Command"></label>
+  <div class="right-zone" id="audio-pills"></div>
+</div>
+<div id="conn" class="off">connecting…</div>
+<script type="module" src="/js/main.js"></script>
+</body>
+</html>

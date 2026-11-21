@@ -13,9 +13,12 @@ The one place to see what is still to implement. Updated 2026-11-21. Each item s
 - [ ] **Tuya setup for the heater plug**: Tuya IoT developer account, link Smart Life (move the plug from the LSC app), run `python -m tinytuya wizard`, keep id/key/ip/version. Needed before the plug can be built. (S-M) (`smart_devices_plan.md`)
 - [ ] **Google Cloud project** (Desktop-app OAuth client, Calendar API, publish as "In production" so tokens do not expire after 7 days). Needed before the calendar. (S-M) (`google_calendar_plan.md`)
 
+## Web front end (`docs/web_ui_plan.md`)
+
+- [ ] **Port the dashboard from PyQt6 to HTML/CSS/JS** served by `src/clWebUI.py` (MQTT over a WebSocket bridge, no broker config). Done so far: bridge, orb, clock, media widget, window manager, dock. Left: Ultron head + skin, lyrics, text bar, To-Do, Notes, Reminders, Lights, Calendar drawer, Live Logs, Settings, Updates, Claude terminal (xterm.js), presence; then the desktop shell (overlay, click-through, per-monitor), supervisor wiring, tests, and retiring `clUI.py`. (L)
+
 ## Smart devices (`docs/smart_devices_plan.md`, in this order)
 
-- [ ] **Colour button** on each light row: swatches + warm/cool, backend `rgb` in `light.set`, per-device `colour` capability. (M)
 - [ ] **LSC Smart Connect plug (Tuya, local)**: `kind: plug`, `clTuya.py`, `tuya` branch in `clControl`, plug row, "all lights" excludes plugs, setup doc. (M)
 - [ ] **Timed on/off (schedules)** in `clAutomation`: weekday + time rules, grace window for missed triggers, **heater max-on fail-safe** persisted across restarts, editor on the light row. (M)
 - [ ] Later: watts in the plug's row if it is an energy-meter model; skip a schedule after a manual change; voice "turn the heater on at seven". (M)
@@ -68,6 +71,7 @@ The one place to see what is still to implement. Updated 2026-11-21. Each item s
 
 ## Done recently
 
+- [x] Colour button on the Smart Lights rows (popup with 8 colours, 3 whites, brightness and white-temperature sliders; `rgb`/`temp` in `light.set`; colour fields in `light_status`; per-light `colour` override). Not committed yet. Follow-ups: the hue strip for any colour (second version); the same button in the web front end.
 - [x] Start on login setting (Windows Startup shortcut, Linux XDG autostart): `c3af532`
 - [x] Spotify queue-jump backend and the stale-title fix: `35ec7a8`
 - [x] Clickable Up Next rows and drawer state kept across a restart: `b555951`

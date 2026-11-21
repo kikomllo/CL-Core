@@ -38,6 +38,67 @@ class LightCommandError(Exception):
     """One or more lights couldn't be reached or refused a command; the message is spoken/shown as is."""
 
 
+# Tapo bulbs without colour (the model is one global TAPO_MODEL, so a mixed set needs the per-light "colour" override).
+TAPO_WHITE_ONLY_MODELS = {"l510", "l520", "l610"}
+
+
+def _parse_rgb(rgb) -> Optional[Tuple[int, int, int]]:
+    """An explicit colour from the dashboard picker: [r, g, b], each 0-255. None passes through; anything else is refused
+    before any light is touched."""
+    if rgb is None:
+        return None
+    try:
+        r, g, b = rgb
+    except (TypeError, ValueError):
+        raise ValueError("rgb must be three numbers: [r, g, b].")
+    channels = []
+    for v in (r, g, b):
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 <= v <= 255:
+            raise ValueError("rgb values must be between 0 and 255.")
+        channels.append(int(round(v)))
+    return tuple(channels)
+
+
+def _wiz_status_fields(bulb) -> Dict[str, Any]:
+    """Brightness (%), the colour (rgb) or the white temperature (kelvin) the bulb reports, so the dashboard button
+    shows what the light really is, also after a voice command."""
+    out: Dict[str, Any] = {"brightness": None, "rgb": None, "kelvin": None}
+    state = bulb.state[0] if bulb.state else None
+    if state is None:
+        return out
+    level = state.get_brightness()
+    if level is not None:
+        out["brightness"] = hex_to_percent(level)
+    r, g, b = state.get_rgb()
+    if r is not None:
+        out["rgb"] = [r, g, b]
+    else:
+        out["kelvin"] = state.get_colortemp()
+    return out
+
+
+def _tapo_status_fields(info) -> Dict[str, Any]:
+    """Same as _wiz_status_fields for a Tapo bulb: it reports a colour temperature of 0 while in colour mode."""
+    out: Dict[str, Any] = {"brightness": getattr(info, "brightness", None), "rgb": None, "kelvin": None}
+    kelvin = getattr(info, "color_temp", 0) or 0
+    if kelvin:
+        out["kelvin"] = int(kelvin)
+        return out
+    hue, sat = getattr(info, "hue", None), getattr(info, "saturation", None)
+    if hue is not None and sat is not None:
+        out["rgb"] = [int(round(c * 255)) for c in colorsys.hsv_to_rgb(hue / 360.0, sat / 100.0, 1.0)]
+    return out
+
+
+def _colour_capability(entry: Dict[str, Any], detected: Optional[bool]) -> bool:
+    """Whether the dashboard shows a colour button: the light's own "colour": true/false in devices.json wins,
+    then what the bulb says it can do (WiZ) or its model (Tapo), and a light we know nothing about gets the button."""
+    override = entry.get("colour")
+    if isinstance(override, bool):
+        return override
+    return True if detected is None else detected
+
+
 def _describe_failures(failures) -> str:
     names = " and ".join(name.replace("_", " ") for name, _ in failures)
     reasons = " ".join(str(e) for _, e in failures).lower()
@@ -300,14 +361,17 @@ class LightManager:
             raise LightCommandError(_describe_failures(failures))
 
     async def control_bulb(self, toggle: bool = False, on: bool = False, off: bool = False,
-                           color: str = None, lum: int = None, temp: int = None, retry_attempt: bool = False, target_name: str = "all") -> None:
+                           color: str = None, lum: int = None, temp: int = None, retry_attempt: bool = False, target_name: str = "all",
+                           rgb=None) -> None:
+        rgb = _parse_rgb(rgb)
         targets = self._resolve_targets(target_name)
+        extra = {"rgb": rgb} if rgb else {}          # only passed when given: the other call shapes stay as they were
 
         async def execute_single(name, ip, mac, l_type):
             if l_type == "wiz":
-                await self._execute_wiz_target(ip, toggle, on, off, color, lum, temp)
+                await self._execute_wiz_target(ip, toggle, on, off, color, lum, temp, **extra)
             else:
-                await self._execute_tapo_target(ip, toggle, on, off, color, lum, temp)
+                await self._execute_tapo_target(ip, toggle, on, off, color, lum, temp, **extra)
 
         await self._run_on_targets(targets, execute_single)
 
@@ -340,7 +404,7 @@ class LightManager:
 
         await self._run_on_targets(targets, adjust_single)
         
-    async def _execute_wiz_target(self, ip, toggle, on, off, color, lum, temp):
+    async def _execute_wiz_target(self, ip, toggle, on, off, color, lum, temp, rgb=None):
         bulb = wizlight(ip)
         if toggle:
             await asyncio.wait_for(bulb.updateState(), timeout=3.0)
@@ -351,9 +415,12 @@ class LightManager:
             await bulb.turn_off()
             return
 
-        if on or lum is not None or temp is not None or color:
+        if on or lum is not None or temp is not None or color or rgb:
             # PilotBuilder.brightness expects a 0-255 value, not the 0-100 percent lum already is.
             brightness = percent_to_hex(lum) if lum is not None else 255
+            if rgb:                                   # an explicit colour beats a colour name
+                await bulb.turn_on(PilotBuilder(brightness=brightness, rgb=rgb))
+                return
             if color:
                 c_data = self.color_matrix.get(color.lower().strip())
                 if c_data:
@@ -369,7 +436,7 @@ class LightManager:
                 return
             await bulb.turn_on(PilotBuilder(brightness=brightness))
 
-    async def _execute_tapo_target(self, ip, toggle, on, off, color, lum, temp):
+    async def _execute_tapo_target(self, ip, toggle, on, off, color, lum, temp, rgb=None):
         model = os.getenv("TAPO_MODEL", "l530").lower()
         get_device = getattr(self.tapo_client, model, self.tapo_client.l530)
         device = await get_device(ip)
@@ -386,11 +453,13 @@ class LightManager:
 
         tasks = []
         if lum is not None: tasks.append(device.set_brightness(lum))
-        if color:
+        if rgb:                                       # an explicit colour beats a colour name
+            h, s, v = colorsys.rgb_to_hsv(rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0)
+            tasks.append(device.set_hue_saturation(int(h * 360), int(s * 100)))
+        elif color:
             c_data = self.color_matrix.get(color.lower().strip())
             if c_data:
                 if c_data["type"] == "rgb":
-                    import colorsys
                     r, g, b = c_data["r"], c_data["g"], c_data["b"]
                     h, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
                     tapo_h = int(h * 360)
@@ -601,20 +670,27 @@ async def poll_light_status(manager: LightManager) -> None:
                                 bulb = wizlight(ip)
                                 await asyncio.wait_for(bulb.updateState(), timeout=3.0)
                                 is_on = bulb.status
+                                bulb_type = getattr(bulb, "bulbtype", None)
+                                detected = bool(bulb_type.features.color) if bulb_type else None
+                                fields = _wiz_status_fields(bulb)
                             else:
                                 model = manager.env.get("TAPO_MODEL", "l530").lower()
                                 get_device = getattr(manager.tapo_client, model, manager.tapo_client.l530)
                                 device = await get_device(ip)
                                 info = await asyncio.wait_for(device.get_device_info(), timeout=3.0)
                                 is_on = info.device_on
+                                detected = model not in TAPO_WHITE_ONLY_MODELS
+                                fields = _tapo_status_fields(info)
                             failure_tracker[name] = 0
-                            return {"name": name.replace("_", " ").title(), "is_on": is_on, "offline": False}
+                            return {"name": name.replace("_", " ").title(), "is_on": is_on, "offline": False,
+                                    "brand": l_type, "colour": _colour_capability(info_dict, detected), **fields}
                         except Exception as e:
                             fails = failure_tracker.get(name, 0) + 1
                             failure_tracker[name] = fails
                             logging.debug(f"Light polling error for {name} (fail {fails}): {repr(e)}")
                             is_offline = fails >= 3
-                            return {"name": name.replace("_", " ").title(), "is_on": False, "offline": is_offline}
+                            return {"name": name.replace("_", " ").title(), "is_on": False, "offline": is_offline,
+                                    "brand": l_type, "colour": _colour_capability(info_dict, None)}
 
                     # Do an initial poll
                     tasks = [poll_single(n, i) for n, i in manager.lights.items()]
@@ -770,7 +846,7 @@ async def mqtt_service_listener(manager: LightManager) -> None:
                                     await manager.control_bulb(
                                         on=(action_cmd == "on"), off=(action_cmd == "off"), toggle=(action_cmd == "toggle"),
                                         color=payload_data.get("color"), lum=payload_data.get("lum"), temp=payload_data.get("temp"),
-                                        target_name=light_target
+                                        target_name=light_target, rgb=payload_data.get("rgb")
                                     )
                                 await mqtt_client.publish("jarvis/feedback", json.dumps({
                                     "device": "smart_lights", "status": "success",

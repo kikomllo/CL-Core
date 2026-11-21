@@ -159,7 +159,9 @@
         "silent": {"type": "boolean", "default": false},
         "target_str": {"type": "string"},
         "color": {"type": "string"},
-        "lum": {"type": "integer"}
+        "lum": {"type": "integer"},
+        "temp": {"type": "integer"},
+        "rgb": {"type": "array"}
       }
     }
   },

@@ -1,6 +1,8 @@
 # Smart devices: colour button, timed on/off, LSC Smart Connect plug — plan
 
-Status: **plan only, nothing implemented.** Written 2026-11-21. Tracked in `docs/todo.md`.
+Status: **1. Colour button is built (2026-11-21); 2 and 3 are plans only.** Tracked in `docs/todo.md`.
+
+**As built (colour button):** a popup window (`src/ui/clColourPicker.py`, opened from a round `ColourButton` on each row), not an inline drawer, because it can overhang the small widget; 8 colours (red, orange, yellow, green, cyan, blue, purple, hot pink) and 3 whites (warm white, daylight, coolwhite), all names from `config/entities.json` (a test keeps them in step); brightness and white-temperature sliders send once they settle (200 ms). `light.set` gained `rgb` (array) and `temp` (integer) in `actions.json`, and `ActionRouter` only passes schema fields, so `temp` had been silently dropped before. `light_status` now carries `brand`, `colour`, `brightness`, `rgb`, `kelvin` per light. A light's `colour: false` in `devices.json` hides its button; otherwise WiZ is detected from the bulb (`bulbtype.features.color`), Tapo from `TAPO_MODEL` (l510/l520/l610 are white-only) and an unknown light gets the button. Not built: the hue strip for any colour (second version).
 
 Three requests, one rule: **everything is controlled the way every IoT device is today**: the dashboard, voice and automation all send an MQTT action through `ActionRouter` (`light.set` -> `home/room/all/set`), `clControl.py` is the only process that talks to hardware, devices live in `config/devices.json` under their Wi-Fi network, and it is local-first (home network only; away from home they show offline, exactly like the bulbs). No phone app, no vendor cloud at runtime.
 

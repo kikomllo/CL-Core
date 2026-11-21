@@ -6,6 +6,7 @@ from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 from clControl import LightManager, LightCommandError, poll_light_status
+from pywizlight import PilotBuilder
 from pywizlight.utils import percent_to_hex
 
 @pytest.fixture
@@ -293,3 +294,162 @@ class TestFailureReporting:
         mock_wiz.return_value.updateState = mocker.AsyncMock(side_effect=TimeoutError("offline"))
         with pytest.raises(LightCommandError):
             await manager.adjust_brightness("up", target_name="bedroom")
+
+
+class TestExplicitRgb:
+    """The dashboard colour picker sends an explicit rgb next to (or instead of) a colour name."""
+
+    @pytest.mark.parametrize("value, expected", [
+        (None, None), ([255, 0, 0], (255, 0, 0)), ((10, 20, 30), (10, 20, 30)), ([0.4, 254.6, 128], (0, 255, 128)),
+    ])
+    def test_valid_values_are_normalised(self, value, expected):
+        from clControl import _parse_rgb
+        assert _parse_rgb(value) == expected
+
+    @pytest.mark.parametrize("value", [[255, 0], [1, 2, 3, 4], "red", 5, [256, 0, 0], [-1, 0, 0], ["a", 0, 0], [True, 0, 0], [None, 0, 0]])
+    def test_bad_values_are_refused(self, value):
+        from clControl import _parse_rgb
+        with pytest.raises(ValueError):
+            _parse_rgb(value)
+
+    @pytest.mark.asyncio
+    async def test_a_bad_rgb_is_refused_before_any_light_is_touched(self, manager, mocker):
+        manager.lights = {"bedroom": {"ip": "192.168.1.10", "mac": "AA", "type": "wiz"}}
+        execute = mocker.patch.object(manager, "_execute_wiz_target", new=mocker.AsyncMock())
+        with pytest.raises(ValueError):
+            await manager.control_bulb(on=True, rgb=[999, 0, 0], target_name="bedroom")
+        execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rgb_reaches_a_wiz_light_as_a_keyword_and_old_calls_keep_their_shape(self, manager, mocker):
+        manager.lights = {"bedroom": {"ip": "192.168.1.10", "mac": "AA", "type": "wiz"}}
+        execute = mocker.patch.object(manager, "_execute_wiz_target", new=mocker.AsyncMock())
+        await manager.control_bulb(on=True, rgb=[10, 20, 30], lum=40, target_name="bedroom")
+        execute.assert_called_once_with("192.168.1.10", False, True, False, None, 40, None, rgb=(10, 20, 30))
+        execute.reset_mock()
+        await manager.control_bulb(on=True, lum=40, target_name="bedroom")
+        execute.assert_called_once_with("192.168.1.10", False, True, False, None, 40, None)
+
+    @pytest.mark.asyncio
+    async def test_wiz_turns_on_in_the_given_colour_at_the_given_brightness(self, manager, mocker):
+        mock_wiz = mocker.patch("clControl.wizlight")
+        mock_wiz.return_value.turn_on = mocker.AsyncMock()
+        await manager._execute_wiz_target("192.168.1.10", False, True, False, None, 60, None, rgb=(150, 60, 220))
+        params = mock_wiz.return_value.turn_on.call_args[0][0].pilot_params
+        # pywizlight rescales an rgb inside PilotBuilder, so compare with what the library makes of the same input
+        assert params == PilotBuilder(brightness=percent_to_hex(60), rgb=(150, 60, 220)).pilot_params
+        assert params["dimming"] == 60
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_rgb_beats_a_colour_name(self, manager, mocker):
+        mock_wiz = mocker.patch("clControl.wizlight")
+        mock_wiz.return_value.turn_on = mocker.AsyncMock()
+        await manager._execute_wiz_target("192.168.1.10", False, True, False, "red", None, None, rgb=(0, 0, 255))
+        params = mock_wiz.return_value.turn_on.call_args[0][0].pilot_params
+        assert params == PilotBuilder(brightness=255, rgb=(0, 0, 255)).pilot_params
+
+    @pytest.mark.asyncio
+    async def test_a_named_colour_still_works_without_rgb(self, manager, mocker):
+        mock_wiz = mocker.patch("clControl.wizlight")
+        mock_wiz.return_value.turn_on = mocker.AsyncMock()
+        manager.color_matrix = {"red": {"type": "rgb", "r": 255, "g": 0, "b": 0}}
+        await manager._execute_wiz_target("192.168.1.10", False, True, False, "red", None, None)
+        params = mock_wiz.return_value.turn_on.call_args[0][0].pilot_params
+        assert params == PilotBuilder(brightness=255, rgb=(255, 0, 0)).pilot_params
+
+    def _tapo(self, manager, mocker):
+        device = MagicMock()
+        for name in ("on", "off", "set_brightness", "set_hue_saturation", "set_color_temperature"):
+            setattr(device, name, mocker.AsyncMock())
+        manager.tapo_client = MagicMock()
+        manager.tapo_client.l530 = mocker.AsyncMock(return_value=device)
+        return device
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("rgb, hue, sat", [((255, 0, 0), 0, 100), ((0, 0, 255), 240, 100), ((255, 255, 255), 0, 0)])
+    async def test_tapo_gets_hue_and_saturation_for_the_colour(self, manager, mocker, rgb, hue, sat):
+        device = self._tapo(manager, mocker)
+        await manager._execute_tapo_target("192.168.1.10", False, True, False, None, 50, None, rgb=rgb)
+        device.on.assert_called_once()
+        device.set_hue_saturation.assert_called_once_with(hue, sat)
+        device.set_brightness.assert_called_once_with(50)
+
+    @pytest.mark.asyncio
+    async def test_tapo_rgb_beats_a_colour_name(self, manager, mocker):
+        device = self._tapo(manager, mocker)
+        manager.color_matrix = {"red": {"type": "rgb", "r": 255, "g": 0, "b": 0}}
+        await manager._execute_tapo_target("192.168.1.10", False, True, False, "red", None, None, rgb=(0, 0, 255))
+        device.set_hue_saturation.assert_called_once_with(240, 100)
+
+
+class TestLightStatusColourFields:
+    """The status the dashboard shows the colour button from: brightness, the colour or the white temperature, and
+    whether the light has colour at all."""
+
+    def _wiz(self, mocker, rgb=(None, None, None), temp=None, brightness=None, color_feature=True):
+        state = MagicMock()
+        state.get_rgb.return_value = rgb
+        state.get_colortemp.return_value = temp
+        state.get_brightness.return_value = brightness
+        bulb = MagicMock()
+        bulb.state = [state]
+        bulb.status = True
+        bulb.updateState = mocker.AsyncMock()
+        bulb.bulbtype.features.color = color_feature
+        return bulb
+
+    def test_a_wiz_bulb_in_colour_mode_reports_its_rgb(self, mocker):
+        from clControl import _wiz_status_fields
+        out = _wiz_status_fields(self._wiz(mocker, rgb=(150, 60, 220), brightness=percent_to_hex(60)))
+        assert out == {"brightness": 60, "rgb": [150, 60, 220], "kelvin": None}
+
+    def test_a_wiz_bulb_in_white_mode_reports_kelvin(self, mocker):
+        from clControl import _wiz_status_fields
+        out = _wiz_status_fields(self._wiz(mocker, temp=2700, brightness=percent_to_hex(100)))
+        assert out == {"brightness": 100, "rgb": None, "kelvin": 2700}
+
+    def test_a_wiz_bulb_with_no_state_reports_nothing(self, mocker):
+        from clControl import _wiz_status_fields
+        bulb = self._wiz(mocker)
+        bulb.state = None
+        assert _wiz_status_fields(bulb) == {"brightness": None, "rgb": None, "kelvin": None}
+
+    def test_a_tapo_bulb_in_colour_mode_reports_rgb_from_hue_and_saturation(self):
+        from clControl import _tapo_status_fields
+        info = MagicMock(brightness=70, color_temp=0, hue=240, saturation=100)
+        assert _tapo_status_fields(info) == {"brightness": 70, "rgb": [0, 0, 255], "kelvin": None}
+
+    def test_a_tapo_bulb_in_white_mode_reports_kelvin(self):
+        from clControl import _tapo_status_fields
+        info = MagicMock(brightness=100, color_temp=4000, hue=0, saturation=0)
+        assert _tapo_status_fields(info) == {"brightness": 100, "rgb": None, "kelvin": 4000}
+
+    @pytest.mark.parametrize("entry, detected, expected", [
+        ({}, None, True), ({}, True, True), ({}, False, False),
+        ({"colour": False}, True, False), ({"colour": True}, False, True), ({"colour": "no"}, False, False),
+    ])
+    def test_colour_capability(self, entry, detected, expected):
+        from clControl import _colour_capability
+        assert _colour_capability(entry, detected) is expected
+
+    @pytest.mark.asyncio
+    async def test_the_polled_status_carries_brand_capability_and_colour(self, manager, mocker, mock_mqtt):
+        import asyncio
+        manager.lights = {"bedroom": {"ip": "192.168.1.10", "mac": "AA", "type": "wiz"},
+                          "kitchen": {"ip": "192.168.1.11", "mac": "BB", "type": "wiz", "colour": False}}
+        manager.current_ssid = "TestNet"
+        mock_wiz = mocker.patch("clControl.wizlight")
+        mock_wiz.return_value = self._wiz(mocker, rgb=(150, 60, 220), brightness=percent_to_hex(60))
+        task = asyncio.create_task(poll_light_status(manager))
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if mock_mqtt.publish.await_count:
+                break
+        task.cancel()
+        await task                                   # the loop swallows the cancellation and returns
+        topic, body = mock_mqtt.publish.await_args_list[0].args
+        assert topic == "jarvis/sys/light_status"
+        lights = {l["name"]: l for l in json.loads(body)["lights"]}
+        assert lights["Bedroom"]["brand"] == "wiz" and lights["Bedroom"]["colour"] is True
+        assert lights["Bedroom"]["rgb"] == [150, 60, 220] and lights["Bedroom"]["brightness"] == 60
+        assert lights["Kitchen"]["colour"] is False                      # devices.json override
