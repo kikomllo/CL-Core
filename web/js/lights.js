@@ -2,6 +2,7 @@
 // Data: jarvis/sys/light_status {network, lights:[{name,is_on,offline,brand,colour,rgb,kelvin,brightness}]}.
 import { bridge } from "./bridge.js";
 import { h, icon } from "./ui.js";
+import { pickerSpot } from "./picker-spot.js";
 
 const PALETTE = [["red", [255, 0, 0]], ["orange", [255, 165, 0]], ["yellow", [255, 255, 0]], ["green", [0, 255, 0]],
   ["cyan", [0, 255, 255]], ["blue", [0, 0, 255]], ["purple", [128, 0, 128]], ["hot pink", [255, 105, 180]]];
@@ -24,7 +25,7 @@ const css = (c) => `rgb(${c[0]},${c[1]},${c[2]})`;
 const target = (name) => name.toLowerCase().replace(/ /g, "_");
 
 export const lightsWindow = {
-  id: "widget_light_control", title: "Smart Lights", w: 380, h: 420, minW: 320, minH: 260,
+  id: "widget_light_control", title: "Smart Lights", w: 380, h: 420,
   build(body) {
     const count = h("span", { class: "mod-count" }, "");
     const net = h("div", { class: "dim" }, "");
@@ -39,15 +40,19 @@ export const lightsWindow = {
 
     function row(l) {
       const t = target(l.name), off = !!l.offline, c = css(shown(l));
-      const disc = h("span", { class: "disc" + (l.is_on && !off ? " on" : ""), style: l.is_on && !off ? `background:${c};box-shadow:0 0 calc(12 * var(--u)) ${c}66` : "" }, icon("lights.svg", { size: 18 }));
+      // The bulb disc shows the light's state and colour, and clicking it opens the colour popover (a light without colour is just the indicator).
+      const discStyle = l.is_on && !off ? `background:${c};box-shadow:0 0 calc(12 * var(--u)) ${c}66` : "";
+      const discClass = "disc" + (l.is_on && !off ? " on" : "");
+      const disc = l.colour === false
+        ? h("span", { class: discClass, style: discStyle }, icon("lights.svg", { size: 18 }))
+        : h("button", { class: discClass + " pick", "aria-label": `Colour of ${l.name}`, "aria-haspopup": "dialog", disabled: off, style: discStyle,
+            onclick: (e) => openPicker(l, e.currentTarget) }, icon("lights.svg", { size: 18 }));
       const sw = h("button", { class: "switch" + (l.is_on ? " on" : ""), role: "switch", "aria-checked": String(!!l.is_on), "aria-label": l.name, disabled: off,
         onclick: () => { bridge.act("light.set", { action: "toggle", light_target: t, silent: true }); l.is_on = !l.is_on; render(); } }, h("i"));
-      const col = l.colour === false ? null : h("button", { class: "swatch-btn", title: "Colour", "aria-label": "Colour", disabled: off, style: `--c:${c}`,
-        onclick: (e) => openPicker(l, e.currentTarget) });
       const rm = h("button", { class: "bare", title: "Remove light", "aria-label": "Remove " + l.name,
         onclick: () => { bridge.act("system.discovery", { action: "intent_remove_light", target_str: t }); lights = lights.filter(x => x !== l); render(); } }, icon("close.svg", { size: 12 }));
       return h("div", { class: "mod-row" + (off ? " offline" : "") }, disc,
-        h("div", { class: "mod-main" }, h("div", { class: "mod-name" }, l.name), h("div", { class: "dim" }, off ? "Offline" : l.is_on ? "On" : "Off")), col, sw, rm);
+        h("div", { class: "mod-main" }, h("div", { class: "mod-name" }, l.name), h("div", { class: "dim" }, off ? "Offline" : l.is_on ? "On" : "Off")), sw, rm);
     }
 
     function render() {
@@ -77,12 +82,11 @@ export const lightsWindow = {
         slider("BRIGHTNESS", lum, 1, 100, (v) => v + " %", (v) => { lum = v; queue({ lum }); }),
         slider("TEMPERATURE", temp, 0, 100, (v) => tempToK(brand, v) + " K", (v) => { temp = v; queue({ temp, lum }); }));
       document.body.append(el);
-      const r = anchor.getBoundingClientRect(), pr = el.getBoundingClientRect();
-      el.style.left = Math.max(8, Math.min(r.right - pr.width, innerWidth - pr.width - 8)) + "px";
-      el.style.top = (r.bottom + pr.height + 12 > innerHeight ? Math.max(8, r.top - pr.height - 6) : r.bottom + 6) + "px";
+      const spot = pickerSpot(anchor.getBoundingClientRect(), el.getBoundingClientRect(), { width: innerWidth, height: innerHeight });
+      el.style.left = spot.left + "px"; el.style.top = spot.top + "px";
       picker = { el, t: l.name };
     }
-    const away = (e) => { if (picker && !picker.el.contains(e.target) && !e.target.closest(".swatch-btn")) closePicker(); };
+    const away = (e) => { if (picker && !picker.el.contains(e.target) && !e.target.closest(".disc.pick")) closePicker(); };
     document.addEventListener("pointerdown", away);
 
     const off = bridge.on("jarvis/sys/light_status", (d) => {

@@ -320,6 +320,27 @@ class TestBlipAndSpeechPlayTogether:
         assert 0 <= marks["speech"] - marks["blip_end"] < 0.1
 
     @pytest.mark.asyncio
+    async def test_music_is_ducked_only_once_audio_exists(self, manager, fake_mixer):
+        """tts_state:active (mic lock) goes out at once; tts_audio:ready (the duck trigger) only after the first audio."""
+        events = []
+        client = AsyncMock()
+        client.publish.side_effect = lambda topic, payload=None, **kw: events.append((topic, time.time()))
+        with patch.object(manager, '_play_blip', new=AsyncMock()), \
+                patch.object(manager, '_engine_order', return_value=[FakeEngine(chunks=8, delay=0.1)]):
+            await manager.generate_and_play(client, "A slow voice.", abort_count=0)
+
+        t_active = next(t for topic, t in events if topic == "jarvis/sys/tts_state")
+        t_ready = next(t for topic, t in events if topic == "jarvis/sys/tts_audio")
+        assert t_ready - t_active >= 0.3
+
+    @pytest.mark.asyncio
+    async def test_no_duck_signal_when_the_voice_makes_no_audio(self, manager, fake_mixer):
+        client = AsyncMock()
+        with patch.object(manager, '_engine_order', return_value=[FakeEngine("piper", fail_at=0)]):
+            await manager.generate_and_play(client, "Nobody can say this.", abort_count=0)
+        assert published(client, "jarvis/sys/tts_audio") == []
+
+    @pytest.mark.asyncio
     async def test_no_blip_when_the_voice_makes_no_audio(self, manager, fake_mixer):
         blip = AsyncMock()
         with patch.object(manager, '_play_blip', new=blip),                 patch.object(manager, '_engine_order', return_value=[FakeEngine("piper", fail_at=0)]):

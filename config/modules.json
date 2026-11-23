@@ -1,11 +1,13 @@
 {
   "native": {
-    "UI": true,
+    "UI": false,
     "Keybinds": true,
     "Utilities": true,
     "Updater": true,
     "Monitor": true,
-    "Automation": true
+    "Automation": true,
+    "Web UI": true,
+    "Desktop Shell": true
   },
   "docker": {
     "jarvis-whisper": true,

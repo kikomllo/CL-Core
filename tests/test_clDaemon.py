@@ -302,6 +302,23 @@ class TestDaemonMQTTIntegration:
         assert any(s["request_reply"] is True and "Shall I put some music on?" in s["text"] for s in speaks)
 
     @pytest.mark.asyncio
+    async def test_music_is_ducked_when_tts_audio_is_ready_not_when_tts_starts_working(self, daemon, mock_mqtt, message_stream):
+        daemon.is_spotify_playing = True
+        mock_mqtt.messages = message_stream([("jarvis/sys/tts_state", json.dumps({"state": "active"}))])
+        await daemon.run()
+        actions = lambda: [a for a in (json.loads(c[0][1]).get("action") for c in mock_mqtt.publish.call_args_list
+                                       if c[0][0] == "pc/spotify/control") if a in ("duck", "unduck")]
+        assert actions() == []
+
+        mock_mqtt.messages = message_stream([("jarvis/sys/tts_audio", json.dumps({"state": "ready"}))])
+        await daemon.run()
+        assert actions() == ["duck"]
+
+        mock_mqtt.messages = message_stream([("jarvis/sys/tts_state", json.dumps({"state": "idle"}))])
+        await daemon.run()
+        assert actions() == ["duck", "unduck"]
+
+    @pytest.mark.asyncio
     async def test_the_mic_reopens_for_the_answer_once_the_followup_has_been_spoken(self, daemon, mock_mqtt, message_stream):
         mock_mqtt.messages = message_stream([
             ("jarvis/sys/speak", json.dumps({"text": "Done sir. Anything else?", "request_reply": True})),
@@ -352,7 +369,7 @@ class TestDaemonMQTTIntegration:
         await daemon.run()
 
         publish_calls = mock_mqtt.publish.call_args_list
-        spotify_calls = [c for c in publish_calls if c[0][0] == "pc/spotify/control"]
+        spotify_calls = [c for c in publish_calls if c[0][0] == "pc/spotify/control" and '"status"' not in c[0][1]]   # not the startup status poll
         assert len(spotify_calls) == 1
         mock_roll.assert_not_called()
         mock_speak.assert_called_once()
@@ -421,7 +438,7 @@ class TestDaemonMQTTIntegration:
         assert daemon.active_context["type"] is None
         
         publish_calls = mock_mqtt.publish.call_args_list
-        spotify_calls = [c for c in publish_calls if c[0][0] == "pc/spotify/control"]
+        spotify_calls = [c for c in publish_calls if c[0][0] == "pc/spotify/control" and '"status"' not in c[0][1]]   # not the startup status poll
         assert len(spotify_calls) == 0, "Daemon executed expired state logic."
 
     @pytest.mark.asyncio

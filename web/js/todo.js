@@ -4,7 +4,7 @@ import { bridge } from "./bridge.js";
 import { h, icon } from "./ui.js";
 
 export const todoWindow = {
-  id: "widget_todo", title: "To-Do List", w: 380, h: 440, minW: 320, minH: 300,
+  id: "widget_todo", title: "To-Do List", w: 380, h: 440,
   build(body) {
     let todos = [], current = "My To-Do List", adding = false;
     const open = h("span", { class: "mod-count" }, "");

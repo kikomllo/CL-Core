@@ -1,6 +1,6 @@
 # CL-Core to-do list
 
-The one place to see what is still to implement. Updated 2026-11-21. Each item says where its detail lives. **Size**: S = under an hour, M = a day or two, L = several days or more. Tick a box when it is done and move it to "Done recently" at the bottom; when a new plan is written, add it here.
+The one place to see what is still to implement. Updated 2026-11-22. Each item says where its detail lives. **Size**: S = under an hour, M = a day or two, L = several days or more. Tick a box when it is done and move it to "Done recently" at the bottom; when a new plan is written, add it here.
 
 ## Owner to-dos (things only you can do)
 
@@ -15,7 +15,7 @@ The one place to see what is still to implement. Updated 2026-11-21. Each item s
 
 ## Web front end (`docs/web_ui_plan.md`)
 
-- [ ] **Port the dashboard from PyQt6 to HTML/CSS/JS** served by `src/clWebUI.py` (MQTT over a WebSocket bridge, no broker config). Done so far: bridge, orb, clock, media widget, window manager, dock. Left: Ultron head + skin, lyrics, text bar, To-Do, Notes, Reminders, Lights, Calendar drawer, Live Logs, Settings, Updates, Claude terminal (xterm.js), presence; then the desktop shell (overlay, click-through, per-monitor), supervisor wiring, tests, and retiring `clUI.py`. (L)
+- [ ] **Port the dashboard from PyQt6 to HTML/CSS/JS** served by `src/clWebUI.py` (MQTT over a WebSocket bridge, no broker config). Done so far: bridge, orb, clock, media widget, window manager, dock. Left: a standalone presence view, local line editing + slash popup in the Claude window (it is a pure mirror, no xterm.js needed); tests, and retiring `clUI.py` once the shell (Electron, done: overlay + fullscreen, `shell/`) has been lived with; shell follow-ups: voice/keybind monitor switching, the overlay's option prompts, `ui_lite`. Supervisor wiring is done ("Web UI" in `clJarvis.py`/`modules.json`/`boot.py`). (L)
 
 ## Smart devices (`docs/smart_devices_plan.md`, in this order)
 
@@ -35,6 +35,7 @@ The one place to see what is still to implement. Updated 2026-11-21. Each item s
 
 - [ ] **Search widget**: find your playlists and songs by typing, play or queue them (30-minute API check first). (L, 7 phases) (`spotify_search_plan.md`)
 - [ ] **Reorder from Up Next**: playlists you own only (the queue cannot be reordered through the API); needs a new permission scope; 30-minute check first; do together with search. (M) (`spotify_reorder_plan.md`)
+- [ ] **Lyrics sync from audio** (parked until the web UI rebuild is done): lyrics with no timestamps drift, so sample ~4 s of system audio, run Whisper with word timestamps, match against the known lyrics and store corrected timings in the lyrics cache (`aligned`). Start with plain-only tracks ("Cem anos" by Alcool Club is the test), then an offset check for synced ones. (L, 4 slices) (`lyrics_sync_plan.md`)
 - [ ] The Windows media overlay can still show the stale title after a queue jump (only the dashboard is corrected). (S, optional)
 
 ## Voice and NLP
@@ -58,6 +59,8 @@ The one place to see what is still to implement. Updated 2026-11-21. Each item s
 - [ ] **Windows crash resilience**: a detached session-host that owns the ConPTY. (L)
 - [ ] **Replace the VS Code session** (config-dir cutover, configurable model/permission mode per machine, token-cost measuring). (L)
 - [ ] Open decisions: should bridge speech ignore silent mode; permission mode for the dev role; one shared session or separate ones.
+- [ ] **Mirror the VS Code session in the ecosystem's Claude terminal** (parked 2026-11-22). Findings: the VS Code panel's `claude.exe` has private stdio pipes and the extension has no submit-prompt command (the `vscode://anthropic.claude-code/open?session=&prompt=` URI only prefills the box), so a true mirror is impossible without terminal mode (`claudeCode.useTerminal`) plus a small extension that calls `terminal.sendText`. What does work: Remote Control (`/rc`) is on for both the dev session and the bridge's Claude (logged in, Claude Pro), and `SendMessage` between them is tested both ways. Options: (a) a forwarding rule in `data/claude_bridge_config/bridge_prompt.txt` so "ask the dev session ..." goes bridge -> dev session -> spoken answer (a relay, one model turn per hop); (b) the read-only transcript mirror (tail `~/.claude/projects/<repo>/<id>.jsonl`) shown in the web UI and spoken; (c) terminal mode + extension for a real two-way mirror. (M)
+- [ ] **Two clients resize the one terminal** (the Qt widget sizes the grid to itself, ~62x21; the web window no longer resizes): a shrink leaves the bridge's pyte screen and Claude's redraw out of step (stale lines, dialogs clipped, keys logged but nothing changes). Needs a single-owner sizing scheme or a bridge-side floor; until then close the Qt widget while using the web one. Also: the bridge only republishes its screen on new output, so a closed dialog (login "Press Enter", `/remote-control`) stays on screen until a keypress. (M)
 
 ## Other ideas (not started, lower priority)
 

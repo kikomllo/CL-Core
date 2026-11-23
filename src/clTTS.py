@@ -324,6 +324,13 @@ class TTSManager:
             self._blip = self._to_sound(audio) if audio is not None else None
         return self._blip
 
+    @staticmethod
+    async def _announce_audio_ready(client) -> None:
+        """Tells the Daemon real audio is about to play, so it ducks the music now and not while the voice is
+        still synthesizing (tts_state:active is published earlier, to lock the mic, and used to duck far too soon)."""
+        if client:
+            await client.publish("jarvis/sys/tts_audio", json.dumps({"state": "ready"}))
+
     async def _play_blip(self, client=None) -> None:
         sound = self._blip_sound()
         if sound is not None:
@@ -497,7 +504,7 @@ class TTSManager:
                 pass
 
         # The blip waits until the voice has its first audio, so the chirp and the reply are heard back to back
-        # (a slow voice used to leave a silent gap after the chirp). Ducking, triggered by tts_state active, runs meanwhile.
+        # (a slow voice used to leave a silent gap after the chirp). Music is ducked only once that audio exists.
         while True:
             if self.abort_counter != abort_count or stop.is_set():
                 stop.set()
@@ -512,6 +519,7 @@ class TTSManager:
                 logging.error(f"[TTS] {engine.name} failed: {error}")
             return "failed"
 
+        await self._announce_audio_ready(client)
         await self._play_blip(client)
 
         while True:
@@ -711,10 +719,10 @@ class TTSManager:
                 
             try:
                 if client:
-                    # Broadcast state to the Daemon so it can handle the ducking
                     await client.publish("jarvis/sys/tts_state", json.dumps({"state": "active"}))
 
-                await self._play_blip(client)   # the Daemon ducks Spotify while it plays
+                await self._announce_audio_ready(client)   # the file exists already: the Daemon ducks Spotify now
+                await self._play_blip(client)
 
                 loaded = False
                 for _ in range(5):
@@ -818,6 +826,7 @@ class TTSManager:
             try:
                 if client:
                     await client.publish("jarvis/sys/tts_state", json.dumps({"state": "active"}))
+                    await self._announce_audio_ready(client)
                     await asyncio.sleep(0.2)
                     
                 for _ in range(5):

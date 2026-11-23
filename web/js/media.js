@@ -16,7 +16,7 @@ const setFill = (el) => el.style.setProperty("--fill", `${(100 * (el.value - el.
 const ctl = (o) => bridge.act("spotify.control", { silent: true, ...o });
 
 export const mediaWindow = {
-  id: "widget_media_controls", title: "Media Controls", w: 430, h: 300, minW: 360, minH: 250,
+  id: "widget_media_controls", title: "Media Controls", w: 430, h: 300,
   build(body) {
     const st = { status: "Paused", pos: 0, dur: 0, shuffle: false, repeat: "off", pending: {}, lastVol: 100, drawer: null, queueBusy: false };
 

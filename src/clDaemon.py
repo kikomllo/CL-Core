@@ -60,6 +60,7 @@ class CentralDaemon:
         self.last_interaction_time = 0.0
 
         self.tts_state: str = "idle"
+        self.tts_audio_ready: bool = False   # TTS has audio to play now (not merely "working on it"): only then is the music ducked
         self.mic_state: str = "idle"
         self._trace: Optional[LatencyTrace] = None  # current voice command's latency stamps
         self.is_ducked: bool = False
@@ -572,7 +573,7 @@ class CentralDaemon:
             return
             
         should_duck = False
-        if self.tts_state == "active":
+        if self.tts_state == "active" and self.tts_audio_ready:
             should_duck = True
         elif self.mic_state in ["recording", "listening"] and not self.attention_mode:
             should_duck = True
@@ -636,6 +637,7 @@ class CentralDaemon:
                     await client.subscribe("jarvis/feedback")
                     await client.subscribe("jarvis/sys/speak")
                     await client.subscribe("jarvis/sys/tts_state")
+                    await client.subscribe("jarvis/sys/tts_audio")
                     await client.subscribe("jarvis/sys/mic_state")
                     await client.subscribe("jarvis/sys/mic_control")
                     await client.subscribe("jarvis/sys/alarm/ring")
@@ -649,6 +651,9 @@ class CentralDaemon:
 
                     logging.info("--- DAEMON READY: Listening for commands ---")
                     await client.publish("jarvis/sys/module_ready", json.dumps({"module": "brain"}))
+                    # A restarted Daemon doesn't know whether music is playing (media_status only follows polls), so
+                    # it would not duck until the next poll, minutes later.
+                    await client.publish("pc/spotify/control", json.dumps({"action": "status", "silent": True}))
                     
                     async for message in client.messages:
                         topic = message.topic.value
@@ -696,10 +701,19 @@ class CentralDaemon:
                             try:
                                 payload = json.loads(payload_data)
                                 self.tts_state = payload.get("state", "idle")
+                                self.tts_audio_ready = False      # every reply starts and ends without audio
                                 if self.tts_state == "idle" and self.pending_mic_request:
                                     self.pending_mic_request = False
                                     await client.publish("jarvis/sys/mic_control", json.dumps({"action": "request_reply"}))
                                 await self.evaluate_ducking(client)
+                            except json.JSONDecodeError:
+                                pass
+
+                        elif topic == "jarvis/sys/tts_audio":
+                            try:
+                                if json.loads(payload_data).get("state") == "ready" and self.tts_state == "active":
+                                    self.tts_audio_ready = True
+                                    await self.evaluate_ducking(client)
                             except json.JSONDecodeError:
                                 pass
 

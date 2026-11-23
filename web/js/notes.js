@@ -4,7 +4,7 @@ import { bridge } from "./bridge.js";
 import { h, icon } from "./ui.js";
 
 export const notesWindow = {
-  id: "widget_notes", title: "Quick Notes", w: 380, h: 440, minW: 320, minH: 300,
+  id: "widget_notes", title: "Quick Notes", w: 380, h: 440,
   build(body) {
     let notes = [], openId = null, openNext = false;
     const root = h("div", { class: "mod" });

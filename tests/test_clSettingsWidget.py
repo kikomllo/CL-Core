@@ -360,6 +360,40 @@ class TestSttProcessingModeSetting:
         assert widget.ui_elements["stt_processing_mode"].currentText() == "sequential"
 
 
+class TestThemeSetting:
+    """System tab: one dropdown switches the look and (through clTTS.resolve_tts_engine) the voice."""
+
+    @pytest.fixture
+    def widget(self, qapp):
+        from unittest.mock import MagicMock
+        from ui.clSettingsWidget import SettingsWidget
+        w = SettingsWidget()
+        w.router = MagicMock()
+        yield w
+        w.update_timer.stop()
+        w.deleteLater()
+
+    def test_the_dropdown_offers_both_skins(self, widget):
+        combo = widget.ui_elements["theme"]
+        assert [combo.itemText(i) for i in range(combo.count())] == ["jarvis", "ultron"]
+
+    def test_changing_it_saves_the_theme_and_flags_a_reboot(self, widget, mocker):
+        save = mocker.patch.object(widget, "_update_core_json")
+        widget.needs_reboot = False
+        widget._change_theme("ultron")
+        save.assert_called_once_with("theme", "ultron")
+        assert widget.needs_reboot is True
+
+    def test_the_saved_theme_is_shown_when_the_tab_opens(self, widget, tmp_path):
+        import json
+        (tmp_path / "core.json").write_text(json.dumps({"settings": {"theme": "ultron"}}))
+        widget.loader.config_dir = str(tmp_path)
+        widget.core_json_path = str(tmp_path / "core.json")
+        widget.last_mtime = 0
+        widget._check_for_updates()
+        assert widget.ui_elements["theme"].currentText() == "ultron"
+
+
 class TestStartOnLoginToggle:
     """The Startup checkbox reads the OS entry and writes through clAutostart; tests never touch the
     real Startup folder."""

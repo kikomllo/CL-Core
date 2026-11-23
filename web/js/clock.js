@@ -1,3 +1,4 @@
+import { skinCss } from "./skin.js";
 // Date and time above the orb. Reads the system clock only; the glow is CSS text-shadow.
 const NAMES = {
   en: { days: ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"],
@@ -20,7 +21,7 @@ export function startClock(userSettings = {}) {
   if (!s.enabled) return;
   root.style.setProperty("--glow", s.glow);
   root.querySelector(".time").style.textShadow = s.glow <= 0 ? "none"
-    : `0 0 calc(${10 * s.glow} * var(--u)) rgba(255,140,0,${Math.min(1, .55 * s.glow)}), 0 0 calc(3 * var(--u)) rgba(255,170,0,${Math.min(1, .4 * s.glow)})`;
+    : skinCss(`0 0 calc(${10 * s.glow} * var(--u)) rgba(255,140,0,${Math.min(1, .55 * s.glow)}), 0 0 calc(3 * var(--u)) rgba(255,170,0,${Math.min(1, .4 * s.glow)})`);
   const h = document.getElementById("clk-h"), m = document.getElementById("clk-m"),
         sec = document.getElementById("clk-s"), date = document.getElementById("clk-date");
   sec.hidden = !s.seconds;

@@ -89,3 +89,6 @@ training/data/ultron_lines/
 config/core.json
 config/core.json.lock
 config/core.json.tmp
+shell/node_modules/
+data/shell_state.json
+data/shell_profile/

@@ -2,9 +2,11 @@
 // clUI.JarvisVisualizer. The original stepped once per 60 Hz (idle: 8 Hz) timer tick with per-tick easing
 // factors; here every factor is applied per elapsed time so it looks the same at any frame rate.
 import { brain } from "./state.js";
-import { palette } from "./skin.js";
+import { palette, activeSkin } from "./skin.js";
+import { loadHeadModel, HeadPainter, Glitch, pulseScale } from "./ultronhead.js";
+import { restingLook, bloomRadius, headUnit, overlayVisible } from "./orb-model.js";
 
-const BLOOM_RADIUS = 170, BLOOM_PEAK_ALPHA = 100;
+const BLOOM_PEAK_ALPHA = 100;
 const STATES = {            // opacity, amplitude, frequency, speed, scale
   IDLE:       { op: null, amp: 10, freq: 0.015, speed: 0.02, scale: null },
   SPEAKING:   { op: 1.0,  amp: 10, freq: 0.03,  speed: 0.3,  scale: 1.0 },
@@ -19,6 +21,18 @@ export function startOrb(canvas, getUnit) {
   const o = { opacity: 0.8, tOpacity: 0.8, scale: 0.8, tScale: 0.8, amp: 10, tAmp: 10, freq: 0.015, speed: 0.02,
               time: 0, particles: [], state: "IDLE" };
   let W = 0, H = 0, dpr = 1;
+  // Under the Ultron skin the head IS the visualizer (no bloom, rings, waves or particles), driven by the same voice level and state.
+  const ultron = { painter: null, glitch: null, requested: false, talk: 0, rows: null, flicker: 1 };
+  function wantHead() {
+    if (activeSkin() !== "ultron") return false;
+    if (!ultron.requested) {
+      ultron.requested = true;
+      Promise.all([loadHeadModel(), fetch("/api/config").then((r) => r.json()).catch(() => ({}))]).then(([model, settings]) => {
+        ultron.painter = new HeadPainter(model); ultron.glitch = new Glitch(settings.ultron_glitch);
+      }).catch(() => { ultron.requested = false; });
+    }
+    return !!ultron.painter;                                         // until it has loaded the (recoloured) orb is shown
+  }
 
   function resize() {
     dpr = window.devicePixelRatio || 1;
@@ -27,15 +41,32 @@ export function startOrb(canvas, getUnit) {
   }
   new ResizeObserver(resize).observe(canvas); resize();
 
+  // In the desktop shell's overlay window the orb shows only while the assistant is active, and the shell hides the window the rest of the time
+  // (no frames, no compositing). It is told as soon as something is to show (an event, not the frame loop, which stops when the window is hidden).
+  const overlay = () => document.documentElement.dataset.mode === "overlay";
+  const shell = window.jarvisShell || null;
+  let shown = null;
+  function reportVisible() {
+    const v = !overlay() || overlayVisible(o.opacity, o.tOpacity);
+    if (shell && v !== shown) { shown = v; shell.setVisible(v); }
+  }
   function setState(state) {
-    const c = STATES[state] || STATES.IDLE;
+    const c = STATES[state] || STATES.IDLE, rest = restingLook(overlay());
     o.state = state;
-    o.tOpacity = c.op ?? 0.8; o.tAmp = c.amp; o.freq = c.freq; o.speed = c.speed; o.tScale = c.scale ?? 0.8;
+    o.tOpacity = c.op ?? rest.op; o.tAmp = c.amp; o.freq = c.freq; o.speed = c.speed; o.tScale = c.scale ?? rest.scale;
+    reportVisible();
   }
   brain.listeners.add(setState); setState(brain.state);
+  window.addEventListener("jarvis-mode", () => {                      // the shell switched between overlay and dashboard
+    if (overlay() && o.state === "IDLE") { o.opacity = 0; o.scale = 0.5; g.clearRect(0, 0, canvas.width, canvas.height); }       // no fade-out: the window should be gone at once
+    setState(o.state);
+  });
 
+  const maxAmpFor = () => (H > 100 ? Math.min(W, H) / 4 / getUnit() : 150);
   function applyVolume() {
-    const maxAmp = H > 100 ? H / 4 : 150, v = brain.vol;
+    // The loudest wave, in design px (drawing multiplies by the unit). The Qt orb used height / 4, which is 270 on a 1080-tall
+    // screen but 480 on a 1920-tall portrait one (and doubled on a 4K screen); the short edge gives the same size either way up.
+    const maxAmp = maxAmpFor(), v = brain.vol;
     if (o.state === "SPEAKING") o.tAmp = Math.max(10, Math.min(1, v / 100) * 0.7 * maxAmp);
     else if (o.state === "RECORDING" || o.state === "LISTENING" || o.state === "ATTENTION") {
       const n = Math.min(1, v / 3000) * 0.8;
@@ -52,6 +83,13 @@ export function startOrb(canvas, getUnit) {
     o.amp = ease(o.amp, o.tAmp, 0.4, k);
     o.scale = ease(o.scale, o.tScale, 0.15, k);
     o.time += o.speed * k;
+    if (ultron.painter) {                                            // clUI.JarvisVisualizer: quick attack, slower release
+      const maxAmp = maxAmpFor();
+      const raw = o.state === "SPEAKING" ? (o.amp - 10) / (maxAmp * 0.7) : (o.state === "RECORDING" || o.state === "LISTENING") ? 0.5 * (o.amp - 10) / maxAmp : 0;
+      const target = Math.min(1, Math.max(0, raw));
+      ultron.talk += (target - ultron.talk) * (1 - Math.pow(1 - (target > ultron.talk ? 0.6 : 0.25), k));
+      [ultron.rows, ultron.flicker] = ultron.glitch.update(o.state, ultron.painter.h);
+    }
     if (o.amp > 5 && Math.random() < Math.min(1, (o.amp / 30) * k)) {
       o.particles.push({ x: Math.random() * W, dy: (Math.random() * 2 - 1) * o.amp, vx: Math.random() * 4 - 2,
                          vy: Math.random() * 2 - 1, life: 1, size: 1 + Math.floor(Math.random() * 3) });
@@ -66,12 +104,20 @@ export function startOrb(canvas, getUnit) {
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, W, H);
     const cx = W / 2, cy = H / 2;
+    if (wantHead()) {
+      const speaking = o.state === "SPEAKING", sc = o.scale * pulseScale(ultron.talk, speaking, o.time);     // it gets bigger and smaller with the voice
+      g.save(); g.translate(cx, cy); g.scale(sc, sc); g.translate(-cx, -cy);
+      g.imageSmoothingEnabled = true; g.globalAlpha = o.opacity;
+      ultron.painter.paint(g, cx, cy, Math.round(300 * headUnit(u, W, overlay()) / ultron.painter.h), ultron.talk, o.time, ultron.rows, ultron.flicker, dpr);
+      g.restore();
+      return;
+    }
     g.save();
     g.translate(cx, cy); g.scale(o.scale, o.scale); g.translate(-cx, -cy);
     g.globalAlpha = o.opacity;
 
     // bloom: gaussian falloff that reaches exactly zero at the rim, so no visible disc edge
-    const R = BLOOM_RADIUS * u, rim = Math.exp(-3.5);
+    const R = bloomRadius(u, W, H, o.scale, overlay()), rim = Math.exp(-3.5);
     const grad = g.createRadialGradient(cx, cy, 0, cx, cy, R);
     for (let i = 0; i <= 16; i++) {
       const t = i / 16, fall = (Math.exp(-3.5 * t * t) - rim) / (1 - rim);
@@ -128,6 +174,7 @@ export function startOrb(canvas, getUnit) {
     last = now;
     step(Math.min(dt, 100) / (1000 / 60));
     draw();
+    if (shell) reportVisible();                                       // the fade-out is over: let the shell hide the window
   }
   requestAnimationFrame(frame);
 }

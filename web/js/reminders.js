@@ -12,7 +12,7 @@ function clock(sec) {
 }
 
 export const remindersWindow = {
-  id: "widget_reminders", title: "Reminders", w: 380, h: 330, minW: 240, minH: 200,
+  id: "widget_reminders", title: "Reminders", w: 380, h: 330,
   build(body) {
     let items = [];
     const grid = h("div", { class: "rem-grid" });

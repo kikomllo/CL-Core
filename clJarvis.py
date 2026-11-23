@@ -118,6 +118,8 @@ NATIVE_SERVICES = [
 NATIVE_SERVICES.append(("Claude Bridge", "src/clClaudeBridge.py"))
 NATIVE_SERVICES.append(("Monitor", "src/clMonitor.py"))
 NATIVE_SERVICES.append(("Automation", "src/clAutomation.py"))
+NATIVE_SERVICES.append(("Web UI", "src/clWebUI.py"))      # the HTML dashboard (http://127.0.0.1:8765/); "Web UI": false in modules.json turns it off
+NATIVE_SERVICES.append(("Desktop Shell", "src/clShell.py"))      # the window that shows the Web UI (shell/, Electron); replaces "UI" (the Qt dashboard) unless it is not installed
 
 def load_modules_config():
     global NATIVE_SERVICES
@@ -144,7 +146,16 @@ def load_modules_config():
             if (n_desc, n_script) not in NATIVE_SERVICES:
                 NATIVE_SERVICES.append((n_desc, n_script))
             cfg["docker"][d_key] = False
-                
+
+    # The desktop shell replaces the Qt dashboard; if it is switched on but not installed, the Qt dashboard runs instead.
+    try:
+        from clShellSupport import shell_available, choose_ui
+        cfg["native"], note = choose_ui(cfg.get("native", {}), shell_available())
+        if note:
+            print(f"[SUPERVISOR] {note}")
+    except Exception as e:
+        print(f"[SUPERVISOR] Could not check the desktop shell: {e}")
+
     return cfg
 
 MODULES_CONFIG = load_modules_config()
@@ -384,9 +395,11 @@ def on_message(client, userdata, msg):
                 for desc, filename in NATIVE_SERVICES:
                     desc_lower = desc.lower()
                     file_lower = filename.lower()
+                    if not MODULES_CONFIG.get("native", {}).get(desc, True):
+                        continue                    # switched off in modules.json (e.g. the Qt "UI" while the desktop shell is on)
                     if (clean_target in desc_lower or desc_lower in clean_target or 
                         clean_target in file_lower or 
-                        ("ui" in clean_target and "ui" in file_lower) or 
+                        ("ui" in clean_target and ("ui" in file_lower or "shell" in file_lower)) or 
                         ("update" in clean_target and desc_lower == "updater")):
                         print(f"[SUPERVISOR] Restarting native host service: {desc} ({filename})...")
                         stop_native(filename)

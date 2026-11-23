@@ -123,6 +123,25 @@ def _ensure_claude_cli(is_windows: bool) -> None:
               f"parked until you run: npm install -g @anthropic-ai/claude-code")
 
 
+def _ensure_desktop_shell(is_windows: bool) -> None:
+    """Best-effort, non-fatal: installs the desktop shell's one dependency (Electron, pinned in shell/package.json) with npm. Without it
+    clJarvis.py runs the Qt dashboard instead (see clShellSupport.choose_ui), so a machine without Node still has a UI."""
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src", "utils"))
+        from clShellSupport import SHELL_DIR, shell_available
+        if shell_available():
+            return
+        if not shutil.which("npm"):
+            print("[BOOT] npm not found: the desktop shell is not installed, so the Qt dashboard will run. "
+                  "Install Node.js, then run: npm install --prefix shell")
+            return
+        print("[BOOT] Installing the desktop shell (npm install in shell/, downloads Electron once)...")
+        subprocess.run(["npm", "install", "--no-audit", "--no-fund"], cwd=SHELL_DIR, check=True, shell=is_windows)
+        print("[BOOT] Desktop shell installed." if shell_available() else "[BOOT] npm finished but Electron is missing: the Qt dashboard will run.")
+    except Exception as e:
+        print(f"[BOOT] Could not install the desktop shell ({e}). The Qt dashboard will run instead; retry with: npm install --prefix shell")
+
+
 def main():
     print("==================================================")
     print("JARVIS ECOSYSTEM BOOTLOADER")
@@ -149,6 +168,7 @@ def main():
     if not is_windows:
         _ensure_linux_system_packages()
     _ensure_claude_cli(is_windows)
+    _ensure_desktop_shell(is_windows)
 
     # 2. Check for dependencies update
     req_file = "requirements.txt"
@@ -370,7 +390,7 @@ def main():
         "clJarvis.py", "clUI.py", "clKeybinds.py", "clUtilities.py",
         "clUpdater.py", "clTrayIcon.py", "clWhisper.py", "clDaemon.py",
         "clSpotify.py", "clTTS.py", "clControl.py", "clMic.py", "clTerminal.py",
-        "clClaudeBridge.py"
+        "clClaudeBridge.py", "clWebUI.py", "clShell.py"
     ]
     for script in ecosystem_scripts:
         if is_windows:

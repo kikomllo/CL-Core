@@ -1,0 +1,10 @@
+{
+  "name": "jarvis-shell",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Desktop shell for the JARVIS web dashboard: one transparent window, overlay and fullscreen modes.",
+  "main": "main.js",
+  "devDependencies": {
+    "electron": "45.2.3"
+  }
+}

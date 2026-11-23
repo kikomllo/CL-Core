@@ -381,6 +381,9 @@ class SettingsWidget(QWidget):
         sys_layout.addWidget(self._create_section_label("Startup"))
         sys_layout.addWidget(self._create_checkbox("start_on_login", "Start JARVIS when I log in", clAutostart.is_enabled(), self._toggle_start_on_login))
 
+        sys_layout.addWidget(self._create_section_label("Persona (look and voice, needs a reboot)"))
+        sys_layout.addWidget(self._create_dropdown("theme", "Assistant", ["jarvis", "ultron"], "jarvis", self._change_theme))
+
         sys_layout.addWidget(self._create_section_label("System Core"))
         sys_layout.addWidget(self._create_dropdown("ecosystem_state", "Ecosystem Mode", ["normal", "debug", "background"], "normal", self._change_ecosystem_mode))
         
@@ -1136,6 +1139,14 @@ class SettingsWidget(QWidget):
                     chk.setChecked(settings.get("enable_followup", False))
                     chk.blockSignals(False)
                     
+                if "theme" in self.ui_elements:
+                    combo = self.ui_elements["theme"]
+                    combo.blockSignals(True)
+                    val = settings.get("theme", "jarvis")
+                    if combo.currentText() != val:
+                        combo.setCurrentText(val)
+                    combo.blockSignals(False)
+
                 if "ecosystem_state" in self.ui_elements:
                     combo = self.ui_elements["ecosystem_state"]
                     combo.blockSignals(True)
@@ -1216,6 +1227,12 @@ class SettingsWidget(QWidget):
         self._update_core_json("ecosystem_state", value)
         self._update_core_json("mode", value.upper(), category="ecosystem")
         self.router.dispatch("state.change", action=value)
+
+    def _change_theme(self, value):
+        # The skin is applied at import time by the UI and the TTS service, and the TTS voice follows it
+        # (clTTS.resolve_tts_engine), so one setting switches both after the reboot.
+        self._update_core_json("theme", value)
+        self._flag_reboot()
 
     def _change_stt_model(self, value):
         self._update_core_json("stt_model", value)
