@@ -40,7 +40,7 @@ class TestSavedLayout:
         assert r["x"] == 0
 
     def test_a_squeezed_viewport_does_not_change_the_layout_it_comes_back_to(self):
-        # the overlay is a 200x400 page: placing the window there must leave the saved layout alone, so the dashboard gets the same spot back
+        # the overlay is a 200x200 page: placing the window there must leave the saved layout alone, so the dashboard gets the same spot back
         r = run("""const l = {fx: 0.4, fy: 0.3, w: 500, h: 300};
           const before = M.fromLayout(l, 1, 1920, 1080); M.fromLayout(l, 0.185, 200, 400);
           console.log(JSON.stringify([before, M.fromLayout(l, 1, 1920, 1080), l]))""")

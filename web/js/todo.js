@@ -1,14 +1,16 @@
 // To-Do, "To-Do module" artifact: list tabs in a pill, ring rows, + Add task. Left click ticks; right click deletes a done task.
 // Data: jarvis/sys/todo/status {todos:[{id,task,completed,list_name}]}; actions todo.list/create/complete/delete.
 import { bridge } from "./bridge.js";
-import { h, icon } from "./ui.js";
+import { h, icon, enableTabScroll, loadUiState, saveUiState } from "./ui.js";
+import { savedChoice } from "./session-model.js";
 
 export const todoWindow = {
   id: "widget_todo", title: "To-Do List", w: 380, h: 440,
   build(body) {
-    let todos = [], current = "My To-Do List", adding = false;
+    let todos = [], current = savedChoice(loadUiState(), "todo.list", null, "My To-Do List"), adding = false;      // the list you were on (render() falls back if it is gone)
     const open = h("span", { class: "mod-count" }, "");
     const tabs = h("div", { class: "tabs-pill" });
+    enableTabScroll(tabs);
     const list = h("div", { class: "mod-list" });
     const foot = h("div", { class: "mod-foot" });
     const newList = h("button", { class: "round sm", title: "New list", "aria-label": "New list", onclick: () => promptList() }, icon("add.svg", { size: 14 }));
@@ -32,7 +34,7 @@ export const todoWindow = {
       if (!all.includes(current)) current = all[0] || "My To-Do List";
       open.textContent = `${todos.filter(t => !t.completed).length} OPEN`;
       tabs.replaceChildren(...all.map(n => h("button", { class: "tab-pill", "aria-pressed": String(n === current),
-        onclick: () => { current = n; adding = false; render(); } }, n)));
+        onclick: () => { current = n; saveUiState("todo.list", n); adding = false; render(); } }, n)));
       tabs.hidden = all.length < 1;
       const mine = todos.filter(t => (t.list_name || "My To-Do List") === current);
       const rows = mine.map(t => {
@@ -64,7 +66,7 @@ export const todoWindow = {
     const mine = () => todos.filter(t => (t.list_name || "My To-Do List") === current);
 
     const off = bridge.on("jarvis/sys/todo/status", (d) => { if (d && Array.isArray(d.todos)) { todos = d.todos; for (const n of names()) extra.delete(n); render(); } });
-    bridge.act("todo.list");
+    bridge.act("todo.list", { source: "ui" });          // not a request to show the window: the daemon asks for that without a source
     render();
     return { onClose: off };
   },

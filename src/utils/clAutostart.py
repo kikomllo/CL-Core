@@ -30,6 +30,14 @@ def _venv_python(root: str) -> str:
     return candidate if os.path.exists(candidate) else sys.executable
 
 
+def _startup_python(root: str) -> str:
+    """What the Windows login shortcut runs. pythonw.exe has no console at all, so nothing flashes on the desktop at login;
+    boot.py then relaunches itself hidden (see boot.relaunch_hidden). Falls back to python.exe (boot.py hides it too)."""
+    python = _venv_python(root)
+    windowless = os.path.join(os.path.dirname(python), "pythonw.exe")
+    return windowless if os.path.basename(python).lower() == "python.exe" and os.path.exists(windowless) else python
+
+
 def entry_path(startup_dir: str = None) -> str:
     """Where the autostart entry lives on this OS. `startup_dir` overrides the folder (tests)."""
     if CURRENT_OS == "Windows":
@@ -97,10 +105,9 @@ def set_enabled(enabled: bool, startup_dir: str = None, root: str = REPO_ROOT) -
         return False
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    python = _venv_python(root)
     if CURRENT_OS == "Windows":
-        _create_windows_shortcut(path, root, python)
+        _create_windows_shortcut(path, root, _startup_python(root))
     else:
         with open(path, "w", encoding="utf-8") as f:
-            f.write(desktop_entry(root, python))
+            f.write(desktop_entry(root, _venv_python(root)))
     return True

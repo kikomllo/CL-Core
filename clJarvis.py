@@ -14,6 +14,8 @@ try:
 except Exception as e:
     print(f"[SUPERVISOR] Could not prepare config/core.json: {e}")
 
+from clModuleMatch import services_to_restart      # src/utils is on sys.path from the block above
+
 # --- OS SETTINGS & DEBUG FLAG ---
 def load_settings():
     config_path = os.path.join("config", "core.json")
@@ -389,25 +391,14 @@ def on_message(client, userdata, msg):
                 raw_target = str(payload.get("target", "")).lower().strip()
                 print(f"[SUPERVISOR] Requested restart for module target: '{raw_target}'")
                 
-                clean_target = raw_target.replace(" module", "").replace(" service", "").replace(" container", "").strip()
                 restarted = False
-                # Check native host services first
-                for desc, filename in NATIVE_SERVICES:
-                    desc_lower = desc.lower()
-                    file_lower = filename.lower()
-                    if not MODULES_CONFIG.get("native", {}).get(desc, True):
-                        continue                    # switched off in modules.json (e.g. the Qt "UI" while the desktop shell is on)
-                    if (clean_target in desc_lower or desc_lower in clean_target or 
-                        clean_target in file_lower or 
-                        ("ui" in clean_target and ("ui" in file_lower or "shell" in file_lower)) or 
-                        ("update" in clean_target and desc_lower == "updater")):
-                        print(f"[SUPERVISOR] Restarting native host service: {desc} ({filename})...")
-                        stop_native(filename)
-                        time.sleep(0.5)
-                        start_native(desc, filename, is_reboot=True)
-                        restarted = True
-                        break
-                
+                for desc, filename in services_to_restart(raw_target, NATIVE_SERVICES, MODULES_CONFIG.get("native", {})):
+                    print(f"[SUPERVISOR] Restarting native host service: {desc} ({filename})...")
+                    stop_native(filename)
+                    time.sleep(0.5)
+                    start_native(desc, filename, is_reboot=True)
+                    restarted = True
+
                 if not restarted:
                     print(f"[SUPERVISOR] Unable to match target '{raw_target}' to any active service.")
 

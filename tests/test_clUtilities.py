@@ -523,3 +523,98 @@ class TestCalendarHandlersAcceptGoogleShapedEvents:
 
         saved = json.loads(next(events_dir.glob("*.json")).read_text())
         assert saved["source"] == "local"
+
+
+class TestTodoDeleteGoesToTrash:
+    """Deleting a task moves it to data/todos/.trash instead of removing it, so a mis-click is recoverable."""
+
+    @pytest.fixture
+    def todos_dir(self, tmp_path, mocker):
+        d = tmp_path / "todos"
+        d.mkdir()
+        mocker.patch("clUtilities.TODOS_DIR", str(d))
+        return d
+
+    def _write(self, d, todo_id, task="Buy milk"):
+        (d / f"{todo_id}.json").write_text(json.dumps({"id": todo_id, "task": task, "completed": False}), encoding="utf-8")
+
+    @pytest.mark.asyncio
+    async def test_the_task_leaves_the_list_but_its_content_is_kept(self, utilities, todos_dir):
+        self._write(todos_dir, "1")
+        await utilities.handle_todo_delete("1")
+        assert not (todos_dir / "1.json").exists()
+        kept = list((todos_dir / ".trash").glob("1-*.json"))
+        assert len(kept) == 1 and json.loads(kept[0].read_text(encoding="utf-8"))["task"] == "Buy milk"
+
+    @pytest.mark.asyncio
+    async def test_the_published_list_does_not_include_trashed_tasks(self, utilities, todos_dir):
+        self._write(todos_dir, "1")
+        self._write(todos_dir, "2", "Keep me")
+        await utilities.handle_todo_delete("1")
+        status = [c for c in utilities.mqtt_client.publish.call_args_list if c.args[0] == "jarvis/sys/todo/status"][-1]
+        assert [t["id"] for t in json.loads(status.args[1])["todos"]] == ["2"]
+
+    @pytest.mark.asyncio
+    async def test_a_trashed_copy_can_be_restored_by_copying_it_back(self, utilities, todos_dir):
+        self._write(todos_dir, "1")
+        await utilities.handle_todo_delete("1")
+        import shutil
+        shutil.copy(next((todos_dir / ".trash").glob("1-*.json")), todos_dir / "1.json")
+        await utilities.handle_todo_list()
+        status = [c for c in utilities.mqtt_client.publish.call_args_list if c.args[0] == "jarvis/sys/todo/status"][-1]
+        assert [t["id"] for t in json.loads(status.args[1])["todos"]] == ["1"]
+
+    @pytest.mark.asyncio
+    async def test_old_trash_is_pruned_by_deletion_age_not_task_age(self, utilities, todos_dir):
+        import os, time
+        trash = todos_dir / ".trash"
+        trash.mkdir()
+        stale = trash / "9-1.json"
+        stale.write_text("{}", encoding="utf-8")
+        old = time.time() - 31 * 86400
+        os.utime(stale, (old, old))
+        self._write(todos_dir, "1")
+        os.utime(todos_dir / "1.json", (old, old))               # a task created long ago, deleted today
+        await utilities.handle_todo_delete("1")
+        assert not stale.exists()
+        assert len(list(trash.glob("1-*.json"))) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_id_is_a_noop(self, utilities, todos_dir):
+        await utilities.handle_todo_delete("404")
+        assert not (todos_dir / ".trash").exists()
+
+
+class TestTodoRequestShowsTheList:
+    """"Show my todo list" (voice or the text bar) must open the To-Do window, also from the overlay; the window's own refresh must not."""
+
+    @pytest.fixture
+    def todos_dir(self, tmp_path, mocker):
+        d = tmp_path / "todos"
+        d.mkdir()
+        mocker.patch("clUtilities.TODOS_DIR", str(d))
+        return d
+
+    def _topics(self, utilities):
+        return [(c.args[0], json.loads(c.args[1])) for c in utilities.mqtt_client.publish.call_args_list]
+
+    @pytest.mark.asyncio
+    async def test_a_request_without_a_source_publishes_the_list_and_asks_the_dashboard_to_show_it(self, utilities, todos_dir):
+        await utilities.handle_todo_request({"action": "list"})
+        topics = self._topics(utilities)
+        assert ("jarvis/sys/ui_control", {"action": "show_todo"}) in topics
+        assert any(t == "jarvis/sys/todo/status" for t, _ in topics)
+
+    @pytest.mark.asyncio
+    async def test_a_window_refreshing_itself_does_not_ask_to_be_shown(self, utilities, todos_dir):
+        await utilities.handle_todo_request({"action": "list", "source": "ui"})
+        topics = self._topics(utilities)
+        assert all(t != "jarvis/sys/ui_control" for t, _ in topics)
+        assert any(t == "jarvis/sys/todo/status" for t, _ in topics)
+
+    def test_the_web_window_can_send_its_source_through_the_action_router(self):
+        from utils.clActionRouter import ActionRouter
+        topic, payload = ActionRouter().prepare("todo.list", source="ui")
+        assert topic == "jarvis/sys/todo/request" and payload == {"action": "list", "source": "ui"}
+        topic, payload = ActionRouter().prepare("todo.list")
+        assert payload == {"action": "list"}

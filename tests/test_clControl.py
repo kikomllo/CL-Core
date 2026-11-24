@@ -453,3 +453,153 @@ class TestLightStatusColourFields:
         assert lights["Bedroom"]["brand"] == "wiz" and lights["Bedroom"]["colour"] is True
         assert lights["Bedroom"]["rgb"] == [150, 60, 220] and lights["Bedroom"]["brightness"] == 60
         assert lights["Kitchen"]["colour"] is False                      # devices.json override
+
+
+class TestTapoSessionHandling:
+    """A bulb takes one session at a time and the Tapo library ignores cancellation: calls to one bulb are serialised, bounded and
+    reuse their login (live log 2026-11-24: overlapping toggle/poll gave SESSION_TIMEOUT and Handshake2 failed, a dead bulb stalled for ~20 s)."""
+
+    def _device(self, mocker, info=None):
+        device = MagicMock()
+        device.get_device_info = mocker.AsyncMock(return_value=info or MagicMock(device_on=True, brightness=50, color_temp=3000))
+        for name in ("on", "off"):
+            setattr(device, name, mocker.AsyncMock())
+        return device
+
+    def _client(self, manager, mocker, device):
+        manager.tapo_client = MagicMock()
+        manager.tapo_client.l530 = mocker.AsyncMock(return_value=device)
+
+    @pytest.mark.asyncio
+    async def test_bounded_returns_on_time_even_when_the_call_ignores_cancellation(self):
+        import asyncio, time
+        from clControl import _bounded
+
+        async def stubborn():
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.4)             # a Rust call that finishes its own timeout first
+                raise RuntimeError("late failure nobody awaits")
+        start = time.monotonic()
+        with pytest.raises(asyncio.TimeoutError):
+            await _bounded(stubborn(), 0.05)
+        assert time.monotonic() - start < 0.3
+
+    @pytest.mark.asyncio
+    async def test_bounded_passes_the_result_and_the_error_through(self):
+        from clControl import _bounded
+
+        async def ok(): return 7
+        async def bad(): raise ValueError("x")
+        assert await _bounded(ok(), 1) == 7
+        with pytest.raises(ValueError):
+            await _bounded(bad(), 1)
+
+    @pytest.mark.asyncio
+    async def test_calls_to_one_bulb_never_overlap_but_different_bulbs_do(self, manager, mocker):
+        import asyncio
+        self._client(manager, mocker, self._device(mocker))
+        running, peak = {}, {}
+
+        def op_for(ip):
+            async def op(device):
+                running[ip] = running.get(ip, 0) + 1
+                peak[ip] = max(peak.get(ip, 0), running[ip])
+                await asyncio.sleep(0.02)
+                running[ip] -= 1
+            return op
+        await asyncio.gather(*(manager._tapo_call("10.0.0.1", op_for("10.0.0.1")) for _ in range(4)),
+                             *(manager._tapo_call("10.0.0.2", op_for("10.0.0.2")) for _ in range(2)))
+        assert peak == {"10.0.0.1": 1, "10.0.0.2": 1}
+
+    @pytest.mark.asyncio
+    async def test_the_login_is_reused_between_calls(self, manager, mocker):
+        device = self._device(mocker)
+        self._client(manager, mocker, device)
+        await manager._tapo_call("10.0.0.1", lambda d: d.get_device_info())
+        await manager._tapo_call("10.0.0.1", lambda d: d.get_device_info())
+        manager.tapo_client.l530.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_an_expired_session_is_retried_once_with_a_fresh_login(self, manager, mocker):
+        device = self._device(mocker)
+        device.off.side_effect = [Exception('Tapo(Unauthorized { kind: "SESSION_TIMEOUT" })'), None]
+        self._client(manager, mocker, device)
+        await manager._execute_tapo_target("10.0.0.1", False, False, True, None, None, None)
+        assert device.off.await_count == 2 and manager.tapo_client.l530.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_other_errors_and_timeouts_are_not_retried_and_drop_the_handle(self, manager, mocker):
+        import asyncio
+        device = self._device(mocker)
+        device.on.side_effect = Exception("connection refused")
+        self._client(manager, mocker, device)
+        with pytest.raises(Exception, match="refused"):
+            await manager._tapo_call("10.0.0.1", lambda d: d.on())
+        assert device.on.await_count == 1 and "10.0.0.1" not in manager._tapo_devices
+
+        async def silent(d): await asyncio.sleep(10)
+        with pytest.raises(asyncio.TimeoutError):
+            await manager._tapo_call("10.0.0.1", silent, timeout=0.05)
+        assert "10.0.0.1" not in manager._tapo_devices
+
+    @pytest.mark.asyncio
+    async def test_tapo_brightness_is_read_and_written_in_one_session(self, manager, mocker):
+        device = self._device(mocker, MagicMock(device_on=True, brightness=50, color_temp=3000))
+        device.set_brightness = mocker.AsyncMock()
+        self._client(manager, mocker, device)
+        manager.lights = {"bedroom": {"ip": "10.0.0.1", "mac": "AA", "type": "tapo"}}
+        await manager.adjust_brightness("up", target_name="bedroom")
+        device.set_brightness.assert_awaited_once_with(70)
+        manager.tapo_client.l530.assert_awaited_once()
+
+
+class TestPollingResilience:
+    async def _run_poll(self, manager, mock_mqtt, publishes, mocker, interval=None):
+        import asyncio
+        if interval is not None:
+            mocker.patch("clControl.POLL_INTERVAL", interval)
+        task = asyncio.create_task(poll_light_status(manager))
+        for _ in range(300):
+            await asyncio.sleep(0.01)
+            if mock_mqtt.publish.await_count >= publishes:
+                break
+        task.cancel()
+        await task
+        return [json.loads(c.args[1])["lights"][0] for c in mock_mqtt.publish.await_args_list]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_poll_is_unknown_not_off_until_it_is_offline(self, manager, mocker, mock_mqtt):
+        manager.lights = {"bedroom": {"ip": "10.0.0.1", "mac": "AA", "type": "tapo"}}
+        manager.current_ssid = "TestNet"
+        mocker.patch.object(manager, "_tapo_call", side_effect=TimeoutError("no answer"))
+        statuses = await self._run_poll(manager, mock_mqtt, 3, mocker, interval=0.01)
+        assert [(s["is_on"], s["offline"]) for s in statuses[:3]] == [(None, False), (None, False), (False, True)]
+
+    @pytest.mark.asyncio
+    async def test_the_lights_are_polled_again_without_anyone_asking(self, manager, mocker, mock_mqtt):
+        manager.lights = {"bedroom": {"ip": "10.0.0.1", "mac": "AA", "type": "tapo"}}
+        manager.current_ssid = "TestNet"
+        mocker.patch.object(manager, "_tapo_call", new=mocker.AsyncMock(return_value=MagicMock(device_on=True, brightness=50, color_temp=3000)))
+        statuses = await self._run_poll(manager, mock_mqtt, 2, mocker, interval=0.02)
+        assert len(statuses) >= 2 and all(s["is_on"] is True for s in statuses)
+
+
+class TestFeedbackDelivery:
+    @pytest.mark.asyncio
+    async def test_a_dead_connection_falls_back_to_a_fresh_one(self, mocker, mock_mqtt):
+        from clControl import _publish_feedback
+        dead = mocker.AsyncMock()
+        dead.publish.side_effect = Exception("Could not publish message")
+        await _publish_feedback(dead, {"status": "error"})
+        mock_mqtt.publish.assert_awaited_once()
+        assert json.loads(mock_mqtt.publish.await_args.args[1]) == {"status": "error"}
+
+    @pytest.mark.asyncio
+    async def test_a_failure_to_report_never_raises(self, mocker, mock_mqtt):
+        from clControl import _publish_feedback
+        dead = mocker.AsyncMock()
+        dead.publish.side_effect = Exception("down")
+        mock_mqtt.publish.side_effect = Exception("still down")
+        await _publish_feedback(dead, {"status": "error"})

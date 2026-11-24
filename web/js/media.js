@@ -3,7 +3,8 @@
 // Spotify's own volume is the hover fader from the "Media Widget Concept". Every send is the same spotify.control /
 // terminal.app_volume action the Qt widget used (ui/clMediaWidget.py).
 import { bridge } from "./bridge.js";
-import { h, icon } from "./ui.js";
+import { h, icon, loadUiState, saveUiState } from "./ui.js";
+import { savedChoice } from "./session-model.js";
 import { lyrics } from "./lyrics.js";
 
 const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
@@ -116,6 +117,7 @@ export const mediaWindow = {
     // ----- drawers (one open at a time) -----
     const setDrawer = (which) => {
       st.drawer = st.drawer === which ? null : which;
+      saveUiState("media.drawer", st.drawer);
       queueDrawer.hidden = st.drawer !== "queue"; appDrawer.hidden = st.drawer !== "app";
       qBtn.classList.toggle("on", st.drawer === "queue"); avBtn.classList.toggle("on", st.drawer === "app");
       if (st.drawer === "queue") ctl({ action: "queue" });
@@ -124,6 +126,8 @@ export const mediaWindow = {
       requestAnimationFrame(() => fitHeight(body));
     };
     qBtn.onclick = () => setDrawer("queue"); avBtn.onclick = () => setDrawer("app");
+    const savedDrawer = savedChoice(loadUiState(), "media.drawer", ["queue", "app"], null);      // the drawer you had open
+    if (savedDrawer) setDrawer(savedDrawer);
     const fitHeight = (b) => {
       const win = b.closest(".win"); if (!win) return;
       const want = b.firstChild.scrollHeight + win.querySelector(".win-head").offsetHeight + 2;

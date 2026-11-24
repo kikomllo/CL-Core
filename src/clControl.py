@@ -13,7 +13,7 @@ from pywizlight import wizlight, PilotBuilder, discovery as wiz_discovery
 from pywizlight.utils import hex_to_percent, percent_to_hex
 import aiomqtt
 
-# NEW: Import your centralized env loader
+# Import centralized env loader
 from utils.clEnvLoader import EnvLoader
 from utils.clConfigLoader import ConfigLoader
 from utils.clNetworkUtils import get_current_wifi_ssid
@@ -107,9 +107,28 @@ def _describe_failures(failures) -> str:
     return f"I couldn't reach the {names} light."
 
 
+# A Tapo call that has not answered by then is given up on (the library itself waits ~20 s for a TCP connect).
+TAPO_TIMEOUT = 6.0
+# How often the lights are polled with nobody asking, so a bulb switched elsewhere or a startup blip corrects itself.
+POLL_INTERVAL = 25.0
+
+
+async def _bounded(coro, timeout: float):
+    """Await `coro` for at most `timeout` seconds and really return then. asyncio.wait_for waits for the cancelled call to
+    finish, and the Tapo library (Rust) ignores cancellation until its own connect timeout, so a dead bulb held every poll
+    and command for ~20 s; here the call is abandoned in the background instead."""
+    task = asyncio.ensure_future(coro)
+    done, _ = await asyncio.wait({task}, timeout=timeout)
+    if task in done:
+        return task.result()
+    task.cancel()
+    task.add_done_callback(lambda t: t.cancelled() or t.exception())      # nothing awaits it: swallow its late error
+    raise asyncio.TimeoutError(f"no answer within {timeout:g}s")
+
+
 class LightManager:
     """Enterprise state controller for single-device execution, dual discovery, and self-healing recovery."""
-    
+
     def __init__(self):
         self.base_dir: str = os.path.dirname(os.path.abspath(__file__))
         self.env = EnvLoader()
@@ -134,9 +153,32 @@ class LightManager:
             logging.warning("Tapo Credentials missing in .env file.")
             
         self.tapo_client: ApiClient = ApiClient(self.email, self.password)
+        self._tapo_locks: Dict[str, asyncio.Lock] = {}       # a bulb takes one session at a time
+        self._tapo_devices: Dict[str, Any] = {}              # logged-in handle per IP, dropped on any error
         self.last_discovered_devices: List[Dict[str, str]] = []
         self.last_target: str = self._load_last_target()
-        
+
+    async def _tapo_call(self, ip: str, op, timeout: float = TAPO_TIMEOUT):
+        """Runs `op(device)` against a Tapo bulb. Every call to one bulb goes through one lock, because a second handshake
+        while another is in flight invalidates it (SESSION_TIMEOUT / "Handshake2 failed" when a toggle and a poll overlapped);
+        the logged-in handle is reused, and a stale session is retried once with a fresh login. Never waits past `timeout`."""
+        lock = self._tapo_locks.setdefault(ip, asyncio.Lock())
+        async with lock:
+            for attempt in (1, 2):
+                try:
+                    device = self._tapo_devices.get(ip)
+                    if device is None:
+                        model = os.getenv("TAPO_MODEL", self.env.get("TAPO_MODEL", "l530")).lower()
+                        get_device = getattr(self.tapo_client, model, self.tapo_client.l530)
+                        device = await _bounded(get_device(ip), timeout)
+                        self._tapo_devices[ip] = device
+                    return await _bounded(op(device), timeout)
+                except Exception as e:
+                    self._tapo_devices.pop(ip, None)
+                    stale = any(w in str(e).lower() for w in ("session", "handshake", "expired"))
+                    if attempt == 2 or not stale:       # only a dead session is worth a second try: a silent bulb will not answer, and a repeated toggle must not run twice
+                        raise
+
     def _load_last_target(self) -> str:
         core_file = os.path.abspath(os.path.join(self.base_dir, "..", "config", "core.json"))
         if os.path.exists(core_file):
@@ -394,13 +436,12 @@ class LightManager:
                 new_percent = max(1, min(100, current_percent + delta))
                 await self._execute_wiz_target(ip, False, True, False, None, new_percent, None)
             else:
-                model = os.getenv("TAPO_MODEL", "l530").lower()
-                get_device = getattr(self.tapo_client, model, self.tapo_client.l530)
-                device = await get_device(ip)
-                info = await asyncio.wait_for(device.get_device_info(), timeout=3.0)
-                current_percent = getattr(info, 'brightness', 50) or 50
-                new_percent = max(1, min(100, current_percent + delta))
-                await self._execute_tapo_target(ip, False, True, False, None, new_percent, None)
+                async def step(device):                  # read and write inside one locked session
+                    info = await device.get_device_info()
+                    current_percent = getattr(info, 'brightness', 50) or 50
+                    new_percent = max(1, min(100, current_percent + delta))
+                    await self._apply_tapo(device, False, True, False, None, new_percent, None)
+                await self._tapo_call(ip, step)
 
         await self._run_on_targets(targets, adjust_single)
         
@@ -437,10 +478,9 @@ class LightManager:
             await bulb.turn_on(PilotBuilder(brightness=brightness))
 
     async def _execute_tapo_target(self, ip, toggle, on, off, color, lum, temp, rgb=None):
-        model = os.getenv("TAPO_MODEL", "l530").lower()
-        get_device = getattr(self.tapo_client, model, self.tapo_client.l530)
-        device = await get_device(ip)
-        
+        await self._tapo_call(ip, lambda device: self._apply_tapo(device, toggle, on, off, color, lum, temp, rgb))
+
+    async def _apply_tapo(self, device, toggle, on, off, color, lum, temp, rgb=None):
         if toggle:
             info = await device.get_device_info()
             if info.device_on: await device.off()
@@ -655,67 +695,74 @@ class LightManager:
         }
 
 async def poll_light_status(manager: LightManager) -> None:
-    """Background task to poll lights and publish status."""
+    """Background task: polls the lights and publishes jarvis/sys/light_status when asked (poll_trigger) and every POLL_INTERVAL."""
     failure_tracker = {}
+
+    async def poll_single(name, info_dict):
+        ip = info_dict.get("ip")
+        l_type = info_dict.get("type", "tapo").lower()
+        if not ip: return None
+        try:
+            if l_type == "wiz":
+                bulb = wizlight(ip)
+                await asyncio.wait_for(bulb.updateState(), timeout=3.0)
+                is_on = bulb.status
+                bulb_type = getattr(bulb, "bulbtype", None)
+                detected = bool(bulb_type.features.color) if bulb_type else None
+                fields = _wiz_status_fields(bulb)
+            else:
+                model = manager.env.get("TAPO_MODEL", "l530").lower()
+                info = await manager._tapo_call(ip, lambda device: device.get_device_info())
+                is_on = info.device_on
+                detected = model not in TAPO_WHITE_ONLY_MODELS
+                fields = _tapo_status_fields(info)
+            failure_tracker[name] = 0
+            return {"name": name.replace("_", " ").title(), "is_on": is_on, "offline": False,
+                    "brand": l_type, "colour": _colour_capability(info_dict, detected), **fields}
+        except Exception as e:
+            fails = failure_tracker.get(name, 0) + 1
+            failure_tracker[name] = fails
+            logging.debug(f"Light polling error for {name} (fail {fails}): {repr(e)}")
+            is_offline = fails >= 3
+            # is_on is unknown (None, not "off") until the light has failed enough polls to be called offline.
+            return {"name": name.replace("_", " ").title(), "is_on": False if is_offline else None, "offline": is_offline,
+                    "brand": l_type, "colour": _colour_capability(info_dict, None)}
+
     while True:
         try:
             async with aiomqtt.Client("localhost") as mqtt_client:
                 while True:
-                    async def poll_single(name, info_dict):
-                        ip = info_dict.get("ip")
-                        l_type = info_dict.get("type", "tapo").lower()
-                        if not ip: return None
-                        try:
-                            if l_type == "wiz":
-                                bulb = wizlight(ip)
-                                await asyncio.wait_for(bulb.updateState(), timeout=3.0)
-                                is_on = bulb.status
-                                bulb_type = getattr(bulb, "bulbtype", None)
-                                detected = bool(bulb_type.features.color) if bulb_type else None
-                                fields = _wiz_status_fields(bulb)
-                            else:
-                                model = manager.env.get("TAPO_MODEL", "l530").lower()
-                                get_device = getattr(manager.tapo_client, model, manager.tapo_client.l530)
-                                device = await get_device(ip)
-                                info = await asyncio.wait_for(device.get_device_info(), timeout=3.0)
-                                is_on = info.device_on
-                                detected = model not in TAPO_WHITE_ONLY_MODELS
-                                fields = _tapo_status_fields(info)
-                            failure_tracker[name] = 0
-                            return {"name": name.replace("_", " ").title(), "is_on": is_on, "offline": False,
-                                    "brand": l_type, "colour": _colour_capability(info_dict, detected), **fields}
-                        except Exception as e:
-                            fails = failure_tracker.get(name, 0) + 1
-                            failure_tracker[name] = fails
-                            logging.debug(f"Light polling error for {name} (fail {fails}): {repr(e)}")
-                            is_offline = fails >= 3
-                            return {"name": name.replace("_", " ").title(), "is_on": False, "offline": is_offline,
-                                    "brand": l_type, "colour": _colour_capability(info_dict, None)}
-
-                    # Do an initial poll
-                    tasks = [poll_single(n, i) for n, i in manager.lights.items()]
-                    results = await asyncio.gather(*tasks) if tasks else []
+                    manager.poll_trigger.clear()
+                    results = await asyncio.gather(*(poll_single(n, i) for n, i in list(manager.lights.items())))
                     statuses = [r for r in results if r]
-                            
                     await mqtt_client.publish("jarvis/sys/light_status", json.dumps({"network": manager.current_ssid, "lights": statuses}))
-
-                    while True:
-                        await manager.poll_trigger.wait()
-                        manager.poll_trigger.clear()
-                        
-                        tasks = [poll_single(n, i) for n, i in manager.lights.items()]
-                        results = await asyncio.gather(*tasks) if tasks else []
-                        statuses = [r for r in results if r]
-                                
-                        await mqtt_client.publish("jarvis/sys/light_status", json.dumps({"network": manager.current_ssid, "lights": statuses}))
+                    try:
+                        await asyncio.wait_for(manager.poll_trigger.wait(), timeout=POLL_INTERVAL)
+                    except asyncio.TimeoutError:
+                        pass
         except aiomqtt.MqttError:
             await asyncio.sleep(5)
         except asyncio.CancelledError:
             break
 
 # --- MQTT SERVICE LISTENER ---
+async def _publish_feedback(mqtt_client, payload: Dict[str, Any]) -> None:
+    """Publishes a command's result. The listener's connection can be dead by then (a stalled loop misses its keepalive), so a
+    failure retries on a fresh connection instead of losing the result, and never raises into an unobserved task."""
+    body = json.dumps(payload)
+    try:
+        await mqtt_client.publish("jarvis/feedback", body)
+    except Exception:
+        try:
+            async with aiomqtt.Client("localhost") as fresh:
+                await fresh.publish("jarvis/feedback", body)
+        except Exception as e:
+            logging.error(f"Could not publish light feedback: {e}")
+
+
 async def mqtt_service_listener(manager: LightManager) -> None:
     logging.info("Service Mode initialized. Listening on MQTT topics...")
+    background_tasks: set = set()
     while True:
         try:
             async with aiomqtt.Client("localhost") as mqtt_client:
@@ -848,22 +895,25 @@ async def mqtt_service_listener(manager: LightManager) -> None:
                                         color=payload_data.get("color"), lum=payload_data.get("lum"), temp=payload_data.get("temp"),
                                         target_name=light_target, rgb=payload_data.get("rgb")
                                     )
-                                await mqtt_client.publish("jarvis/feedback", json.dumps({
+                                feedback = {
                                     "device": "smart_lights", "status": "success",
                                     "message": f"Successfully shifted hardware targets to '{action_cmd}' state.",
                                     "action_cmd": action_cmd,
                                     "target": manager.last_target,
                                     "light_target": light_target,
                                     "silent": True
-                                }))
-                                manager.poll_trigger.set()
+                                }
                             except Exception as e:
-                                await mqtt_client.publish("jarvis/feedback", json.dumps({
+                                feedback = {
                                     "device": "smart_lights", "status": "error", "message": str(e),
                                     "action_cmd": action_cmd, "light_target": light_target, "silent": is_silent
-                                }))
+                                }
+                            manager.poll_trigger.set()           # success or not, the dashboard should show what the light really is
+                            await _publish_feedback(mqtt_client, feedback)
 
-                        asyncio.create_task(execute_hardware(payload, action))
+                        task = asyncio.create_task(execute_hardware(payload, action))
+                        background_tasks.add(task)           # a task nobody references can be garbage-collected mid-run
+                        task.add_done_callback(background_tasks.discard)
                         
                     except json.JSONDecodeError:
                         logging.error("JSON formatting syntax mismatch caught on parsing sequence.")

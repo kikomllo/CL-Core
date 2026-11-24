@@ -115,3 +115,40 @@ class TestWindowsShortcut:
         assert clAutostart.set_enabled(True, startup_dir) is True
         assert os.path.getsize(clAutostart.entry_path(startup_dir)) > 0
         assert clAutostart.set_enabled(False, startup_dir) is False
+
+
+class TestWindowsStartupInterpreter:
+    """The login shortcut runs pythonw.exe so no console flashes at login; boot.py then hides the rest."""
+
+    def _venv(self, tmp_path, with_pythonw=True):
+        scripts = tmp_path / ".venv" / "Scripts"
+        scripts.mkdir(parents=True)
+        (scripts / "python.exe").write_text("")
+        if with_pythonw:
+            (scripts / "pythonw.exe").write_text("")
+        return scripts
+
+    def test_prefers_pythonw_next_to_the_venv_python(self, tmp_path):
+        scripts = self._venv(tmp_path)
+        assert clAutostart._startup_python(str(tmp_path)) == str(scripts / "pythonw.exe")
+
+    def test_falls_back_to_python_when_there_is_no_pythonw(self, tmp_path):
+        scripts = self._venv(tmp_path, with_pythonw=False)
+        assert clAutostart._startup_python(str(tmp_path)) == str(scripts / "python.exe")
+
+    def test_the_shortcut_targets_it(self, startup_dir, tmp_path):
+        scripts = self._venv(tmp_path)
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            os.makedirs(startup_dir, exist_ok=True)
+            open(os.path.join(startup_dir, "JARVIS.lnk"), "w").close()
+
+            class R:
+                returncode, stdout, stderr = 0, "", ""
+            return R()
+
+        with patch.object(clAutostart, "CURRENT_OS", "Windows"), patch.object(clAutostart.subprocess, "run", fake_run):
+            clAutostart.set_enabled(True, startup_dir, root=str(tmp_path))
+        assert f"TargetPath = '{scripts / 'pythonw.exe'}'" in calls[0][-1]

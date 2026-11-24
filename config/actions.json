@@ -95,7 +95,10 @@
   "todo": {
     "list": {
       "topic": "jarvis/sys/todo/request",
-      "payload": {"action": "list"}
+      "payload": {"action": "list"},
+      "schema": {
+        "source": {"type": "string"}
+      }
     },
     "create": {
       "topic": "jarvis/sys/todo/create",

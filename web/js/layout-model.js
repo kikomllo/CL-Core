@@ -1,7 +1,7 @@
 // A window's saved layout (tests/test_webLayout.py runs this under node). The position is stored as fractions of the viewport, so a screen of
 // another size or orientation puts it in the same relative spot, and the size in design px (the fluid unit), so it scales with the screen.
 // The saved layout is the source of truth: where a window is drawn is always computed from it, never from where the window happens to be
-// right now (a hidden or squeezed window has no meaningful rectangle: in the overlay the page is a 200x400 box with the windows not drawn).
+// right now (a hidden or squeezed window has no meaningful rectangle: in the overlay the page is a 200x200 box with the windows not drawn).
 
 const clamp = (v, hi) => Math.max(0, Math.min(v, hi));
 

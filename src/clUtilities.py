@@ -207,7 +207,7 @@ class JarvisUtilities:
                             elif action == "list":
                                 await self.handle_todo_list()
                         elif topic == "jarvis/sys/todo/request":
-                            await self.handle_todo_list()
+                            await self.handle_todo_request(payload)
 
                         # NOTES
                         elif topic == "jarvis/sys/note/create":
@@ -493,8 +493,33 @@ class JarvisUtilities:
         if not todo_id: return
         file_path = os.path.join(TODOS_DIR, f"{todo_id}.json")
         if os.path.exists(file_path):
-            os.remove(file_path)
+            self._trash_todo(file_path, str(todo_id))
         await self.handle_todo_list()
+
+    TODO_TRASH_DAYS = 30
+
+    def _trash_todo(self, file_path, todo_id):
+        """A deleted task is moved to data/todos/.trash/<id>-<deleted epoch>.json, not removed (a whole list was lost to one
+        mis-click once and only a log line saved it). Restore by copying the file back to data/todos/<id>.json; entries
+        older than TODO_TRASH_DAYS are pruned on the next delete. If the move fails the task is still deleted."""
+        trash = os.path.join(TODOS_DIR, ".trash")
+        try:
+            os.makedirs(trash, exist_ok=True)
+            now = time.time()
+            dest = os.path.join(trash, f"{todo_id}-{int(now)}.json")
+            os.replace(file_path, dest)
+            os.utime(dest, (now, now))             # a rename keeps the task's old mtime; the trash ages from the deletion
+            cutoff = now - self.TODO_TRASH_DAYS * 86400
+            for name in os.listdir(trash):
+                old = os.path.join(trash, name)
+                if os.path.getmtime(old) < cutoff:
+                    os.remove(old)
+        except OSError as e:
+            logging.error(f"Could not move todo {todo_id} to the trash ({e}); deleting it.")
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
 
     async def handle_todo_complete(self, todo_id, completed=True):
         if not todo_id: return
@@ -509,6 +534,13 @@ class JarvisUtilities:
             except Exception as e:
                 logging.error(f"Failed to complete todo {todo_id}: {e}")
         await self.handle_todo_list()
+
+    async def handle_todo_request(self, payload):
+        """jarvis/sys/todo/request: publish the list; unless a dashboard window is only refreshing itself (source "ui"), also ask the
+        dashboard to show it, so "show my todo list" by voice or the text bar opens the window (also from the overlay)."""
+        await self.handle_todo_list()
+        if (payload or {}).get("source") != "ui":
+            await self.mqtt_client.publish("jarvis/sys/ui_control", json.dumps({"action": "show_todo"}))
 
     async def handle_todo_list(self):
         todos = []

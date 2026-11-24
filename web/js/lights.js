@@ -52,7 +52,7 @@ export const lightsWindow = {
       const rm = h("button", { class: "bare", title: "Remove light", "aria-label": "Remove " + l.name,
         onclick: () => { bridge.act("system.discovery", { action: "intent_remove_light", target_str: t }); lights = lights.filter(x => x !== l); render(); } }, icon("close.svg", { size: 12 }));
       return h("div", { class: "mod-row" + (off ? " offline" : "") }, disc,
-        h("div", { class: "mod-main" }, h("div", { class: "mod-name" }, l.name), h("div", { class: "dim" }, off ? "Offline" : l.is_on ? "On" : "Off")), sw, rm);
+        h("div", { class: "mod-main" }, h("div", { class: "mod-name" }, l.name), h("div", { class: "dim" }, off ? "Offline" : l.is_on == null ? "Not responding…" : l.is_on ? "On" : "Off")), sw, rm);
     }
 
     function render() {

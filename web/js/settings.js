@@ -2,7 +2,8 @@
 // Data: GET/POST /api/settings (clWebUI.py -> utils/clWebSettings.py, an allow-list over core.json). A change is saved
 // there, then the live action that goes with it is dispatched from here, exactly as the Qt widget did.
 import { bridge } from "./bridge.js";
-import { h } from "./ui.js";
+import { h, enableTabScroll, loadUiState, saveUiState } from "./ui.js";
+import { savedChoice } from "./session-model.js";
 import { audioTab, keybindsTab, presenceTab } from "./settings-tabs.js";
 import { lightsTab, spotifyTab } from "./settings-lights.js";
 
@@ -50,9 +51,10 @@ const valueOf = (values, key) => (key.startsWith("debug_flags.") ? values.debug_
 export const settingsWindow = {
   id: "widget_settings", title: "Settings", w: 470, h: 500,
   build(body) {
-    let values = {}, tab = TABS[0].id;
+    let values = {}, tab = savedChoice(loadUiState(), "settings.tab", TABS.map((t) => t.id), TABS[0].id);      // the tab you were on
     const controls = new Map();                   // key -> set(value): the page is built once and synced in place (an open dropdown survives)
     const tabs = h("div", { class: "tabs-pill" });
+    enableTabScroll(tabs);
     const pages = h("div", { class: "set-pages" });
     const reboot = h("button", { class: "btn mod-wide set-reboot", hidden: true, onclick: () => {
       bridge.act("system.restart_all"); reboot.hidden = true;
@@ -95,7 +97,7 @@ export const settingsWindow = {
       pages.append(page);
     }
     function showTab() {
-      tabs.replaceChildren(...TABS.map((t) => h("button", { class: "tab-pill", "aria-pressed": String(t.id === tab), onclick: () => { tab = t.id; showTab(); customById.get(t.id)?.show?.(); } }, t.label)));
+      tabs.replaceChildren(...TABS.map((t) => h("button", { class: "tab-pill", "aria-pressed": String(t.id === tab), onclick: () => { tab = t.id; saveUiState("settings.tab", tab); showTab(); customById.get(t.id)?.show?.(); } }, t.label)));
       for (const p of pages.children) p.hidden = p.dataset.tab !== tab;
     }
     function sync() { for (const [key, set] of controls) set(valueOf(values, key)); customs.forEach((c) => c.sync?.(values)); }
@@ -103,7 +105,7 @@ export const settingsWindow = {
     async function load() {
       try { values = await (await fetch("/api/settings")).json(); sync(); } catch { /* server not up yet: the next poll retries */ }
     }
-    showTab(); load();
+    showTab(); customById.get(tab)?.show?.(); load();      // a restored tab starts its own work (polling...) like a clicked one
     // core.json can change under us (a voice command flips silent mode), so follow it like the Qt widget does
     const poll = setInterval(() => { if (!pages.contains(document.activeElement) || document.activeElement.tagName !== "SELECT") load(); }, 3000);
     return { onClose: () => { clearInterval(poll); customs.forEach((c) => c.destroy?.()); } };

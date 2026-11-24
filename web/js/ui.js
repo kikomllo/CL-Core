@@ -1,7 +1,10 @@
 // Shared UI helpers: inline-SVG icons (recoloured with currentColor) and the floating-window manager.
 import { toLayout, fromLayout, windowsDrawn } from "./layout-model.js";
+import { wheelScroll, edges, revealOffset } from "./tabstrip-model.js";
 
 const svgCache = new Map();
+/** Resolves when every icon asked for so far has arrived (a window shown before that has gaps where its icons go). */
+export const iconsReady = () => Promise.all([...svgCache.values()]);
 
 /** A <span class="ic"> holding assets/icons/<name>, filled with currentColor unless keep=true (brand colours). */
 export function icon(name, { size = 18, keep = false } = {}) {
@@ -34,20 +37,72 @@ export const h = (tag, props = {}, ...kids) => {
   return e;
 };
 
+/** Makes a `.tabs-pill` usable when it is wider than its window: the mouse wheel scrolls it sideways, a fade at each edge with more tabs
+ *  behind it says so, and the selected tab (aria-pressed) is brought into view whenever the strip is rebuilt or resized. */
+export function enableTabScroll(strip) {
+  const m = () => ({ scrollLeft: strip.scrollLeft, scrollWidth: strip.scrollWidth, clientWidth: strip.clientWidth });
+  const fades = () => { const e = edges(m()); strip.classList.toggle("fade-l", e.left); strip.classList.toggle("fade-r", e.right); };
+  const reveal = () => {
+    const on = strip.querySelector('[aria-pressed="true"]');
+    if (on) {
+      const s = strip.getBoundingClientRect(), r = on.getBoundingClientRect();
+      strip.scrollLeft = revealOffset(m(), r.left - s.left, r.width, 12 * unit());
+    }
+    fades();
+  };
+  strip.addEventListener("wheel", (e) => {
+    const next = wheelScroll(e, m());
+    if (next != null) { e.preventDefault(); strip.scrollLeft = next; fades(); }
+  }, { passive: false });
+  strip.addEventListener("scroll", fades, { passive: true });
+  new ResizeObserver(fades).observe(strip);
+  new MutationObserver(reveal).observe(strip, { childList: true, subtree: true, attributes: true, attributeFilter: ["aria-pressed"] });
+  requestAnimationFrame(reveal);
+}
+
 export const unit = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--u")) || 1;
 
 // ---------- windows ----------
 const LAYOUT_KEY = "jarvis.layout.v1";
 const loadLayout = () => { try { return JSON.parse(localStorage.getItem(LAYOUT_KEY)) || {}; } catch { return {}; } };
 const saveLayout = (l) => { try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(l)); } catch { /* private mode */ } };
-const PIN_KEY = "jarvis.pinned.v1";
-export const loadPinned = () => { try { return JSON.parse(localStorage.getItem(PIN_KEY)) || []; } catch { return []; } };
-function setPinned(id, on) {
-  const s = new Set(loadPinned()); on ? s.add(id) : s.delete(id);
-  try { localStorage.setItem(PIN_KEY, JSON.stringify([...s])); } catch { /* private mode */ }
+// Pin / unpin, like the Qt widgets: a window is pinned (part of the dashboard, hidden with it in the overlay) or unpinned (a window of its
+// own, always on top of other apps, draggable to any monitor, there also while the dashboard is only the overlay). The shell makes the
+// window (shell/main.js); this page is then either the dashboard, or the page of one floating window (widget.html, widgetMode).
+const SHELL = window.jarvisShell || null;
+export const widgetMode = document.documentElement.dataset.mode === "widget";
+// the page can be newer than the shell that shows it (a reload picks up new web files, the shell only changes when it is restarted):
+// a feature the shell lacks must be absent, never an error that stops the page, which once left the overlay without its orb
+export const canFloat = !!(SHELL && typeof SHELL.float === "function");
+
+/** Unpins a dashboard window: it floats where it is, now as a window of its own. */
+function unpin(id, el) {
+  const r = el.getBoundingClientRect();
+  // the window stays in the dashboard until the floating one is on screen right over it (onFloatShown below): no gap, no flicker
+  SHELL.float(id, { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height), relative: true });
+}
+if (canFloat && SHELL.onFloatShown) SHELL.onFloatShown((id) => { if (open.has(id)) closeWindow(id); });
+
+/** The grip of a floating window resizes the window itself (the shell sets the size; the page just follows). */
+function floatResize(grip) {
+  grip.addEventListener("pointerdown", (e) => {
+    const sx = e.screenX, sy = e.screenY, w0 = innerWidth, h0 = innerHeight;
+    grip.setPointerCapture(e.pointerId);
+    const move = (ev) => SHELL.resizeSelf(w0 + ev.screenX - sx, h0 + ev.screenY - sy);
+    const up = () => { grip.removeEventListener("pointermove", move); grip.removeEventListener("pointerup", up); };
+    grip.addEventListener("pointermove", move); grip.addEventListener("pointerup", up);
+  });
 }
 const open = new Map();
 let zTop = 10;
+export const openIds = () => [...open.keys()];
+
+// small per-window choices (a selected tab, an open drawer) that survive a reload: one JSON object in localStorage
+const STATE_KEY = "jarvis.state.v1";
+export const loadUiState = () => { try { return JSON.parse(localStorage.getItem(STATE_KEY)) || {}; } catch { return {}; } };
+export function saveUiState(key, value) {
+  try { const s = loadUiState(); if (value == null) delete s[key]; else s[key] = value; localStorage.setItem(STATE_KEY, JSON.stringify(s)); } catch { /* private mode */ }
+}
 
 // ---------- minimum size: fit to content ----------
 // A window can be resized to any size at which its content still fits: the smallest size is MEASURED from the content, not a number each widget
@@ -105,17 +160,20 @@ function applyMin(el) {
   if (!el.isConnected || !windowsDrawn(document.documentElement.dataset.mode)) return null;
   const m = fitMin(el);
   el.style.minWidth = m.w + "px"; el.style.minHeight = m.h + "px";
+  if (widgetMode) SHELL.minSelf(m.w, m.h);            // the floating window cannot be made smaller than its content needs
   return m;
 }
 
 /** def = {id, title, w, h (design px), build(body, win) -> {onClose?}}; win = {close, el, head, title, pin} */
-export function openWindow(def) {
+/** `at` = {x, y, width, height} in page px puts the window exactly there (a window pinned back from where it floated), instead of at its saved place. */
+export function openWindow(def, at) {
   if (open.has(def.id)) { focus(open.get(def.id).el); return open.get(def.id); }
-  const u = unit(), layout = loadLayout()[def.id];
+  const u = unit(), layout = widgetMode ? undefined : loadLayout()[def.id];
   const el = h("div", { class: "win panel", "data-id": def.id });
-  const pinned = loadPinned().includes(def.id);
-  const pin = h("button", { class: "chrome-btn pin" + (pinned ? " on" : ""), title: "Keep open across restarts", "aria-label": "Pin",
-    onclick: () => { const on = pin.classList.toggle("on"); setPinned(def.id, on); } }, icon("pin.svg", { size: 12 }));
+  // pinned (in the dashboard): the dimmed pin_off icon; unpinned (a window of its own): the bright pin icon, like the Qt widgets. Needs the shell.
+  const pin = h("button", { class: "chrome-btn pin" + (widgetMode ? " on" : ""), hidden: !canFloat,
+    title: widgetMode ? "Pin back into the dashboard" : "Unpin: a window of its own, on top of other apps", "aria-label": widgetMode ? "Pin" : "Unpin",
+    onclick: () => (widgetMode ? SHELL.dockSelf() : unpin(def.id, el)) }, icon(widgetMode ? "pin.svg" : "pin_off.svg", { size: 12 }));
   const titleEl = h("span", { class: "win-title" }, def.title);
   const head = h("div", { class: "win-head" }, h("div", { class: "win-dot" }),
     titleEl, pin,
@@ -125,19 +183,26 @@ export function openWindow(def) {
   el.append(head, body, grip);
   document.getElementById("widgets").append(el);
 
-  const W = innerWidth, H = innerHeight;
-  const w = layout ? layout.w * u : def.w * u, hh = layout ? layout.h * u : def.h * u;
-  // a window never moved yet goes in the first free spot of a tidy row along the top (the Qt dashboard's arrangement)
-  const spot = layout ? null : freeSpot(w, hh, u);
-  const x = layout ? layout.fx * W : spot.x, y = layout ? layout.fy * H : spot.y;
-  Object.assign(el.style, { width: w + "px", height: hh + "px", minWidth: FIT_FLOOR.w * u + "px", minHeight: FIT_FLOOR.h * u + "px" });
-  place(el, x, y);
-  if (!layout) persist(def.id, el);               // every open window has a saved layout, the source of truth when the viewport changes
+  if (widgetMode) {
+    // a floating window: the window fills the page, the shell moves (the title bar is a drag region, style.css) and sizes the page, and
+    // nothing of the dashboard's saved layouts is read or written
+    Object.assign(el.style, { left: "0", top: "0", width: "100%", height: "100%" });
+    floatResize(grip);
+  } else {
+    const W = innerWidth, H = innerHeight;
+    const w = at ? at.width : layout ? layout.w * u : def.w * u, hh = at ? at.height : layout ? layout.h * u : def.h * u;
+    // a window never moved yet goes in the first free spot of a tidy row along the top (the Qt dashboard's arrangement)
+    const spot = layout || at ? null : freeSpot(w, hh, u);
+    const x = at ? at.x : layout ? layout.fx * W : spot.x, y = at ? at.y : layout ? layout.fy * H : spot.y;
+    Object.assign(el.style, { width: Math.round(w) + "px", height: Math.round(hh) + "px", minWidth: FIT_FLOOR.w * u + "px", minHeight: FIT_FLOOR.h * u + "px" });
+    place(el, x, y);
+    if (!layout) persist(def.id, el);               // every open window has a saved layout, the source of truth when the viewport changes
+    if (at) persist(def.id, el);                    // a window pinned back saves where it now is
+    drag(head, el, () => persist(def.id, el));
+    resizeGrip(grip, el, () => persist(def.id, el));
+  }
   focus(el);
   el.addEventListener("pointerdown", () => focus(el));
-
-  drag(head, el, () => persist(def.id, el));
-  resizeGrip(grip, el, () => persist(def.id, el));
   const inst = { el, body, def, api: {} };
   open.set(def.id, inst);
   inst.api = def.build(body, { close: () => closeWindow(def.id), el, head, title: titleEl, pin }) || {};      // head/title/pin: for a window that puts controls in its title bar
@@ -162,9 +227,10 @@ function freeSpot(w, hh, u) {
 
 export function closeWindow(id) {
   const w = open.get(id); if (!w) return;
-  persist(id, w.el);
+  if (!widgetMode) persist(id, w.el);
   w.api.onClose?.(); w.el.remove(); open.delete(id);
   window.dispatchEvent(new CustomEvent("windows-changed"));
+  if (widgetMode) SHELL.closeSelf();                 // closing a floating window closes its window
 }
 export const isOpen = (id) => open.has(id);
 export const toggleWindow = (def) => (open.has(def.id) ? closeWindow(def.id) : openWindow(def));
@@ -172,8 +238,9 @@ export const toggleWindow = (def) => (open.has(def.id) ? closeWindow(def.id) : o
 function focus(el) { el.style.zIndex = ++zTop; }
 function place(el, x, y) {
   const r = el.getBoundingClientRect(), W = innerWidth, H = innerHeight;
-  el.style.left = Math.max(0, Math.min(x, W - r.width)) + "px";
-  el.style.top = Math.max(0, Math.min(y, H - r.height)) + "px";
+  // whole pixels: a window at a fractional position is blurred, and one that floats (a window of its own, at whole pixels) would be a hair off
+  el.style.left = Math.round(Math.max(0, Math.min(x, W - r.width))) + "px";
+  el.style.top = Math.round(Math.max(0, Math.min(y, H - r.height))) + "px";
 }
 function persist(id, el) {
   const r = el.getBoundingClientRect(), l = loadLayout();
@@ -208,6 +275,7 @@ function resizeGrip(grip, el, done) {
 // layout. It used to clamp each window where it was, which lost the layout whenever the page was squeezed: in the overlay the windows are not
 // drawn, so each measured as 0x0 at 0,0 and went there for good.
 function refit() {
+  if (widgetMode) return;                              // a floating window fills its own page, it has no saved layout to go back to
   if (!windowsDrawn(document.documentElement.dataset.mode)) return;
   const u = unit(), layouts = loadLayout();
   open.forEach(({ el }, id) => {

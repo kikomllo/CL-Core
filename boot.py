@@ -142,13 +142,52 @@ def _ensure_desktop_shell(is_windows: bool) -> None:
         print(f"[BOOT] Could not install the desktop shell ({e}). The Qt dashboard will run instead; retry with: npm install --prefix shell")
 
 
+HIDDEN_ENV = "JARVIS_HIDDEN"
+
+
+def should_run_hidden(argv, env, is_windows):
+    """On Windows the ecosystem runs without a console window unless `--console` is given (the supervisor and every service
+    would otherwise live inside the window boot.py was started from, and closing it killed them all). The user opens a
+    terminal from the dashboard (Live Logs) when they want one. HIDDEN_ENV marks the already-detached process, and everything
+    it spawns, so a restart from inside the ecosystem does not detach a second time."""
+    return is_windows and "--console" not in argv and env.get(HIDDEN_ENV) != "1"
+
+
+def relaunch_hidden(script, args, env=None):
+    """Starts `script` again in a process with a hidden console of its own (python.exe + CREATE_NO_WINDOW, not pythonw: a console
+    program started from a console-less parent would pop a window for every service) and its own process group, so closing
+    the console it was started from, or Ctrl+C in it, no longer reaches it. Returns the new process."""
+    exe = sys.executable
+    if os.path.basename(exe).lower() == "pythonw.exe":                     # e.g. the startup shortcut: it has no console to hide
+        console_exe = os.path.join(os.path.dirname(exe), "python.exe")
+        if os.path.exists(console_exe):
+            exe = console_exe
+    env = dict(os.environ if env is None else env)
+    env[HIDDEN_ENV] = "1"
+    flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+    return subprocess.Popen([exe, script] + list(args), env=env, creationflags=flags, close_fds=True)
+
+
 def main():
+    is_windows = platform.system() == "Windows"
+    if should_run_hidden(sys.argv[1:], os.environ, is_windows):
+        relaunch_hidden(os.path.abspath(__file__), sys.argv[1:])
+        print("[BOOT] JARVIS is starting in the background (no console window). Live Logs in the dashboard, or logs/latest_run.log, "
+              "shows what it does; run `python boot.py --console` to run it in this window instead.")
+        return
+    if os.environ.get(HIDDEN_ENV) == "1" and "--console" not in sys.argv and sys.stdout is not None:
+        # No one can read this console: keep boot's own messages (a failed install, a locked port) in a file instead.
+        try:
+            os.makedirs("logs", exist_ok=True)
+            sys.stdout = sys.stderr = open(os.path.join("logs", "boot.log"), "w", encoding="utf-8", buffering=1)
+        except OSError:
+            pass
+
     print("==================================================")
     print("JARVIS ECOSYSTEM BOOTLOADER")
     print("==================================================")
-    
+
     # OS specifics
-    is_windows = platform.system() == "Windows"
     venv_dir = ".venv"
     
     python_exe = os.path.join(venv_dir, "Scripts", "python.exe") if is_windows else os.path.join(venv_dir, "bin", "python")

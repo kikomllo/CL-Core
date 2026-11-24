@@ -85,7 +85,10 @@ input { font: inherit; color: inherit; }
 ::-webkit-scrollbar-thumb:hover { border-width: max(1.5px, calc(var(--sb-inset) / 2)); background: rgba(255,190,40,.78); background-clip: padding-box; }
 ::-webkit-scrollbar-thumb:active { background: var(--accent-hover); background-clip: padding-box; }
 @supports not selector(::-webkit-scrollbar) { * { scrollbar-width: thin; scrollbar-color: rgba(255,170,0,.4) transparent; } }
-/* a row of tab pills scrolls sideways when it must, but needs no bar under it */
+/* a row of tab pills scrolls sideways when it must (mouse wheel, see enableTabScroll in ui.js), but needs no bar under it: a fade at an edge says there are more tabs past it */
+.tabs-pill.fade-r { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 26px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 26px), transparent); }
+.tabs-pill.fade-l { -webkit-mask-image: linear-gradient(90deg, transparent, #000 26px); mask-image: linear-gradient(90deg, transparent, #000 26px); }
+.tabs-pill.fade-l.fade-r { -webkit-mask-image: linear-gradient(90deg, transparent, #000 26px, #000 calc(100% - 26px), transparent); mask-image: linear-gradient(90deg, transparent, #000 26px, #000 calc(100% - 26px), transparent); }
 .tabs-pill { scrollbar-width: none; } .tabs-pill::-webkit-scrollbar { display: none; }
 
 /* filled-track slider: the thumb is invisible, the filled bar is the feedback (--fill set from JS) */
@@ -95,7 +98,7 @@ input { font: inherit; color: inherit; }
 .slider:disabled { opacity: .35; }
 
 /* ---------- floating windows: title bar with glowing dot, label, pin, close ---------- */
-#widgets { position: fixed; inset: 0; pointer-events: none; }
+#widgets { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
 #widgets > .win { pointer-events: auto; }
 .win.panel { border-radius: calc(7 * var(--u)); }
 .win { position: absolute; display: flex; flex-direction: column; overflow: hidden;
@@ -537,5 +540,13 @@ button.disc:disabled { cursor: default; }
 .cl-sel { background: rgba(255,150,0,.42); }      /* the selected part of the line being edited */
 
 /* ---- Desktop shell, overlay mode (shell/main.js): the orb alone in a small click-through box, the rest of the page not drawn at all ---- */
+/* a floating (unpinned) window's page (widget.html): the window fills the page, and its title bar moves the window; no lyrics here */
+html[data-mode="widget"], html[data-mode="widget"] body { background: transparent !important; }
+html[data-mode="widget"] #lyrics { display: none !important; }
+html[data-mode="widget"] .win-head { -webkit-app-region: drag; cursor: default; }
+html[data-mode="widget"] .win-head button { -webkit-app-region: no-drag; }
+/* a mode switch is under way (web/js/shell.js): nothing of the old layout may show in the window's new size */
+html.switching, html.switching body { background: transparent !important; }
+html.switching body > * { visibility: hidden !important; }
 html[data-mode="overlay"], html[data-mode="overlay"] body { background: transparent !important; }
 html[data-mode="overlay"] body > :not(#orb) { display: none !important; }
