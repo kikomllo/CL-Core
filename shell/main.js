@@ -215,7 +215,7 @@ async function runTest() {
       if (process.env.JARVIS_SHELL_AFTER2) info.after2 = await win.webContents.executeJavaScript(process.env.JARVIS_SHELL_AFTER2);      // the dashboard, after that
     }
     info.floats = await Promise.all([...floats].map(async ([id, w]) => ({ id, bounds: w.getBounds(), onTop: w.isAlwaysOnTop(), min: w.getMinimumSize(),
-      page: await w.webContents.executeJavaScript("JSON.stringify({mode: document.documentElement.dataset.mode, wins: [...document.querySelectorAll('.win')].map(x => x.dataset.id), inner: [innerWidth, innerHeight]})") })));
+      page: await w.webContents.executeJavaScript("JSON.stringify({mode: document.documentElement.dataset.mode, wins: [...document.querySelectorAll('.win')].map(x => x.dataset.id), inner: [innerWidth, innerHeight], u: getComputedStyle(document.documentElement).getPropertyValue('--u'), zoom: localStorage.getItem('jarvis.zoom.v1')})") })));
   }
   info.testLog = testLog;
   console.log("[SHELL-TEST] " + JSON.stringify(info));

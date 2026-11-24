@@ -86,7 +86,7 @@ input { font: inherit; color: inherit; }
 ::-webkit-scrollbar-thumb:active { background: var(--accent-hover); background-clip: padding-box; }
 @supports not selector(::-webkit-scrollbar) { * { scrollbar-width: thin; scrollbar-color: rgba(255,170,0,.4) transparent; } }
 /* a row of tab pills scrolls sideways when it must (mouse wheel, see enableTabScroll in ui.js), but needs no bar under it: a fade at an edge says there are more tabs past it */
-.tabs-pill.fade-r { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 26px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 26px), transparent); }
+.tabs-pill.fade-r { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 26 * var(--u)), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 26 * var(--u)), transparent); }
 .tabs-pill.fade-l { -webkit-mask-image: linear-gradient(90deg, transparent, #000 26px); mask-image: linear-gradient(90deg, transparent, #000 26px); }
 .tabs-pill.fade-l.fade-r { -webkit-mask-image: linear-gradient(90deg, transparent, #000 26px, #000 calc(100% - 26px), transparent); mask-image: linear-gradient(90deg, transparent, #000 26px, #000 calc(100% - 26px), transparent); }
 .tabs-pill { scrollbar-width: none; } .tabs-pill::-webkit-scrollbar { display: none; }
@@ -540,6 +540,12 @@ button.disc:disabled { cursor: default; }
 .cl-sel { background: rgba(255,150,0,.42); }      /* the selected part of the line being edited */
 
 /* ---- Desktop shell, overlay mode (shell/main.js): the orb alone in a small click-through box, the rest of the page not drawn at all ---- */
+/* the zoom badge (zoom.js): says the level for a moment; double-click resets */
+.zoom-badge { position: fixed; top: calc(14 * var(--u)); left: 50%; transform: translateX(-50%); z-index: 99990; padding: calc(5 * var(--u)) calc(14 * var(--u)); border-radius: 999px;
+  background: rgba(35,17,4,.94); border: 1px solid rgba(255,160,0,.45); color: var(--accent); font-size: calc(12 * var(--u)); font-weight: 800; cursor: pointer; user-select: none; }
+.zoom-badge[hidden] { display: none; }
+.set-zoom { display: inline-flex; align-items: center; gap: calc(10 * var(--u)); }
+.set-zoom .slider { width: calc(140 * var(--u)); }
 /* a floating (unpinned) window's page (widget.html): the window fills the page, and its title bar moves the window; no lyrics here */
 html[data-mode="widget"], html[data-mode="widget"] body { background: transparent !important; }
 html[data-mode="widget"] #lyrics { display: none !important; }

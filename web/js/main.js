@@ -5,6 +5,7 @@ import { setSkin } from "./skin.js";
 import { brain } from "./state.js";
 import { h, icon, toggleWindow, isOpen, openWindow, closeWindow, openIds, canFloat } from "./ui.js";
 import { parseIds, windowsToRestore } from "./session-model.js";
+import { getGlobal, startZoomInput } from "./zoom.js";
 import { windowForAction, showPlan } from "./ui-control-model.js";
 import { mediaWindow } from "./media.js";
 import { lightsWindow } from "./lights.js";
@@ -27,9 +28,12 @@ function setUnit() {
   // the overlay's window is a small box: its unit comes from the monitor it sits on, so the orb is the size it is on the dashboard
   const box = currentMode() === "overlay" ? screen : { width: innerWidth, height: innerHeight };
   const long = Math.max(box.width, box.height), short = Math.min(box.width, box.height);
-  U = Math.min(long / 1920, short / 1080);
+  // the zoom (Ctrl + / - / 0, Settings) is a factor on the unit; the overlay is a fixed box and is not zoomed
+  U = Math.min(long / 1920, short / 1080) * (currentMode() === "overlay" ? 1 : getGlobal());
   document.documentElement.style.setProperty("--u", U + "px");
+  document.documentElement.style.setProperty("--ug", U + "px");      // the same, for a window that has a zoom of its own on top
   fitDock();
+  window.dispatchEvent(new Event("jarvis-unit"));                      // windows refit (ui.js), terminals measure their cells again
 }
 
 const conn = document.getElementById("conn");
@@ -110,7 +114,7 @@ cmd.addEventListener("keydown", (e) => {
 startAudioPills(document.getElementById("audio-pills"));
 const calendar = startCalendar();
 if (new URLSearchParams(location.search).get("open")?.split(",").includes("calendar")) calendar.toggle(true);
-setUnit(); addEventListener("resize", setUnit);
+setUnit(); addEventListener("resize", setUnit); addEventListener("jarvis-zoom", setUnit); startZoomInput();
 startShell(setUnit);          // in the desktop shell: <html data-mode> follows the window's mode, ui_control switches it
 startOrb(document.getElementById("orb"), () => U);
 

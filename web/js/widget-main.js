@@ -1,6 +1,7 @@
 // The page of a floating (unpinned) window: widget.html?id=<window id>, loaded by shell/main.js in a window of its own. It shows that one window
 // filling the whole page; moving (the title bar), resizing, closing and pinning back are done through the shell (ui.js, widgetMode).
 import { setSkin } from "./skin.js";
+import { getGlobal, startZoomInput } from "./zoom.js";
 import { openWindow, iconsReady } from "./ui.js";
 import { bridge } from "./bridge.js";
 import { mediaWindow } from "./media.js";
@@ -18,9 +19,19 @@ const DEFS = [mediaWindow, lightsWindow, remindersWindow, todoWindow, notesWindo
 // One fluid unit like the dashboard's, from the monitor the window is on (not the window: it is small), and again when it is dragged to another.
 function setUnit() {
   const long = Math.max(screen.width, screen.height), short = Math.min(screen.width, screen.height);
-  document.documentElement.style.setProperty("--u", Math.min(long / 1920, short / 1080) + "px");
+  const u = Math.min(long / 1920, short / 1080) * getGlobal() + "px";
+  document.documentElement.style.setProperty("--u", u); document.documentElement.style.setProperty("--ug", u);
+  window.dispatchEvent(new Event("jarvis-unit"));
 }
 setUnit(); addEventListener("resize", setUnit);
+// the global zoom: the content scales, and the window (its frame) by the same ratio, like the dashboard's windows
+let lastZoom = getGlobal();
+addEventListener("jarvis-zoom", () => {
+  const ratio = getGlobal() / lastZoom; lastZoom = getGlobal();
+  setUnit();
+  if (window.jarvisShell && window.jarvisShell.resizeSelf) window.jarvisShell.resizeSelf(Math.round(innerWidth * ratio), Math.round(innerHeight * ratio));
+});
+startZoomInput();
 
 fetch("/api/config").then((r) => r.json()).catch(() => ({})).then((s) => setSkin(s.theme));
 

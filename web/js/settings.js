@@ -4,6 +4,8 @@
 import { bridge } from "./bridge.js";
 import { h, enableTabScroll, loadUiState, saveUiState } from "./ui.js";
 import { savedChoice } from "./session-model.js";
+import { getGlobal, setGlobal } from "./zoom.js";
+import { GLOBAL_RANGE, percent } from "./zoom-model.js";
 import { audioTab, keybindsTab, presenceTab } from "./settings-tabs.js";
 import { lightsTab, spotifyTab } from "./settings-lights.js";
 
@@ -18,6 +20,7 @@ const TABS = [
       toggle("enable_followup", "Follow-ups", (on) => bridge.act("state.daemon", { action: on ? "followup_on" : "followup_off" })),
     ] },
     { title: "Startup", rows: [toggle("start_on_login", "Start JARVIS when I log in")] },
+    { title: "Display", rows: [{ kind: "zoom", label: "Zoom (Ctrl + / - / 0)" }] },
     { title: "Persona (look and voice, needs a reboot)", rows: [select("theme", "Assistant", ["jarvis", "ultron"], { reboot: true })] },
     { title: "System Core", rows: [select("ecosystem_state", "Ecosystem Mode", ["normal", "debug", "background"], { after: (v) => bridge.act("state.change", { action: v }) })] },
     { title: "Inference Engine", rows: [
@@ -52,6 +55,7 @@ export const settingsWindow = {
   id: "widget_settings", title: "Settings", w: 470, h: 500,
   build(body) {
     let values = {}, tab = savedChoice(loadUiState(), "settings.tab", TABS.map((t) => t.id), TABS[0].id);      // the tab you were on
+    let zoomOff = null;
     const controls = new Map();                   // key -> set(value): the page is built once and synced in place (an open dropdown survives)
     const tabs = h("div", { class: "tabs-pill" });
     enableTabScroll(tabs);
@@ -72,6 +76,16 @@ export const settingsWindow = {
     }
 
     function control(row) {
+      if (row.kind === "zoom") {                       // the zoom of the whole UI: client-side (localStorage), not a core.json setting
+        const range = h("input", { type: "range", class: "slider", min: percent(GLOBAL_RANGE[0]), max: percent(GLOBAL_RANGE[1]), step: 5, "aria-label": row.label });
+        const val = h("span", { class: "dim" }, "");
+        const reset = h("button", { class: "bare", title: "Reset to 100 %", "aria-label": "Reset zoom", onclick: () => setGlobal(1) }, "↺");
+        const paint = () => { range.value = percent(getGlobal()); val.textContent = percent(getGlobal()) + " %"; range.style.setProperty("--fill", ((range.value - range.min) / (range.max - range.min)) * 100 + "%"); };
+        range.addEventListener("input", () => setGlobal(+range.value / 100));
+        window.addEventListener("jarvis-zoom", paint); zoomOff = () => window.removeEventListener("jarvis-zoom", paint);
+        paint();
+        return h("span", { class: "set-zoom" }, range, val, reset);
+      }
       if (row.kind === "toggle") {
         const sw = h("button", { class: "switch", role: "switch", "aria-label": row.label, onclick: () => {
           const on = !sw.classList.contains("on"); set(on); save(row, on);
@@ -108,6 +122,6 @@ export const settingsWindow = {
     showTab(); customById.get(tab)?.show?.(); load();      // a restored tab starts its own work (polling...) like a clicked one
     // core.json can change under us (a voice command flips silent mode), so follow it like the Qt widget does
     const poll = setInterval(() => { if (!pages.contains(document.activeElement) || document.activeElement.tagName !== "SELECT") load(); }, 3000);
-    return { onClose: () => { clearInterval(poll); customs.forEach((c) => c.destroy?.()); } };
+    return { onClose: () => { zoomOff?.(); clearInterval(poll); customs.forEach((c) => c.destroy?.()); } };
   },
 };

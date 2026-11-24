@@ -286,4 +286,7 @@ function refit() {
   });
 }
 addEventListener("resize", refit);
+// the unit changed (a zoom): every window is placed and sized again from its saved layout, which is in design px, so frames follow the zoom;
+// and what must fit is measured again at the new size
+addEventListener("jarvis-unit", () => { refit(); for (const { el } of open.values()) requestAnimationFrame(() => applyMin(el)); });
 addEventListener("jarvis-mode", refit);               // fired by shell.js once the mode changed: the screen the dashboard returns to may differ

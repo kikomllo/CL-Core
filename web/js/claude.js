@@ -116,6 +116,8 @@ export const claudeWindow = {
     }
     const ro = new ResizeObserver(() => { clearTimeout(resizeTimer); resizeTimer = setTimeout(resize, RESIZE_DEBOUNCE_MS); });
     ro.observe(screen);
+    const onUnit = () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(resize, RESIZE_DEBOUNCE_MS); };      // a zoom: the cell is another size, the window may not be
+    window.addEventListener("jarvis-unit", onUnit);
 
     // ---- following the bottom (where the input box is) unless you scroll up ----
     screen.addEventListener("scroll", () => { pinned = screen.scrollTop + screen.clientHeight >= screen.scrollHeight - 4; });
@@ -170,6 +172,6 @@ export const claudeWindow = {
 
     const off = bridge.on("jarvis/claude/screen", (m) => { if (m && typeof m === "object") { msg = m; line.setScreen(m); draw(); } });
     queueMicrotask(() => { measure(); resize(); });
-    return { onClose: () => { off(); ro.disconnect(); clearTimeout(resizeTimer); clearTimeout(holdTimer); } };
+    return { onClose: () => { off(); ro.disconnect(); window.removeEventListener("jarvis-unit", onUnit); clearTimeout(resizeTimer); clearTimeout(holdTimer); } };
   },
 };
