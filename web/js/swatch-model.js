@@ -81,3 +81,11 @@ export function modeAfter(fields) {
   if (typeof fields.color === "string") return WHITE_NAMES.includes(fields.color) ? "white" : "colour";
   return null;
 }
+
+/** The brightness (1-100) a colour that is not at full value asks for, or null at full value: the darkness of a mix such as (0, 100, 0) is not
+ *  part of a bulb's hue, so it becomes brightness, as the light a screen would give (the brightest channel to the power gamma). The same rule as
+ *  src/utils/clColour.py. */
+export function darkBrightness(rgb, gamma = 1) {
+  const v = Math.pow(Math.max(...rgb) / 255, gamma);
+  return v >= 0.995 ? null : Math.max(1, Math.min(100, Math.round(100 * v)));
+}

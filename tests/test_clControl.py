@@ -840,3 +840,51 @@ class TestColourGamma:
         assert m.colour_gamma() == 1.8
         core.write_text(json.dumps({"settings": {"light_colour_gamma": "junk"}}))
         assert m.colour_gamma() == 1.0
+
+
+class TestDarkMixesOnATapoBulb:
+    """The darkness of a mix like (0, 100, 0) is not part of its hue: it becomes the brightness."""
+
+    def _device(self, mocker):
+        device = mocker.MagicMock()
+        for name in ("on", "set_brightness", "set_hue_saturation"):
+            setattr(device, name, mocker.AsyncMock())
+        return device
+
+    @pytest.mark.asyncio
+    async def test_a_dark_green_is_the_pure_hue_at_a_lower_brightness(self, manager, mocker):
+        device = self._device(mocker)
+        manager.colour_gamma = lambda: 2.2
+        await manager._apply_tapo(device, False, True, False, None, 100, None, rgb=(0, 100, 0))
+        device.set_hue_saturation.assert_awaited_once_with(120, 100)
+        device.set_brightness.assert_awaited_once_with(13)
+
+    @pytest.mark.asyncio
+    async def test_a_darker_mix_is_darker_even_when_the_picker_sent_the_same_brightness(self, manager, mocker):
+        device = self._device(mocker)
+        manager.colour_gamma = lambda: 2.2
+        sent = []
+        device.set_brightness.side_effect = lambda b: sent.append(b)
+        await manager._apply_tapo(device, False, True, False, None, 100, None, rgb=(0, 100, 0))
+        await manager._apply_tapo(device, False, True, False, None, 100, None, rgb=(0, 20, 0))
+        assert sent[0] > sent[1] >= 1
+
+    @pytest.mark.asyncio
+    async def test_a_full_value_colour_keeps_the_brightness_it_was_sent_with(self, manager, mocker):
+        device = self._device(mocker)
+        manager.colour_gamma = lambda: 2.2
+        await manager._apply_tapo(device, False, True, False, None, 42, None, rgb=(0, 255, 0))
+        device.set_brightness.assert_awaited_once_with(42)
+
+    @pytest.mark.asyncio
+    async def test_a_dark_mix_with_no_brightness_sent_still_sets_one(self, manager, mocker):
+        device = self._device(mocker)
+        await manager._apply_tapo(device, False, True, False, None, None, None, rgb=(128, 0, 0))
+        device.set_brightness.assert_awaited_once_with(50)
+
+    @pytest.mark.asyncio
+    async def test_a_colour_name_is_not_darkened(self, manager, mocker):
+        device = self._device(mocker)
+        manager.color_matrix = {"purple": {"type": "rgb", "r": 128, "g": 0, "b": 128}}
+        await manager._apply_tapo(device, False, True, False, "purple", 80, None)
+        device.set_brightness.assert_awaited_once_with(80)                       # the voice colours keep their old behaviour

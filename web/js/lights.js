@@ -3,7 +3,7 @@
 import { bridge } from "./bridge.js";
 import { h, icon } from "./ui.js";
 import { pickerSpot } from "./picker-spot.js";
-import { mergeSwatches, swatchCommand, wheelColour, knobOffset, rgbToHsv, liveSender, isWhiteLight, modeAfter } from "./swatch-model.js";
+import { mergeSwatches, swatchCommand, wheelColour, knobOffset, rgbToHsv, liveSender, isWhiteLight, modeAfter, darkBrightness } from "./swatch-model.js";
 
 const PALETTE = [["red", [255, 0, 0]], ["orange", [255, 165, 0]], ["yellow", [255, 255, 0]], ["green", [0, 255, 0]],
   ["cyan", [0, 255, 255]], ["blue", [0, 0, 255]], ["purple", [128, 0, 128]], ["hot pink", [255, 105, 180]]];
@@ -23,9 +23,12 @@ function whiteTint(k) {
 }
 // The colour swatches the user changed ({name: [r, g, b]}), kept in core.json (settings.light_swatches) through /api/settings so the Qt picker and
 // every window of the UI agree. Read when the window builds and again after every picker opens, so a change made elsewhere shows next time.
-let savedSwatches = {};
+let savedSwatches = {}, colourGamma = 1;          // colourGamma: core.json settings.light_colour_gamma, how a darker mix maps to brightness
 async function loadSwatches() {
-  try { const r = await fetch("/api/settings"); if (r.ok) savedSwatches = (await r.json()).light_swatches || {}; } catch { /* server not up yet: the defaults show */ }
+  try {
+    const r = await fetch("/api/settings");
+    if (r.ok) { const s = await r.json(); savedSwatches = s.light_swatches || {}; colourGamma = Math.min(3, Math.max(1, +s.light_colour_gamma || 1)); }
+  } catch { /* server not up yet: the defaults show */ }
 }
 /** Saves one swatch (rgb), or puts its default back (null). Returns whether the server took it. */
 async function saveSwatch(name, rgb) {
@@ -88,7 +91,15 @@ export const lightsWindow = {
       let tempSlider = null;
       // The temperature slider belongs to white mode: locked while the bulb is a colour, unlocked by a white swatch (or by the bulb already being white).
       const setWhite = (isWhite) => tempSlider?.setLocked(!isWhite);
-      const send = (f) => { clearTimeout(timer); pending = null; bridge.act("light.set", { action: "on", light_target: t, silent: true, ...f }); const m = modeAfter(f); if (m) setWhite(m === "white"); };
+      let lumSlider = null;
+      const send = (f) => {
+        clearTimeout(timer); pending = null;
+        // A mix that is not at full value (a dark green from the sliders) is a darker light: its darkness becomes the brightness, and the slider shows it.
+        const dark = Array.isArray(f.rgb) ? darkBrightness(f.rgb, colourGamma) : null;
+        if (dark !== null) { lum = dark; lumSlider?.setValue(dark); f = { ...f, lum: dark }; }
+        bridge.act("light.set", { action: "on", light_target: t, silent: true, ...f });
+        const m = modeAfter(f); if (m) setWhite(m === "white");
+      };
       const queue = (f) => { pending = f; clearTimeout(timer); timer = setTimeout(() => pending && send(pending), 200); };
       const sw = (name, rgb, label, tp) => h("button", { class: "sw", "aria-label": label ? "White" : "Colour", style: `--c:${css(rgb)}`,
         onclick: () => { send({ color: name, lum }); if (tp !== undefined) { temp = tp; tempSlider?.setValue(tp); } } }, label || "");
@@ -113,7 +124,13 @@ export const lightsWindow = {
         const rows = ["R", "G", "B"].map((letter, i) => {
           const input = h("input", { type: "range", class: "slider rgb-slider", min: 0, max: 255, value: s.rgb[i], "aria-label": letter });
           const num = h("span", { class: "rgb-v dim" }, String(s.rgb[i]));
-          input.addEventListener("input", () => { const c = [...s.rgb]; c[i] = +input.value; show(c); live.push(c); });
+          input.addEventListener("input", () => {
+            const c = [...s.rgb]; c[i] = +input.value;
+            // The three sliders are the colour and its brightness: the brightest channel at 255 is full brightness, less is darker (a wheel colour keeps the slider's).
+            const b = darkBrightness(c, colourGamma) ?? 100;
+            lum = b; lumSlider?.setValue(b);
+            show(c); live.push(c);
+          });
           input.addEventListener("change", release);                         // a key press or a lifted drag: kept for good
           return { input, num, el: h("div", { class: "rgb-row" }, h("span", { class: "rgb-l" }, letter), input, num) };
         });
@@ -163,7 +180,7 @@ export const lightsWindow = {
         h("div", { class: "pk-title" }, l.name, h("span", { class: "dim" }, { wiz: " · WiZ", tapo: " · Tapo" }[String(brand).toLowerCase()] || "")),
         h("div", { class: "pk-swatches" }, swatches.map(paletteSw)),
         h("div", { class: "pk-swatches" }, WHITES.map(([n, tp, lab]) => sw(n, whiteTint(tempToK(brand, tp)), lab, tp))),
-        slider("BRIGHTNESS", lum, 1, 100, (v) => v + " %", (v) => { lum = v; queue({ lum }); }),
+        lumSlider = slider("BRIGHTNESS", lum, 1, 100, (v) => v + " %", (v) => { lum = v; queue({ lum }); }),
         tempSlider = slider("TEMPERATURE", temp, 0, 100, (v) => tempToK(brand, v) + " K", (v) => { temp = v; queue({ temp, lum }); }));
       setWhite(isWhiteLight(l));
       document.body.append(el);

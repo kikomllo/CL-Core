@@ -144,6 +144,13 @@ class LightControlWidget(QWidget):
             return {}
 
     @staticmethod
+    def _load_gamma():
+        try:
+            return min(3.0, max(1.0, float(ConfigLoader().load_json("core.json").get("settings", {}).get("light_colour_gamma", 1.0))))
+        except Exception:
+            return 1.0
+
+    @staticmethod
     def _save_swatch(name, rgb):
         """Keeps a swatch the user changed (rgb), or puts its default back (None), through the same validated write as the web UI."""
         try:
@@ -162,7 +169,7 @@ class LightControlWidget(QWidget):
         picker = ColourPicker(row_data["name"], row_data.get("brand", ""), {
             "brightness": row_data.get("brightness"), "kelvin": row_data.get("kelvin"),
             "brand_label": {"wiz": "WiZ", "tapo": "Tapo"}.get(row_data.get("brand", ""), ""),
-            "swatches": self._load_swatches()}, parent=self)
+            "swatches": self._load_swatches(), "gamma": self._load_gamma()}, parent=self)
         picker.chosen.connect(lambda fields, t=target_name: self._send_colour(t, fields))
         picker.swatchChanged.connect(self._save_swatch)
         picker.destroyed.connect(lambda _=None, t=target_name: self._picker_closed(t))

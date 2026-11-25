@@ -149,3 +149,15 @@ def test_the_web_wheel_has_red_green_and_blue_sliders_under_it():
     src = open(os.path.join(ROOT, "web", "js", "lights.js"), encoding="utf-8").read()
     assert '["R", "G", "B"].map' in src and 'class: "slider rgb-slider"' in src and 'class: "rgb-rows"' in src
     assert src.index('class: "wh-disc"') < src.index('class: "rgb-rows"') < src.index('class: "pk-row"')       # wheel, then the sliders, then Reset / Done
+
+
+class TestDarkBrightnessMatchesPython:
+    """web/js/swatch-model.js and src/utils/clColour.py are the same rule."""
+
+    @pytest.mark.parametrize("rgb, gamma, expected", [
+        ((255, 0, 0), 1.0, None), ((0, 255, 0), 2.2, None), ((255, 255, 255), 2.2, None), ((254, 0, 0), 1.0, None),
+        ((0, 100, 0), 1.0, 39), ((0, 20, 0), 1.0, 8), ((0, 100, 0), 2.2, 13), ((0, 20, 0), 2.2, 1),
+        ((128, 0, 128), 1.0, 50), ((116, 10, 200), 2.2, 59), ((0, 0, 0), 2.2, 1), ((1, 1, 1), 1.0, 1),
+    ])
+    def test_the_brightness_a_mix_asks_for(self, rgb, gamma, expected):
+        assert call("darkBrightness", list(rgb), gamma) == expected

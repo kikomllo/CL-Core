@@ -19,6 +19,7 @@ from utils.clEnvLoader import EnvLoader
 from utils.clConfigLoader import ConfigLoader
 from utils.clNetworkUtils import get_current_wifi_ssid
 from utils import clTuya
+from utils.clColour import dark_brightness
 
 # --- LOGGING SETUP ---
 import sys, os
@@ -560,6 +561,10 @@ class LightManager:
             return
 
         tasks = []
+        if rgb:                                       # a mix that is not at full value is a darker light: its darkness is the brightness
+            dark = dark_brightness(rgb, self.colour_gamma())
+            if dark is not None:
+                lum = dark
         if lum is not None: tasks.append(device.set_brightness(lum))
         if rgb:                                       # an explicit colour beats a colour name
             tasks.append(device.set_hue_saturation(*_tapo_hue_saturation(*rgb, gamma=self.colour_gamma())))
