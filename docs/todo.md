@@ -20,7 +20,7 @@ The one place to see what is still to implement. Updated 2026-11-25. Each item s
 
 ## Smart devices (`docs/smart_devices_plan.md`, in this order)
 
-- [ ] **LSC Smart Connect plug (Tuya, local)**: built and tested with a fake device (`kind: plug`, `clTuya.py`, `tuya` branch, plug row, "all lights" excludes plugs). Left: the live check once the owner has the device id/key/ip/version from `tinytuya wizard` (add the entry to `config/devices.json` and `TUYA_KEY_<NAME>` to `.env`), then the `tuya` discovery scan and the Settings add-device form. (S)
+- [ ] **LSC Smart Connect plug (Tuya, local)**: built and tested with a fake device (`kind: plug`, `clTuya.py`, `tuya` branch, plug row, "all lights" excludes plugs). Live-checked 2026-11-25 on the owner's heater (on, off, toggle, colour refused; status follows). Left: voice phrasing ("turn off the heater", batch with the colour retrain), the `tuya` discovery scan and the Settings add-device form. (S)
 - [ ] **Timed on/off (schedules)** in `clAutomation`: weekday + time rules, grace window for missed triggers, **heater max-on fail-safe** persisted across restarts, editor on the light row. (M)
 - [ ] Later: watts in the plug's row if it is an energy-meter model; skip a schedule after a manual change; voice "turn the heater on at seven". (M)
 
