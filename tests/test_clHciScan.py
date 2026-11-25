@@ -66,6 +66,7 @@ class Emitted(list):
         self.append(obj)
 
 
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="needs AF_UNIX sockets (Linux only: the HCI scanner is a Linux feature)")
 class TestHciScanner:
     @pytest.fixture
     def pair(self):

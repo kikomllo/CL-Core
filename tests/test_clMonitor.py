@@ -856,6 +856,7 @@ FAKE_HELPER = (
     "time.sleep(30)\n")
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="raw HCI Bluetooth scanning is Linux only")
 class TestHciBeaconScanner:
     @pytest.mark.asyncio
     async def test_output_lines_become_beacon_callbacks_and_counts(self):
