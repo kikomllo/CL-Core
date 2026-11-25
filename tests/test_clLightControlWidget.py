@@ -335,7 +335,7 @@ class TestOverallBrightnessIsRemembered:
         w._close_colour_picker()
         w.light_rows["bedroom"]["colour_btn"].click()                             # the bulb reports what it was sent
         reopened = w._picker
-        assert reopened.lum == overall and reopened.factor < 1 and reopened.lum_slider.value() == overall
+        assert reopened.lum == overall and reopened.factor < 1 and reopened.lum_slider.value() == sent
         w._close_colour_picker()
 
     def test_a_bulb_changed_elsewhere_is_taken_as_it_reports(self, qapp, mocker):

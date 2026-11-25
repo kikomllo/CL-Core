@@ -495,8 +495,10 @@ class ColourPicker(QWidget):
         lay.addLayout(wrow)
 
 
-        self.lum_value, self.lum_slider = self._slider(lay, "Brightness", [(0.0, (42, 28, 16)), (1.0, (255, 230, 204))], 1, 100, self.lum)
+        # The slider shows the brightness the bulb really has (the overall brightness times the colour's value) and moves when a colour changes it.
+        self.lum_value, self.lum_slider = self._slider(lay, "Brightness", [(0.0, (42, 28, 16)), (1.0, (255, 230, 204))], 1, 100, compose_brightness(self.lum, self.factor))
         self.lum_slider.valueChanged.connect(self._on_lum)
+        self.lum_slider.sliderReleased.connect(self._lum_released)
         self.temp_value, self.temp_slider = self._slider(
             lay, "White temperature", [(0.0, (255, 162, 77)), (0.5, (255, 243, 224)), (1.0, (188, 214, 255))], 0, 100, self.temp)
         self.temp_slider.valueChanged.connect(self._on_temp)
@@ -531,7 +533,7 @@ class ColourPicker(QWidget):
         return val, slider
 
     def _show_values(self):
-        self.lum_value.setText(f"{self.lum} %")
+        self.lum_value.setText(f"{self.lum_slider.value()} %")
         self.temp_value.setText(f"{temp_to_kelvin(self.brand, self.temp)} K" if self.temp_slider.isEnabled() else "pick a white")
 
     def _set_white(self, is_white):
@@ -601,8 +603,19 @@ class ColourPicker(QWidget):
             self._send(fields)
             self._live_timer.start(LIVE_MS)
 
+    def _set_lum_slider(self, shown):
+        """Shows a brightness on the slider without it counting as a move."""
+        self.lum_slider.blockSignals(True)
+        self.lum_slider.setValue(int(shown))
+        self.lum_slider.blockSignals(False)
+        self._show_values()
+
+    def _lum_released(self):
+        self._set_lum_slider(compose_brightness(self.lum, self.factor))        # after a drag it shows what the bulb really got
+
     def _on_lum(self, value):
-        self.lum = int(value)
+        # What the slider says is the brightness of the bulb: for a dark colour the overall brightness is what gives it.
+        self.lum = int(value) if self.factor >= 0.995 else min(100, int(round(int(value) / self.factor)))
         self._show_values()
         self._queue({"lum": self.lum})
 
@@ -634,6 +647,8 @@ class ColourPicker(QWidget):
         if "lum" in fields:
             fields["lum"] = compose_brightness(int(fields["lum"]), self.factor)
             self.lumMemory.emit(self.lum, self.factor, fields["lum"])
+            if any(k in fields for k in ("rgb", "color", "temp")):              # a colour changed the brightness: the slider follows
+                self._set_lum_slider(fields["lum"])
         self.chosen.emit(fields)
 
     def closeEvent(self, event):

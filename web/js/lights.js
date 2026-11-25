@@ -100,12 +100,21 @@ export const lightsWindow = {
       let tempSlider = null;
       // The temperature slider belongs to white mode: locked while the bulb is a colour, unlocked by a white swatch (or by the bulb already being white).
       const setWhite = (isWhite) => tempSlider?.setLocked(!isWhite);
+      let lumSlider = null;
+      // The slider shows the brightness the bulb really has (the overall brightness times the colour's value), and moves when a colour changes it. What the user
+      // drags it to is that brightness: for a dark colour the overall brightness is what gives it (the most a dark colour can reach is its own value).
+      const overallFor = (shown) => (factor >= 0.995 ? shown : Math.min(100, Math.round(shown / factor)));
       const send = (f) => {
         clearTimeout(timer); pending = null;
         // The slider is the overall brightness and the colour's own value scales it: a dark mix (0, 100, 0) is a dimmer light than a bright one (0, 255, 0),
         // and a name or a white is at full value.
         if (Array.isArray(f.rgb)) factor = valueFactor(f.rgb, colourGamma); else if (f.color !== undefined || f.temp !== undefined) factor = 1;
-        if (f.lum !== undefined) { f = { ...f, lum: composeBrightness(f.lum, factor) }; saveLum(l.name, { master: lum, factor, sent: f.lum }); }
+        if (f.lum !== undefined) {
+          const colourChange = f.rgb !== undefined || f.color !== undefined || f.temp !== undefined;
+          f = { ...f, lum: composeBrightness(f.lum, factor) };
+          saveLum(l.name, { master: lum, factor, sent: f.lum });
+          if (colourChange) lumSlider?.setValue(f.lum);                       // a colour changed the brightness: the slider follows
+        }
         bridge.act("light.set", { action: "on", light_target: t, silent: true, ...f });
         const m = modeAfter(f); if (m) setWhite(m === "white");
       };
@@ -176,6 +185,7 @@ export const lightsWindow = {
         s.addEventListener("input", () => { fill(); v.textContent = fmt(+s.value); on(+s.value); }); fill();
         const box = h("div", { class: "pk-slider" }, h("div", { class: "pk-cap dim" }, h("span", {}, cap), v), s);
         box.setValue = (n) => { s.value = n; fill(); v.textContent = fmt(+s.value); };
+        s.addEventListener("change", () => box.onRelease?.());
         box.setLocked = (locked) => { s.disabled = locked; box.classList.toggle("locked", locked); v.textContent = locked ? "pick a white" : fmt(+s.value); };
         return box;
       };
@@ -183,8 +193,9 @@ export const lightsWindow = {
         h("div", { class: "pk-title" }, l.name, h("span", { class: "dim" }, { wiz: " · WiZ", tapo: " · Tapo" }[String(brand).toLowerCase()] || "")),
         h("div", { class: "pk-swatches" }, swatches.map(paletteSw)),
         h("div", { class: "pk-swatches" }, WHITES.map(([n, tp, lab]) => sw(n, whiteTint(tempToK(brand, tp)), lab, tp))),
-        slider("BRIGHTNESS", lum, 1, 100, (v) => v + " %", (v) => { lum = v; queue({ lum }); }),
+        lumSlider = slider("BRIGHTNESS", composeBrightness(lum, factor), 1, 100, (v) => v + " %", (v) => { lum = overallFor(v); queue({ lum }); }),
         tempSlider = slider("TEMPERATURE", temp, 0, 100, (v) => tempToK(brand, v) + " K", (v) => { temp = v; queue({ temp, lum }); }));
+      lumSlider.onRelease = () => lumSlider.setValue(composeBrightness(lum, factor));      // after a drag it shows what the bulb really got
       setWhite(isWhiteLight(l));
       document.body.append(el);
       const spot = pickerSpot(anchor.getBoundingClientRect(), el.getBoundingClientRect(), { width: innerWidth, height: innerHeight });
