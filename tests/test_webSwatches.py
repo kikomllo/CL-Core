@@ -101,3 +101,13 @@ class TestLiveSender:
 
     def test_flush_with_nothing_waiting_sends_nothing(self):
         assert self.run('s.push("a"); s.flush(); s.flush();') == [[0, "a"]]
+
+
+class TestWheelPaint:
+    def test_the_wheel_has_no_border_because_the_gradient_repeats_into_it(self):
+        """A border on the wheel painted the opposite side's colours as slivers at the top, bottom, left and right; the ring is a box-shadow."""
+        import re
+        css = open(os.path.join(ROOT, "web", "style.css"), encoding="utf-8").read()
+        rule = re.search(r"(?m)^\.wh-disc\s*\{([^}]*)\}", css).group(1)
+        rule = re.sub(r"/\*.*?\*/", "", rule, flags=re.S)
+        assert not re.search(r"(?<![-\w])border\s*:", rule) and "box-shadow" in rule

@@ -255,7 +255,8 @@ button.disc:disabled { cursor: default; }
 .sw:hover { border-color: #fff; }
 .wheel-pop { width: calc(190 * var(--u)); z-index: 99999; }
 .wh-disc { position: relative; align-self: center; width: calc(150 * var(--u)); height: calc(150 * var(--u)); border-radius: 50%; touch-action: none; cursor: crosshair;
-  border: 1px solid rgba(255,255,255,.3);      /* real colours, never the skin's: hue round from the right, clockwise, white in the middle (the same maths as swatch-model.js) */
+  box-shadow: 0 0 0 1px rgba(255,255,255,.3);  /* a ring outside, not a border: the gradient repeats into a border and showed the opposite side's colours as slivers at the four points */
+  /* real colours, never the skin's: hue round from the right, clockwise, white in the middle (the same maths as swatch-model.js) */
   background: radial-gradient(circle closest-side, #fff, rgba(255,255,255,0)), conic-gradient(from 90deg, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00); }
 .wh-knob { position: absolute; width: calc(14 * var(--u)); height: calc(14 * var(--u)); margin: calc(-7 * var(--u)) 0 0 calc(-7 * var(--u)); border-radius: 50%;
   border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.65); pointer-events: none; }
