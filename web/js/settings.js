@@ -112,7 +112,8 @@ export const settingsWindow = {
       pages.append(page);
     }
     function showTab() {
-      tabs.replaceChildren(...TABS.map((t) => h("button", { class: "tab-pill", "aria-pressed": String(t.id === tab), onclick: () => { tab = t.id; saveUiState("settings.tab", tab); showTab(); customById.get(t.id)?.show?.(); } }, t.label)));
+      saveUiState("settings.tab", tab);                                      // the tab you were on comes back after a reload
+      tabs.replaceChildren(...TABS.map((t) => h("button", { class: "tab-pill", "aria-pressed": String(t.id === tab), onclick: () => { tab = t.id; showTab(); customById.get(t.id)?.show?.(); } }, t.label)));
       for (const p of pages.children) p.hidden = p.dataset.tab !== tab;
     }
     function sync() { for (const [key, set] of controls) set(valueOf(values, key)); customs.forEach((c) => c.sync?.(values)); }
