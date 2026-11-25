@@ -43,7 +43,6 @@ The one place to see what is still to implement. Updated 2026-11-25. Each item s
 
 - [ ] **Colour commands never match the fast path** ("change the light to red"): `config/intents.json` template + regenerate and retrain both SLMs. **Batch with the heater/plug phrasing** so the models are trained once; audition/train only with other heavy work paused. (M) (`voice_latency_plan.md`, `training/CLAUDE.md`)
 - [ ] Adaptive endpoint (shorter wait for short complete commands, ~0.2 s gain, risk of cutting people off); only behind a setting. (S, optional)
-- [ ] Two failing `test_clNlp` abort cases: "wait cancel that command" and "please stop doing that" are not treated as aborts (failing before this session too). Decide: fix the matcher or the tests. (S)
 
 ## Ultron (`docs/ultron_plan.md`)
 
@@ -70,13 +69,13 @@ The one place to see what is still to implement. Updated 2026-11-25. Each item s
 
 ## Tech debt and housekeeping
 
-- [ ] **Tests that cannot pass on Windows**: `test_clHciScan.py` (6 errors, needs `AF_UNIX`) and `test_clMonitor.py::TestHciBeaconScanner` (4 failures) are Linux-only: mark them skip on Windows so a clean run is green. `test_clClaudeTmuxBridge.py::test_claude_code_env_vars_are_stripped_via_env_dash_u` fails inside a Claude Code session (`CLAUDE_CODE_CHILD_NOTES_DIR` leaks in): make it independent of the host environment. (S)
 - [ ] **Start on login** stores absolute paths: after moving the repo, toggle it off and on. Optional: re-write the entry at boot when the path changed. (S)
 
 ## Done recently
 
+- [x] Test-suite housekeeping: the Linux-only Bluetooth scanner tests skip on Windows, the bridge env-var test no longer depends on the Claude Code session running it, and "wait cancel that command" / "please stop doing that" now abort (`wait` and `doing` are filler in `clAbort.py`; a phrase with any other content word is still a command).
 - [x] Floating (unpinned) windows in the web UI, like the Qt widgets: own always-on-top window, any monitor, also from the overlay; seamless unpin/pin (no gap, exact position, Windows' open animation hidden). (`web_ui_plan.md`)
-- [x] Zoom: the whole UI (a factor on the fluid unit; frames follow) and per window (content only, frame stays); keys, Ctrl+wheel, badge, Settings. (`web_ui_plan.md`)
+- [x] Zoom: the whole UI and per window (a factor on the fluid unit: only the content scales, window frames stay as they are); keys, Ctrl+wheel, badge, Settings. (`web_ui_plan.md`)
 - [x] Light reliability (one session per Tapo bulb, timeouts that return, self-refreshing status), hidden-console boot on Windows, "restart ui module" restarting the window, overlay 200x200 in the corner and flash-free mode switch, tab-strip scrolling, session restore, to-do trash (`data/todos/.trash`), show-logs/show-todo by voice. (`daemon-routing.md`, `cross-platform.md`, `web_ui_plan.md`)
 - [x] Colour button on the Smart Lights rows (popup with 8 colours, 3 whites, brightness and white-temperature sliders; `rgb`/`temp` in `light.set`; colour fields in `light_status`; per-light `colour` override). Not committed yet. Follow-ups: the hue strip for any colour (second version); the same button in the web front end.
 - [x] Start on login setting (Windows Startup shortcut, Linux XDG autostart): `c3af532`

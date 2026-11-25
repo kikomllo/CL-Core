@@ -13,7 +13,7 @@ _WORD = re.compile(r"[a-z0-9']+")
 _FILLER = {
     "hey", "jarvis", "okay", "ok", "please", "just", "uh", "um", "the", "this", "that", "it", "now", "all", "everything",
     "sequence", "mission", "operation", "command", "task", "action", "process", "talking", "speaking", "listening",
-    "there", "right", "thanks", "thank", "you", "for", "now",
+    "there", "right", "thanks", "thank", "you", "for", "now", "wait", "doing",
 }
 
 

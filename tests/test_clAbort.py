@@ -14,7 +14,7 @@ class TestAbortUtterance:
     @pytest.mark.parametrize("text", [
         "abort", "Abort.", "cancel", "cancel that", "Hey Jarvis, abort.", "hey jarvis stop", "stop it", "stop, please",
         "never mind", "Never mind.", "nevermind", "abort sequence", "cancel everything", "stop talking",
-        "okay jarvis cancel that please", "ABORT ABORT",
+        "okay jarvis cancel that please", "ABORT ABORT", "wait cancel that command", "please stop doing that",
     ])
     def test_a_bare_abort_is_an_abort(self, text):
         assert is_abort_utterance(text, KEYWORDS) is True
@@ -23,6 +23,7 @@ class TestAbortUtterance:
         "Hey Jarvis, cancel reminder and remind me in 10 minutes.",     # the live log line that did nothing
         "cancel reminder", "cancel all alarms", "cancel my alarm", "stop the music", "stop the timer",
         "cancel the 7 am alarm", "abort the timer and set an alarm for six", "I don't want to cancel the lights",
+        "stop doing the dishes", "wait stop the music",
     ])
     def test_a_command_that_contains_an_abort_word_is_not_an_abort(self, text):
         assert is_abort_utterance(text, KEYWORDS) is False
