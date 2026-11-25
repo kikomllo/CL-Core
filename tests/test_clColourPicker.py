@@ -143,13 +143,6 @@ class TestPickerSendsFields:
         picker, _ = _picker("wiz", {"brightness": 35, "kelvin": 4600})
         assert picker.lum_value.text() == "35 %" and picker.temp_value.text() == "4600 K"
 
-    def test_hovering_shows_the_voice_command_for_this_light(self, qapp):
-        picker, _ = _picker()
-        next(s for s in picker.swatches if s.name == "hot pink").hovered.emit("hot pink")
-        assert 'make the bedroom hot pink' in picker.hint.text()
-        picker._on_hover("coolwhite")
-        assert "cool white" in picker.hint.text() and "coolwhite" not in picker.hint.text()
-
 
 class TestGradientSlider:
     def _slider(self, qapp):
@@ -321,14 +314,10 @@ class TestCustomSwatches:
         picker.close()
         assert not wheel.isVisible()
 
-    def test_the_hint_says_whether_the_swatch_is_the_default_or_the_users(self, qapp):
+    def test_no_swatch_carries_a_name_a_changed_colour_is_not_the_voice_colour_any_more(self, qapp):
         picker, _ = _picker(state={"swatches": {"red": [10, 20, 30]}})
-        picker._on_hover("red")
-        assert "your red" in picker.hint.text() and "reset" in picker.hint.text()
-        picker._on_hover("blue")
-        assert 'make the bedroom blue' in picker.hint.text() and "right-click" in picker.hint.text()
-        picker._on_hover("daylight")
-        assert "right-click" not in picker.hint.text()
+        assert all(s.toolTip() == "" for s in picker.swatches)
+        assert not hasattr(picker, "hint")
 
     def test_the_slots_are_the_ones_the_settings_accept(self):
         from ui.clColourPicker import PALETTE

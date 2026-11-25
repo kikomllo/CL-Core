@@ -111,3 +111,12 @@ class TestWheelPaint:
         rule = re.search(r"(?m)^\.wh-disc\s*\{([^}]*)\}", css).group(1)
         rule = re.sub(r"/\*.*?\*/", "", rule, flags=re.S)
         assert not re.search(r"(?<![-\w])border\s*:", rule) and "box-shadow" in rule
+
+
+class TestNoNamesOnTheSwatches:
+    def test_the_web_swatches_have_no_tooltip_or_colour_name(self):
+        """A swatch the user changed is no longer 'red', so none shows its name: no title tooltip, a neutral label for screen readers."""
+        import re
+        src = open(os.path.join(ROOT, "web", "js", "lights.js"), encoding="utf-8").read()
+        for m in re.finditer(r'h\("button", \{ class: "sw"[^}]*\}', src):
+            assert "title" not in m.group(0) and "s.name" not in m.group(0) and ": name" not in m.group(0), m.group(0)

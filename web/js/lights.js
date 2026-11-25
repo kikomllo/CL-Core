@@ -87,11 +87,11 @@ export const lightsWindow = {
       let lum = l.brightness ?? 100, temp = l.kelvin ? kToTemp(brand, l.kelvin) : 50, timer = null, pending = null;
       const send = (f) => { clearTimeout(timer); pending = null; bridge.act("light.set", { action: "on", light_target: t, silent: true, ...f }); };
       const queue = (f) => { pending = f; clearTimeout(timer); timer = setTimeout(() => pending && send(pending), 200); };
-      const sw = (name, rgb, label) => h("button", { class: "sw", title: name, "aria-label": name, style: `--c:${css(rgb)}`, onclick: () => send({ color: name, lum }) }, label || "");
+      const sw = (name, rgb, label) => h("button", { class: "sw", "aria-label": label ? "White" : "Colour", style: `--c:${css(rgb)}`, onclick: () => send({ color: name, lum }) }, label || "");
       const swatches = mergeSwatches(PALETTE, savedSwatches);
       // A colour swatch: a click sets the light to it; a right click opens the wheel to make it another colour, which stays.
       const paletteSw = (s) => {
-        const el = h("button", { class: "sw", title: `${s.name}: right-click to change`, "aria-label": s.name, style: `--c:${css(s.rgb)}`,
+        const el = h("button", { class: "sw", "aria-label": "Colour", style: `--c:${css(s.rgb)}`,
           onclick: () => send(swatchCommand(s, lum)), oncontextmenu: (e) => { e.preventDefault(); openWheel(s, el); } });
         return el;
       };

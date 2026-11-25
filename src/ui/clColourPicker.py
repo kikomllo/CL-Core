@@ -139,7 +139,6 @@ class ColourButton(QAbstractButton):
 class Swatch(QAbstractButton):
     """A square of a real colour, or a wider tile of a white with a short word on it. Checkable. A colour swatch the user changed
     (`custom`) keeps its slot name and the colour it had by default (`default_rgb`, what Reset goes back to)."""
-    hovered = pyqtSignal(str)
     customise = pyqtSignal(str)                    # right-click on a colour swatch
 
     def __init__(self, name, rgb, text="", parent=None):
@@ -148,14 +147,9 @@ class Swatch(QAbstractButton):
         self.default_rgb, self.custom = tuple(rgb), False
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip(name)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setFixedHeight(28 if not text else 30)
-
-    def enterEvent(self, event):
-        self.hovered.emit(self.name)
-        super().enterEvent(event)
 
     def set_colour(self, rgb, custom):
         self.rgb, self.custom = tuple(rgb), bool(custom)
@@ -437,12 +431,6 @@ class ColourPicker(QWidget):
             wrow.addWidget(self._swatch(Swatch(wname, white_tint(kelvin), f"{word} · {kelvin} K")))
         lay.addLayout(wrow)
 
-        self.hint = QLabel("Hover a swatch for its voice command.")
-        self.hint.setWordWrap(True)
-        self.hint.setMinimumHeight(30)               # two lines, so a long light name does not make the popup jump
-        self.hint.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        self.hint.setStyleSheet(f"color: {Theme.C_TEXT_DIM}; font-size: {Theme.F_TINY}; border: none; background: transparent;")
-        lay.addWidget(self.hint)
 
         self.lum_value, self.lum_slider = self._slider(lay, "Brightness", [(0.0, (42, 28, 16)), (1.0, (255, 230, 204))], 1, 100, self.lum)
         self.lum_slider.valueChanged.connect(self._on_lum)
@@ -458,7 +446,6 @@ class ColourPicker(QWidget):
         return lbl
 
     def _swatch(self, sw):
-        sw.hovered.connect(self._on_hover)
         sw.clicked.connect(lambda checked=False, s=sw: self._on_swatch(s))
         self.swatches.append(sw)
         return sw
@@ -484,16 +471,6 @@ class ColourPicker(QWidget):
         self.temp_value.setText(f"{temp_to_kelvin(self.brand, self.temp)} K")
 
     # --- behaviour ---
-    def _on_hover(self, name):
-        shown = "cool white" if name == "coolwhite" else name
-        swatch = next((s for s in self.swatches if s.name == name), None)
-        if swatch is not None and swatch.custom:
-            self.hint.setText(f"your {shown} · right-click to change or reset it")
-        elif swatch is not None and not swatch.text_on_swatch:
-            self.hint.setText(f"{shown} · say \"make the {self.name.lower()} {shown}\" · right-click to change it")
-        else:
-            self.hint.setText(f"{shown} · say \"make the {self.name.lower()} {shown}\"")
-
     def _on_swatch(self, clicked):
         for sw in self.swatches:
             sw.setChecked(sw is clicked)
