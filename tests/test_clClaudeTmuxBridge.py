@@ -55,6 +55,8 @@ class TestSessionSpawnArgs:
         assert "--continue" in new_session_args
 
     def test_claude_code_env_vars_are_stripped_via_env_dash_u(self, mocker, tmp_path, monkeypatch):
+        for k in [k for k in os.environ if k.startswith("CLAUDE_CODE_")]:   # a Claude Code session running the tests has its own
+            monkeypatch.delenv(k)
         monkeypatch.setenv("CLAUDE_CODE_CHILD_SESSION", "1")
         run = self._spawn(mocker, tmp_path)
         new_session_args = run.call_args_list[1][0][0]
