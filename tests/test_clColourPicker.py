@@ -331,7 +331,7 @@ class TestWheelTitleHasNoName:
         picker, _ = _picker()
         picker._on_customise("red")
         texts = [l.text() for l in picker._wheel.findChildren(QLabel)]
-        assert texts == ["Drag to change the colour"]
+        assert texts[0] == "Change the colour" and not any(n in " ".join(texts).lower() for n in ("red", "orange", "yellow", "purple", "hot pink"))
         picker.close()
 
 
@@ -367,4 +367,71 @@ class TestTemperatureLock:
         picker._on_customise("red")
         picker._wheel_changed(next(s for s in picker.swatches if s.name == "red"), (10, 20, 30))
         assert not picker.temp_slider.isEnabled()
+        picker.close()
+
+
+class TestRgbSliders:
+    """Red, green and blue sliders under the wheel: the same colour, any mix."""
+
+    def _popup(self, qapp, swatches=None):
+        picker, got = _picker(state={"brightness": 70, "swatches": swatches or {}})
+        saved = []
+        picker.swatchChanged.connect(lambda n, c: saved.append((n, c)))
+        picker._on_customise("red")
+        return picker, got, picker._wheel, saved
+
+    def test_they_open_on_the_colour_of_the_swatch_and_nothing_is_sent_or_saved(self, qapp):
+        picker, got, popup, saved = self._popup(qapp, {"red": [10, 20, 30]})
+        assert [s.value() for s in popup.rgb_sliders] == [10, 20, 30]
+        assert [v.text() for v in popup.rgb_values] == ["10", "20", "30"]
+        assert got == [] and saved == []
+        picker.close()
+
+    def test_a_slider_recolours_the_swatch_the_wheel_and_the_bulb_and_a_key_press_is_kept(self, qapp):
+        picker, got, popup, saved = self._popup(qapp)
+        popup.rgb_sliders[1].setValue(90)                                         # green, as a key press would
+        red = next(s for s in picker.swatches if s.name == "red")
+        assert red.rgb == (255, 90, 0) and red.custom
+        assert got[-1] == {"rgb": [255, 90, 0], "lum": 70}
+        assert saved == [("red", [255, 90, 0])]
+        assert abs(popup.wheel.hue - 21.18) < 0.1 and popup.wheel.rgb == (255, 90, 0)      # the knob followed
+        assert popup.rgb_values[1].text() == "90"
+        picker.close()
+
+    def test_a_drag_on_a_slider_is_kept_only_when_it_is_released(self, qapp):
+        picker, got, popup, saved = self._popup(qapp)
+        slider = popup.rgb_sliders[2]
+        slider.setSliderDown(True)
+        slider.setValue(200)
+        slider.setValue(210)
+        assert saved == [] and got[-1]["rgb"] == [255, 0, 200]                      # a drag is limited: the newest value waits
+        slider.setSliderDown(False)                                                # released
+        assert saved == [("red", [255, 0, 210])]
+        picker._wheel_saved(next(s for s in picker.swatches if s.name == "red"))     # what the popup's saved signal does: the last value reaches the bulb
+        assert got[-1]["rgb"] == [255, 0, 210]
+        picker.close()
+
+    def test_the_wheel_moves_the_sliders(self, qapp):
+        from PyQt6.QtCore import QPoint, Qt
+        from PyQt6.QtTest import QTest
+        picker, got, popup, saved = self._popup(qapp)
+        r = popup.wheel.width() // 2
+        QTest.mousePress(popup.wheel, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(r, r + 60))
+        assert [s.value() for s in popup.rgb_sliders] == list(popup.wheel.rgb) != [255, 0, 0]
+        QTest.mouseRelease(popup.wheel, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(r, r + 60))
+        picker.close()
+
+    def test_each_track_runs_from_zero_to_full_of_its_channel_with_the_others_as_they_are(self, qapp):
+        picker, _, popup, _ = self._popup(qapp, {"red": [10, 20, 30]})
+        assert popup.rgb_sliders[0].stops == [(0.0, (0, 20, 30)), (1.0, (255, 20, 30))]
+        assert popup.rgb_sliders[2].stops == [(0.0, (10, 20, 0)), (1.0, (10, 20, 255))]
+        popup.rgb_sliders[0].setValue(100)
+        assert popup.rgb_sliders[1].stops == [(0.0, (100, 0, 30)), (1.0, (100, 255, 30))]
+        picker.close()
+
+    def test_reset_puts_the_default_on_the_sliders(self, qapp):
+        picker, _, popup, saved = self._popup(qapp, {"red": [10, 20, 30]})
+        popup.reset_btn.click()
+        assert [s.value() for s in popup.rgb_sliders] == [255, 0, 0]
+        assert saved == [("red", None)]
         picker.close()

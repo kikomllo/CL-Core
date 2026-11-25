@@ -108,23 +108,42 @@ export const lightsWindow = {
         place(hsv.h, hsv.s);
         const live = liveSender((rgb) => send({ rgb, lum }), 120);          // the bulb follows the drag, at most a few messages a second
         const disc = h("div", { class: "wh-disc" }, knob);
+        // Red, green and blue sliders under the wheel: the same colour, any mix (the wheel is always full value). Each track runs from 0 to 255 of its
+        // channel with the other two as they are now, so what a move does is visible.
+        const rows = ["R", "G", "B"].map((letter, i) => {
+          const input = h("input", { type: "range", class: "slider rgb-slider", min: 0, max: 255, value: s.rgb[i], "aria-label": letter });
+          const num = h("span", { class: "rgb-v dim" }, String(s.rgb[i]));
+          input.addEventListener("input", () => { const c = [...s.rgb]; c[i] = +input.value; show(c); live.push(c); });
+          input.addEventListener("change", release);                         // a key press or a lifted drag: kept for good
+          return { input, num, el: h("div", { class: "rgb-row" }, h("span", { class: "rgb-l" }, letter), input, num) };
+        });
+        // One place that shows a colour everywhere: the swatch, the knob and the three sliders.
+        const show = (rgb, hue, sat) => {
+          s.rgb = rgb; s.custom = true;
+          swEl.style.setProperty("--c", css(rgb));
+          if (hue === undefined) { const f = rgbToHsv(rgb); hue = f.h; sat = f.s; }
+          place(hue, sat);
+          rows.forEach((row, i) => {
+            row.input.value = rgb[i]; row.num.textContent = String(rgb[i]);
+            const lo = [...rgb], hi = [...rgb]; lo[i] = 0; hi[i] = 255;
+            row.input.style.setProperty("--lo", css(lo)); row.input.style.setProperty("--hi", css(hi));
+          });
+        };
         const paint = (e) => {
           const r = disc.getBoundingClientRect();
           const c = wheelColour(e.clientX - (r.left + r.width / 2), e.clientY - (r.top + r.height / 2), r.width / 2);
-          s.rgb = c.rgb; s.custom = true;
-          swEl.style.setProperty("--c", css(c.rgb)); place(c.h, c.s); live.push(c.rgb);
+          show(c.rgb, c.h, c.s); live.push(c.rgb);
         };
         let dragging = false;
         disc.addEventListener("pointerdown", (e) => { if (e.button !== 0) return; dragging = true; try { disc.setPointerCapture(e.pointerId); } catch { /* not an active pointer */ } paint(e); });
         disc.addEventListener("pointermove", (e) => { if (dragging) paint(e); });
-        const release = () => { if (!dragging) return; dragging = false; live.flush(); saveSwatch(s.name, s.rgb); };     // kept for good when the finger lifts
-        disc.addEventListener("pointerup", release); disc.addEventListener("pointercancel", release);
-        const reset = h("button", { class: "btn", onclick: () => {
-          const f = rgbToHsv(fallback); s.rgb = fallback; s.custom = false; swEl.style.setProperty("--c", css(fallback)); place(f.h, f.s); saveSwatch(s.name, null);
-        } }, "Reset");
+        function release() { dragging = false; live.flush(); saveSwatch(s.name, s.rgb); }     // kept for good when the finger lifts
+        disc.addEventListener("pointerup", () => { if (dragging) release(); }); disc.addEventListener("pointercancel", () => { if (dragging) release(); });
+        const reset = h("button", { class: "btn", onclick: () => { show([...fallback]); s.custom = false; saveSwatch(s.name, null); } }, "Reset");
         const el = h("div", { class: "picker panel wheel-pop" },
-          h("div", { class: "pk-title" }, "Drag to change the colour"),
-          disc, h("div", { class: "pk-row" }, reset, h("button", { class: "btn", onclick: closeWheel }, "Done")));
+          h("div", { class: "pk-title" }, "Change the colour"),
+          disc, h("div", { class: "rgb-rows" }, rows.map((r) => r.el)), h("div", { class: "pk-row" }, reset, h("button", { class: "btn", onclick: closeWheel }, "Done")));
+        { const was = s.custom; show([...s.rgb]); s.custom = was; }                          // opening it changes nothing: only the sliders catch up
         document.body.append(el);
         const spot = pickerSpot(swEl.getBoundingClientRect(), el.getBoundingClientRect(), { width: innerWidth, height: innerHeight });
         el.style.left = spot.left + "px"; el.style.top = spot.top + "px";

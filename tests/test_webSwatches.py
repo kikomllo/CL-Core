@@ -124,7 +124,7 @@ class TestNoNamesOnTheSwatches:
 
 def test_the_web_wheel_title_has_no_swatch_name():
     src = open(os.path.join(ROOT, "web", "js", "lights.js"), encoding="utf-8").read()
-    title = [l for l in src.splitlines() if "Drag to change the colour" in l]
+    title = [l for l in src.splitlines() if "Change the colour" in l]
     assert len(title) == 1 and "s.name" not in title[0]
 
 
@@ -143,3 +143,9 @@ class TestTemperatureLockModel:
     ])
     def test_which_mode_a_command_leaves_the_bulb_in(self, fields, mode):
         assert call("modeAfter", fields) == mode
+
+
+def test_the_web_wheel_has_red_green_and_blue_sliders_under_it():
+    src = open(os.path.join(ROOT, "web", "js", "lights.js"), encoding="utf-8").read()
+    assert '["R", "G", "B"].map' in src and 'class: "slider rgb-slider"' in src and 'class: "rgb-rows"' in src
+    assert src.index('class: "wh-disc"') < src.index('class: "rgb-rows"') < src.index('class: "pk-row"')       # wheel, then the sliders, then Reset / Done

@@ -192,6 +192,10 @@ class GradientSlider(QSlider):
         self.setFixedHeight(22)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
+    def set_stops(self, stops):
+        self.stops = stops
+        self.update()
+
     def _value_at(self, x):
         span = max(1, self.width() - 2 * self.PAD)
         f = max(0.0, min(1.0, (x - self.PAD) / span))
@@ -327,11 +331,35 @@ class ColourWheelPopup(QWidget):
         lay = QVBoxLayout(card)
         lay.setContentsMargins(12, 12, 12, 12)
         lay.setSpacing(10)
-        title = QLabel("Drag to change the colour")
+        title = QLabel("Change the colour")
         title.setStyleSheet(f"color: {Theme.C_TEXT}; font-size: {Theme.F_TINY}; border: none; background: transparent;")
         lay.addWidget(title)
         self.wheel = ColourWheel(swatch.rgb)
         lay.addWidget(self.wheel, 0, Qt.AlignmentFlag.AlignHCenter)
+        # Red, green and blue sliders under the wheel: the same colour, any mix (the wheel is always full value). Each track runs from 0 to 255 of its
+        # channel with the other two as they are now.
+        self.rgb = tuple(swatch.rgb)
+        self.rgb_sliders, self.rgb_values = [], []
+        for i, letter in enumerate("RGB"):
+            line = QHBoxLayout()
+            lbl = QLabel(letter)
+            lbl.setFixedWidth(12)
+            lbl.setStyleSheet(f"color: {Theme.C_TEXT}; font-size: {Theme.F_TINY}; font-weight: bold; border: none; background: transparent;")
+            slider = GradientSlider([(0.0, (0, 0, 0)), (1.0, (255, 255, 255))])
+            slider.setRange(0, 255)
+            val = QLabel("")
+            val.setFixedWidth(26)
+            val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            val.setStyleSheet(f"color: {Theme.C_TEXT_DIM}; font-size: {Theme.F_TINY}; border: none; background: transparent;")
+            line.addWidget(lbl)
+            line.addWidget(slider, 1)
+            line.addWidget(val)
+            lay.addLayout(line)
+            slider.valueChanged.connect(lambda v, k=i: self._slider_moved(k, v))
+            slider.sliderReleased.connect(self._slider_released)
+            self.rgb_sliders.append(slider)
+            self.rgb_values.append(val)
+        self._show_rgb(self.rgb)
         row = QHBoxLayout()
         self.reset_btn, self.done_btn = QPushButton("Reset"), QPushButton("Done")
         for b in (self.reset_btn, self.done_btn):
@@ -340,13 +368,42 @@ class ColourWheelPopup(QWidget):
                             f"QPushButton:hover {{ background: {Theme.C_BG_INPUT}; border-color: {Theme.C_PRIMARY}; }}")
             row.addWidget(b)
         lay.addLayout(row)
-        self.wheel.changed.connect(self.changed)
+        self.wheel.changed.connect(self._wheel_moved)
         self.wheel.released.connect(self.saved)
         self.reset_btn.clicked.connect(self._reset)
         self.done_btn.clicked.connect(self.close)
 
+    def _show_rgb(self, rgb):
+        """Puts a colour on the three sliders (without it counting as a move) and paints each track for what moving it does."""
+        self.rgb = tuple(int(c) for c in rgb)
+        for i, (slider, val) in enumerate(zip(self.rgb_sliders, self.rgb_values)):
+            slider.blockSignals(True)
+            slider.setValue(self.rgb[i])
+            slider.blockSignals(False)
+            val.setText(str(self.rgb[i]))
+            lo, hi = list(self.rgb), list(self.rgb)
+            lo[i], hi[i] = 0, 255
+            slider.set_stops([(0.0, tuple(lo)), (1.0, tuple(hi))])
+
+    def _wheel_moved(self, rgb):
+        self._show_rgb(rgb)
+        self.changed.emit(tuple(rgb))
+
+    def _slider_moved(self, index, value):
+        rgb = list(self.rgb)
+        rgb[index] = int(value)
+        self._show_rgb(rgb)
+        self.wheel.set_rgb(tuple(rgb))
+        self.changed.emit(tuple(rgb))
+        if not self.rgb_sliders[index].isSliderDown():               # a key press: there is no release to keep it on
+            self.saved.emit(tuple(rgb))
+
+    def _slider_released(self):
+        self.saved.emit(self.rgb)
+
     def _reset(self):
         self.wheel.set_rgb(self.swatch.default_rgb)
+        self._show_rgb(self.swatch.default_rgb)
         self.reset.emit()
 
 

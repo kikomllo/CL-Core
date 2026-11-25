@@ -258,6 +258,11 @@ button.disc:disabled { cursor: default; }
   box-shadow: 0 0 0 1px rgba(255,255,255,.3);  /* a ring outside, not a border: the gradient repeats into a border and showed the opposite side's colours as slivers at the four points */
   /* real colours, never the skin's: hue round from the right, clockwise, white in the middle (the same maths as swatch-model.js) */
   background: radial-gradient(circle closest-side, #fff, rgba(255,255,255,0)), conic-gradient(from 90deg, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00); }
+.rgb-rows { display: flex; flex-direction: column; gap: calc(7 * var(--u)); }
+.rgb-row { display: grid; grid-template-columns: calc(12 * var(--u)) 1fr calc(28 * var(--u)); align-items: center; gap: calc(8 * var(--u)); font-size: var(--f-tiny); }
+.rgb-l { font-weight: 800; color: #fff; } .rgb-v { text-align: right; }
+.slider.rgb-slider { width: 100%; height: calc(6 * var(--u)); border-radius: 999px; background: linear-gradient(90deg, var(--lo, #000), var(--hi, #fff)); }   /* real colours, set by the script */
+.slider.rgb-slider::-webkit-slider-thumb { width: calc(13 * var(--u)); height: calc(13 * var(--u)); border-radius: 50%; background: #fff; border: 2px solid rgba(0,0,0,.6); }
 .wh-knob { position: absolute; width: calc(14 * var(--u)); height: calc(14 * var(--u)); margin: calc(-7 * var(--u)) 0 0 calc(-7 * var(--u)); border-radius: 50%;
   border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.65); pointer-events: none; }
 .pk-row { display: flex; gap: calc(8 * var(--u)); justify-content: space-between; }
