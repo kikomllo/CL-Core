@@ -1,11 +1,12 @@
 # CL-Core to-do list
 
-The one place to see what is still to implement. Updated 2026-11-22. Each item says where its detail lives. **Size**: S = under an hour, M = a day or two, L = several days or more. Tick a box when it is done and move it to "Done recently" at the bottom; when a new plan is written, add it here.
+The one place to see what is still to implement. Updated 2026-11-25. Each item says where its detail lives. **Size**: S = under an hour, M = a day or two, L = several days or more. Tick a box when it is done and move it to "Done recently" at the bottom; when a new plan is written, add it here.
 
 ## Owner to-dos (things only you can do)
 
 - [ ] **Revoke the Hugging Face token** that was pasted in chat (S, security). Nothing needs it any more. (`voice_latency_plan.md`)
 - [ ] **Live-check the Up Next title fix**: click a row in the queue and confirm the player shows the song that really plays. (S)
+- [ ] **Restart the ecosystem once and live-check the web UI work on branch `wip/web-ui-floating-windows`**: pin/unpin a window (no gap, no shift, no growth), "show the logs" / "show my todo list" from the overlay (floats), zoom (Ctrl + / - / 0, Ctrl+wheel over a window, Settings > Display), the overlay orb in the corner, then merge the branch. (S) (`web_ui_plan.md`)
 - [ ] **Live-check Start on login** on the desktop and on the laptop: log out and back in, JARVIS should start. (S each)
 - [ ] **Re-pick the audio output device** in Settings: the pinned "Altifalantes (Realtek High Definition Audio)" no longer exists, so TTS falls back to the default. (S)
 - [ ] **Barge-in live checklist** (say "Hey Jarvis, stop" over a long reply, PTT key, abort key, echo guard). (S) (`voice_latency_plan.md`)
@@ -74,6 +75,9 @@ The one place to see what is still to implement. Updated 2026-11-22. Each item s
 
 ## Done recently
 
+- [x] Floating (unpinned) windows in the web UI, like the Qt widgets: own always-on-top window, any monitor, also from the overlay; seamless unpin/pin (no gap, exact position, Windows' open animation hidden). (`web_ui_plan.md`)
+- [x] Zoom: the whole UI (a factor on the fluid unit; frames follow) and per window (content only, frame stays); keys, Ctrl+wheel, badge, Settings. (`web_ui_plan.md`)
+- [x] Light reliability (one session per Tapo bulb, timeouts that return, self-refreshing status), hidden-console boot on Windows, "restart ui module" restarting the window, overlay 200x200 in the corner and flash-free mode switch, tab-strip scrolling, session restore, to-do trash (`data/todos/.trash`), show-logs/show-todo by voice. (`daemon-routing.md`, `cross-platform.md`, `web_ui_plan.md`)
 - [x] Colour button on the Smart Lights rows (popup with 8 colours, 3 whites, brightness and white-temperature sliders; `rgb`/`temp` in `light.set`; colour fields in `light_status`; per-light `colour` override). Not committed yet. Follow-ups: the hue strip for any colour (second version); the same button in the web front end.
 - [x] Start on login setting (Windows Startup shortcut, Linux XDG autostart): `c3af532`
 - [x] Spotify queue-jump backend and the stale-title fix: `35ec7a8`
