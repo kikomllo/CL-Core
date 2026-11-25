@@ -126,3 +126,20 @@ def test_the_web_wheel_title_has_no_swatch_name():
     src = open(os.path.join(ROOT, "web", "js", "lights.js"), encoding="utf-8").read()
     title = [l for l in src.splitlines() if "Drag to change the colour" in l]
     assert len(title) == 1 and "s.name" not in title[0]
+
+
+class TestTemperatureLockModel:
+    @pytest.mark.parametrize("light, white", [
+        ({"kelvin": 3300}, True), ({"kelvin": 3300, "rgb": None}, True), ({"kelvin": 4000, "rgb": [1, 2, 3]}, False),
+        ({"rgb": [255, 0, 0], "kelvin": None}, False), ({}, False), (None, False), ({"kelvin": 0}, False),
+    ])
+    def test_which_status_is_white_mode(self, light, white):
+        assert call("isWhiteLight", light) is white
+
+    @pytest.mark.parametrize("fields, mode", [
+        ({"color": "warm white", "lum": 5}, "white"), ({"color": "daylight"}, "white"), ({"color": "coolwhite"}, "white"), ({"temp": 40, "lum": 5}, "white"),
+        ({"color": "red"}, "colour"), ({"color": "hot pink", "lum": 1}, "colour"), ({"rgb": [1, 2, 3], "lum": 9}, "colour"),
+        ({"lum": 30}, None), ({}, None), (None, None),
+    ])
+    def test_which_mode_a_command_leaves_the_bulb_in(self, fields, mode):
+        assert call("modeAfter", fields) == mode

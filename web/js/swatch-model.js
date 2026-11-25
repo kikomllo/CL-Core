@@ -64,3 +64,20 @@ export function liveSender(send, ms, now = () => Date.now(), later = (fn, d) => 
     flush() { if (timer) { cancel(timer); timer = null; } fire(); },
   };
 }
+
+// ---- the white temperature slider: it only means something while the bulb is white ----
+// A bulb is in colour mode (hue and saturation) or in white mode (a temperature in kelvin); sending a temperature leaves colour mode. So the
+// temperature slider is locked while the bulb is in colour mode, and a white swatch is what unlocks it.
+export const WHITE_NAMES = ["warm white", "daylight", "coolwhite"];
+
+/** Whether a light reported by the status is in white mode (it has a temperature and no colour). */
+export const isWhiteLight = (light) => !!light && !light.rgb && !!light.kelvin;
+
+/** The mode a light.set command leaves the bulb in: "white", "colour", or null when it does not change it (a brightness alone). */
+export function modeAfter(fields) {
+  if (!fields) return null;
+  if (fields.temp !== undefined && fields.temp !== null) return "white";
+  if (Array.isArray(fields.rgb)) return "colour";
+  if (typeof fields.color === "string") return WHITE_NAMES.includes(fields.color) ? "white" : "colour";
+  return null;
+}

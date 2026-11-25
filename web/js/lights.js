@@ -3,7 +3,7 @@
 import { bridge } from "./bridge.js";
 import { h, icon } from "./ui.js";
 import { pickerSpot } from "./picker-spot.js";
-import { mergeSwatches, swatchCommand, wheelColour, knobOffset, rgbToHsv, liveSender } from "./swatch-model.js";
+import { mergeSwatches, swatchCommand, wheelColour, knobOffset, rgbToHsv, liveSender, isWhiteLight, modeAfter } from "./swatch-model.js";
 
 const PALETTE = [["red", [255, 0, 0]], ["orange", [255, 165, 0]], ["yellow", [255, 255, 0]], ["green", [0, 255, 0]],
   ["cyan", [0, 255, 255]], ["blue", [0, 0, 255]], ["purple", [128, 0, 128]], ["hot pink", [255, 105, 180]]];
@@ -85,9 +85,13 @@ export const lightsWindow = {
       const same = picker?.t === l.name; closePicker(); if (same) return;
       const t = target(l.name), brand = l.brand || "";
       let lum = l.brightness ?? 100, temp = l.kelvin ? kToTemp(brand, l.kelvin) : 50, timer = null, pending = null;
-      const send = (f) => { clearTimeout(timer); pending = null; bridge.act("light.set", { action: "on", light_target: t, silent: true, ...f }); };
+      let tempSlider = null;
+      // The temperature slider belongs to white mode: locked while the bulb is a colour, unlocked by a white swatch (or by the bulb already being white).
+      const setWhite = (isWhite) => tempSlider?.setLocked(!isWhite);
+      const send = (f) => { clearTimeout(timer); pending = null; bridge.act("light.set", { action: "on", light_target: t, silent: true, ...f }); const m = modeAfter(f); if (m) setWhite(m === "white"); };
       const queue = (f) => { pending = f; clearTimeout(timer); timer = setTimeout(() => pending && send(pending), 200); };
-      const sw = (name, rgb, label) => h("button", { class: "sw", "aria-label": label ? "White" : "Colour", style: `--c:${css(rgb)}`, onclick: () => send({ color: name, lum }) }, label || "");
+      const sw = (name, rgb, label, tp) => h("button", { class: "sw", "aria-label": label ? "White" : "Colour", style: `--c:${css(rgb)}`,
+        onclick: () => { send({ color: name, lum }); if (tp !== undefined) { temp = tp; tempSlider?.setValue(tp); } } }, label || "");
       const swatches = mergeSwatches(PALETTE, savedSwatches);
       // A colour swatch: a click sets the light to it; a right click opens the wheel to make it another colour, which stays.
       const paletteSw = (s) => {
@@ -131,14 +135,18 @@ export const lightsWindow = {
         const s = h("input", { type: "range", class: "slider", min: lo, max: hi, value: val });
         const fill = () => s.style.setProperty("--fill", ((s.value - lo) / (hi - lo)) * 100 + "%");
         s.addEventListener("input", () => { fill(); v.textContent = fmt(+s.value); on(+s.value); }); fill();
-        return h("div", { class: "pk-slider" }, h("div", { class: "pk-cap dim" }, h("span", {}, cap), v), s);
+        const box = h("div", { class: "pk-slider" }, h("div", { class: "pk-cap dim" }, h("span", {}, cap), v), s);
+        box.setValue = (n) => { s.value = n; fill(); v.textContent = fmt(+s.value); };
+        box.setLocked = (locked) => { s.disabled = locked; box.classList.toggle("locked", locked); v.textContent = locked ? "pick a white" : fmt(+s.value); };
+        return box;
       };
       const el = h("div", { class: "picker panel" },
         h("div", { class: "pk-title" }, l.name, h("span", { class: "dim" }, { wiz: " · WiZ", tapo: " · Tapo" }[String(brand).toLowerCase()] || "")),
         h("div", { class: "pk-swatches" }, swatches.map(paletteSw)),
-        h("div", { class: "pk-swatches" }, WHITES.map(([n, tp, lab]) => sw(n, whiteTint(tempToK(brand, tp)), lab))),
+        h("div", { class: "pk-swatches" }, WHITES.map(([n, tp, lab]) => sw(n, whiteTint(tempToK(brand, tp)), lab, tp))),
         slider("BRIGHTNESS", lum, 1, 100, (v) => v + " %", (v) => { lum = v; queue({ lum }); }),
-        slider("TEMPERATURE", temp, 0, 100, (v) => tempToK(brand, v) + " K", (v) => { temp = v; queue({ temp, lum }); }));
+        tempSlider = slider("TEMPERATURE", temp, 0, 100, (v) => tempToK(brand, v) + " K", (v) => { temp = v; queue({ temp, lum }); }));
+      setWhite(isWhiteLight(l));
       document.body.append(el);
       const spot = pickerSpot(anchor.getBoundingClientRect(), el.getBoundingClientRect(), { width: innerWidth, height: innerHeight });
       el.style.left = spot.left + "px"; el.style.top = spot.top + "px";

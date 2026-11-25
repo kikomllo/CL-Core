@@ -263,6 +263,7 @@ button.disc:disabled { cursor: default; }
 .pk-row { display: flex; gap: calc(8 * var(--u)); justify-content: space-between; }
 .pk-slider { display: flex; flex-direction: column; gap: calc(6 * var(--u)); } .pk-cap { display: flex; justify-content: space-between; letter-spacing: 1px; font-size: var(--f-tiny); }
 .pk-slider .slider { width: 100%; height: calc(5 * var(--u)); }
+.pk-slider.locked { opacity: .45; } .pk-slider.locked .slider { cursor: not-allowed; }
 
 /* to-do */
 .tabs-pill { margin: calc(12 * var(--u)) 0 calc(4 * var(--u)); display: flex; gap: 3px; padding: 3px; align-self: flex-start; max-width: 100%; overflow-x: auto; flex: none;

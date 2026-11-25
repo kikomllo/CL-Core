@@ -218,6 +218,8 @@ class GradientSlider(QSlider):
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if not self.isEnabled():
+            p.setOpacity(0.35)                                       # locked
         h = 8
         groove = QRectF(self.PAD, (self.height() - h) / 2, self.width() - 2 * self.PAD, h)
         grad = QLinearGradient(groove.left(), 0, groove.right(), 0)
@@ -437,7 +439,8 @@ class ColourPicker(QWidget):
         self.temp_value, self.temp_slider = self._slider(
             lay, "White temperature", [(0.0, (255, 162, 77)), (0.5, (255, 243, 224)), (1.0, (188, 214, 255))], 0, 100, self.temp)
         self.temp_slider.valueChanged.connect(self._on_temp)
-        self._show_values()
+        # The temperature belongs to white mode (a bulb is a colour or a white, never both): locked while the bulb is a colour, a white swatch unlocks it.
+        self._set_white(bool(state.get("kelvin")) and not state.get("rgb"))
 
     # --- building blocks ---
     def _section(self, text):
@@ -468,12 +471,24 @@ class ColourPicker(QWidget):
 
     def _show_values(self):
         self.lum_value.setText(f"{self.lum} %")
-        self.temp_value.setText(f"{temp_to_kelvin(self.brand, self.temp)} K")
+        self.temp_value.setText(f"{temp_to_kelvin(self.brand, self.temp)} K" if self.temp_slider.isEnabled() else "pick a white")
+
+    def _set_white(self, is_white):
+        """Unlocks the temperature slider while the bulb is white, locks it while the bulb is a colour."""
+        self.temp_slider.setEnabled(bool(is_white))
+        self._show_values()
 
     # --- behaviour ---
     def _on_swatch(self, clicked):
         for sw in self.swatches:
             sw.setChecked(sw is clicked)
+        if clicked.text_on_swatch:                                   # a white: the slider unlocks and shows this white's temperature
+            temp = next(t for n, t, _ in WHITES if n == clicked.name)
+            self.temp = temp
+            self.temp_slider.blockSignals(True)
+            self.temp_slider.setValue(temp)
+            self.temp_slider.blockSignals(False)
+        self._set_white(bool(clicked.text_on_swatch))
         # the voice colour's name while the swatch is the default, its rgb once it is the user's own colour
         self._send({"rgb": list(clicked.rgb), "lum": self.lum} if clicked.custom else {"color": clicked.name, "lum": self.lum})
 
@@ -494,6 +509,7 @@ class ColourPicker(QWidget):
         wheel.show()
 
     def _wheel_changed(self, swatch, rgb):
+        self._set_white(False)
         swatch.set_colour(rgb, True)
         for sw in self.swatches:
             sw.setChecked(sw is swatch)

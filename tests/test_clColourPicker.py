@@ -333,3 +333,38 @@ class TestWheelTitleHasNoName:
         texts = [l.text() for l in picker._wheel.findChildren(QLabel)]
         assert texts == ["Drag to change the colour"]
         picker.close()
+
+
+class TestTemperatureLock:
+    """A bulb is a colour or a white. The temperature slider is locked while it is a colour and a white swatch unlocks it."""
+
+    def test_a_bulb_in_colour_mode_opens_with_the_slider_locked(self, qapp):
+        picker, got = _picker(state={"brightness": 60})
+        assert not picker.temp_slider.isEnabled() and picker.temp_value.text() == "pick a white"
+        assert got == []
+
+    def test_a_bulb_that_is_white_opens_unlocked_showing_its_kelvin(self, qapp):
+        picker, _ = _picker("wiz", {"brightness": 35, "kelvin": 4600})
+        assert picker.temp_slider.isEnabled() and picker.temp_value.text() == "4600 K"
+
+    def test_a_bulb_reporting_a_colour_is_locked_even_if_it_has_a_stale_kelvin(self, qapp):
+        picker, _ = _picker(state={"kelvin": 4000, "rgb": [255, 0, 0]})
+        assert not picker.temp_slider.isEnabled()
+
+    def test_a_white_swatch_unlocks_it_at_that_whites_temperature_and_sends_only_the_swatch(self, qapp):
+        picker, got = _picker("wiz", {"brightness": 70})
+        next(s for s in picker.swatches if s.name == "daylight").click()
+        assert picker.temp_slider.isEnabled() and picker.temp_slider.value() == 50 and picker.temp_value.text() == "4600 K"
+        assert got == [{"color": "daylight", "lum": 70}]                     # moving the slider to show it sent nothing more
+
+    def test_a_colour_swatch_or_the_wheel_locks_it_again(self, qapp):
+        picker, _ = _picker("wiz", {"kelvin": 4600})
+        assert picker.temp_slider.isEnabled()
+        next(s for s in picker.swatches if s.name == "red").click()
+        assert not picker.temp_slider.isEnabled()
+        next(s for s in picker.swatches if s.name == "warm white").click()
+        assert picker.temp_slider.isEnabled()
+        picker._on_customise("red")
+        picker._wheel_changed(next(s for s in picker.swatches if s.name == "red"), (10, 20, 30))
+        assert not picker.temp_slider.isEnabled()
+        picker.close()
