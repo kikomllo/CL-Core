@@ -15,6 +15,8 @@ try:
 except ImportError:                                   # the module still imports; a call then says what is missing
     tinytuya = None
 
+logging.getLogger("tinytuya").setLevel(logging.WARNING)        # it logs every frame of every poll at DEBUG
+
 SOCKET_TIMEOUT = 3.0                                  # seconds for one connect / answer
 JITTER = (0.2, 0.6)                                   # pause before the one retry, so two machines do not collide again
 SWITCH_DP = "1"                                       # the data point of a plug's switch; a device entry can override it with "dps"

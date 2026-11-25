@@ -22,6 +22,14 @@
         "ip": "192.168.1.72",
         "mac": "10:5A:95:B7:16:86",
         "type": "tapo"
+      },
+      "heater": {
+        "type": "tuya",
+        "kind": "plug",
+        "ip": "192.168.1.101",
+        "mac": "d8fc92423cf4",
+        "device_id": "bf98365886d0ae71af6aas",
+        "version": "3.5"
       }
     }
   }
