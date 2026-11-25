@@ -7,6 +7,7 @@ import logging
 import json
 import sys
 import colorsys
+import time
 from typing import Optional, Dict, Any, List, Tuple
 from tapo import ApiClient
 from pywizlight import wizlight, PilotBuilder, discovery as wiz_discovery
@@ -17,6 +18,7 @@ import aiomqtt
 from utils.clEnvLoader import EnvLoader
 from utils.clConfigLoader import ConfigLoader
 from utils.clNetworkUtils import get_current_wifi_ssid
+from utils import clTuya
 
 # --- LOGGING SETUP ---
 import sys, os
@@ -99,8 +101,15 @@ def _colour_capability(entry: Dict[str, Any], detected: Optional[bool]) -> bool:
     return True if detected is None else detected
 
 
+def _kind(entry: Dict[str, Any]) -> str:
+    """What a device is for: "light" (the default, so old entries are unchanged) or "plug" (a heater: on/off only, never part of "all lights")."""
+    return str(entry.get("kind", "light")).lower()
+
+
 def _describe_failures(failures) -> str:
     names = " and ".join(name.replace("_", " ") for name, _ in failures)
+    if all(isinstance(e, clTuya.TuyaError) for _, e in failures):
+        return f"I couldn't reach the {names}. {failures[0][1]}"
     reasons = " ".join(str(e) for _, e in failures).lower()
     if "third-party compatibility" in reasons or "forbidden" in reasons or "unauthorized" in reasons:
         return f"The {names} light refused the login. Check Third-Party Compatibility and the account in the Tapo app."
@@ -111,6 +120,8 @@ def _describe_failures(failures) -> str:
 TAPO_TIMEOUT = 6.0
 # How often the lights are polled with nobody asking, so a bulb switched elsewhere or a startup blip corrects itself.
 POLL_INTERVAL = 25.0
+# A Tuya plug takes one local session at a time and the phone app and the other machine want it too: read it every other cycle.
+PLUG_POLL_INTERVAL = 45.0
 
 
 async def _bounded(coro, timeout: float):
@@ -344,6 +355,13 @@ class LightManager:
         return False
 
     # --- CONCURRENT LIGHT EXECUTION ENGINE ---
+    def _is_plug(self, name: str) -> bool:
+        return _kind(self.lights.get(name, {})) == "plug"
+
+    def tuya_key(self, name: str) -> str:
+        """The local key of a Tuya device: TUYA_KEY_<NAME> in .env (never in devices.json, which is tracked)."""
+        return os.getenv("TUYA_KEY_" + name.upper().replace(" ", "_"), self.env.get("TUYA_KEY_" + name.upper().replace(" ", "_"), ""))
+
     def _resolve_targets(self, target_name: str = "all") -> List[Tuple[str, str, str, str]]:
         """Resolves a spoken target name to concrete (name, ip, mac, type) light
         entries, handling 'all'/generic-light synonyms and the sticky last-target
@@ -355,6 +373,8 @@ class LightManager:
 
         if target_name_clean in generic_targets:
             effective_target = getattr(self, 'last_target', 'all')
+            if target_name_clean and self._is_plug(effective_target):      # "turn on the light" after "the heater" must not switch the heater
+                effective_target = "all"
         elif target_name_clean in all_synonyms:
             self.last_target = "all"
             self._save_last_target("all")
@@ -366,7 +386,8 @@ class LightManager:
         if effective_target == "all" or not effective_target:
             if self.lights:
                 for name, dev in self.lights.items():
-                    targets.append((name, dev['ip'], dev['mac'], dev['type']))
+                    if _kind(dev) != "plug":                  # a plug is only hit when it is named: "all lights" can never switch the heater
+                        targets.append((name, dev['ip'], dev.get('mac', ''), dev['type']))
             elif self.bulb_ip:
                 targets.append(("default", self.bulb_ip, self.bulb_mac, self.light_type))
         else:
@@ -374,7 +395,7 @@ class LightManager:
             for name, dev in self.lights.items():
                 norm_name = name.lower().replace('_', ' ').strip()
                 if norm_target in norm_name or norm_name in norm_target:
-                    targets.append((name, dev['ip'], dev['mac'], dev['type']))
+                    targets.append((name, dev['ip'], dev.get('mac', ''), dev['type']))
                     self.last_target = name
                     self._save_last_target(name)
                     break
@@ -408,9 +429,15 @@ class LightManager:
         rgb = _parse_rgb(rgb)
         targets = self._resolve_targets(target_name)
         extra = {"rgb": rgb} if rgb else {}          # only passed when given: the other call shapes stay as they were
+        if color or lum is not None or temp is not None or rgb:
+            for name, _, _, _ in targets:                # refused before any light is touched, not silently ignored
+                if self._is_plug(name):
+                    raise LightCommandError(f"The {name.replace('_', ' ')} is a plug: it only switches on and off.")
 
         async def execute_single(name, ip, mac, l_type):
-            if l_type == "wiz":
+            if l_type == "tuya":
+                await self._execute_tuya_target(name, toggle, on, off)
+            elif l_type == "wiz":
                 await self._execute_wiz_target(ip, toggle, on, off, color, lum, temp, **extra)
             else:
                 await self._execute_tapo_target(ip, toggle, on, off, color, lum, temp, **extra)
@@ -425,6 +452,9 @@ class LightManager:
         """Reads each target light's current brightness and nudges it up or
         down by BRIGHTNESS_STEP, clamped to 1-100."""
         targets = self._resolve_targets(target_name)
+        for name, _, _, _ in targets:
+            if self._is_plug(name):
+                raise LightCommandError(f"The {name.replace('_', ' ')} is a plug: it has no brightness.")
         delta = self.BRIGHTNESS_STEP if direction == "up" else -self.BRIGHTNESS_STEP
 
         async def adjust_single(name, ip, mac, l_type):
@@ -445,6 +475,13 @@ class LightManager:
 
         await self._run_on_targets(targets, adjust_single)
         
+    async def _execute_tuya_target(self, name, toggle, on, off):
+        entry, key = self.lights[name], self.tuya_key(name)
+        if toggle:
+            await clTuya.toggle_power(entry, key)
+        elif on or off:
+            await clTuya.set_power(entry, key, bool(on))
+
     async def _execute_wiz_target(self, ip, toggle, on, off, color, lum, temp, rgb=None):
         bulb = wizlight(ip)
         if toggle:
@@ -697,13 +734,24 @@ class LightManager:
 async def poll_light_status(manager: LightManager) -> None:
     """Background task: polls the lights and publishes jarvis/sys/light_status when asked (poll_trigger) and every POLL_INTERVAL."""
     failure_tracker = {}
+    plug_cache = {}                       # name -> (time, status): a plug is read less often than a bulb, to keep its sessions rare
+    forced = True
 
     async def poll_single(name, info_dict):
         ip = info_dict.get("ip")
         l_type = info_dict.get("type", "tapo").lower()
+        kind = _kind(info_dict)
         if not ip: return None
+        if kind == "plug" and not forced:
+            cached = plug_cache.get(name)
+            if cached and time.monotonic() - cached[0] < PLUG_POLL_INTERVAL:
+                return cached[1]
         try:
-            if l_type == "wiz":
+            if l_type == "tuya":
+                is_on = await clTuya.get_power(info_dict, manager.tuya_key(name))
+                detected = False
+                fields = {"brightness": None, "rgb": None, "kelvin": None}
+            elif l_type == "wiz":
                 bulb = wizlight(ip)
                 await asyncio.wait_for(bulb.updateState(), timeout=3.0)
                 is_on = bulb.status
@@ -717,25 +765,31 @@ async def poll_light_status(manager: LightManager) -> None:
                 detected = model not in TAPO_WHITE_ONLY_MODELS
                 fields = _tapo_status_fields(info)
             failure_tracker[name] = 0
-            return {"name": name.replace("_", " ").title(), "is_on": is_on, "offline": False,
-                    "brand": l_type, "colour": _colour_capability(info_dict, detected), **fields}
+            status = {"name": name.replace("_", " ").title(), "is_on": is_on, "offline": False, "kind": kind,
+                      "brand": l_type, "colour": _colour_capability(info_dict, detected), **fields}
+            if kind == "plug": plug_cache[name] = (time.monotonic(), status)
+            return status
         except Exception as e:
             fails = failure_tracker.get(name, 0) + 1
             failure_tracker[name] = fails
             logging.debug(f"Light polling error for {name} (fail {fails}): {repr(e)}")
             is_offline = fails >= 3
             # is_on is unknown (None, not "off") until the light has failed enough polls to be called offline.
-            return {"name": name.replace("_", " ").title(), "is_on": False if is_offline else None, "offline": is_offline,
-                    "brand": l_type, "colour": _colour_capability(info_dict, None)}
+            status = {"name": name.replace("_", " ").title(), "is_on": False if is_offline else None, "offline": is_offline, "kind": kind,
+                      "brand": l_type, "colour": _colour_capability(info_dict, False if kind == "plug" else None)}
+            if kind == "plug": plug_cache[name] = (time.monotonic(), status)
+            return status
 
     while True:
         try:
             async with aiomqtt.Client("localhost") as mqtt_client:
                 while True:
+                    forced = forced or manager.poll_trigger.is_set()       # asked for (a command, a refresh): read the plugs too
                     manager.poll_trigger.clear()
                     results = await asyncio.gather(*(poll_single(n, i) for n, i in list(manager.lights.items())))
                     statuses = [r for r in results if r]
                     await mqtt_client.publish("jarvis/sys/light_status", json.dumps({"network": manager.current_ssid, "lights": statuses}))
+                    forced = False
                     try:
                         await asyncio.wait_for(manager.poll_trigger.wait(), timeout=POLL_INTERVAL)
                     except asyncio.TimeoutError:

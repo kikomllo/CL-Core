@@ -603,3 +603,137 @@ class TestFeedbackDelivery:
         dead.publish.side_effect = Exception("down")
         mock_mqtt.publish.side_effect = Exception("still down")
         await _publish_feedback(dead, {"status": "error"})
+
+class TestTuyaPlug:
+    """The LSC heater plug: a `tuya` device of kind `plug`. On/off only, never part of "all lights", the key from .env."""
+
+    HEATER = {"ip": "10.0.0.60", "type": "tuya", "kind": "plug", "device_id": "bf1", "version": "3.5"}
+
+    @pytest.fixture
+    def home(self, manager, mocker, monkeypatch):
+        manager.lights = {
+            "bedroom": {"ip": "10.0.0.1", "mac": "AA", "type": "wiz"},
+            "heater": dict(self.HEATER),
+        }
+        manager.current_ssid = "TestNet"
+        monkeypatch.setenv("TUYA_KEY_HEATER", "the-key")
+        manager.tuya = {"set": mocker.patch("clControl.clTuya.set_power", new=mocker.AsyncMock()),
+                        "toggle": mocker.patch("clControl.clTuya.toggle_power", new=mocker.AsyncMock(return_value=True)),
+                        "get": mocker.patch("clControl.clTuya.get_power", new=mocker.AsyncMock(return_value=True))}
+        manager.wiz = mocker.patch("clControl.wizlight")
+        manager.wiz.return_value.turn_on = mocker.AsyncMock()
+        manager.wiz.return_value.turn_off = mocker.AsyncMock()
+        return manager
+
+    def test_all_lights_leaves_the_plug_out_but_its_name_finds_it(self, home):
+        for spoken in ("all", "all lights", "everything", "every light"):
+            assert [t[0] for t in home._resolve_targets(spoken)] == ["bedroom"], spoken
+        assert [t[0] for t in home._resolve_targets("the heater")] == ["heater"]
+        assert [t[0] for t in home._resolve_targets("heater")] == ["heater"]
+
+    def test_a_device_without_kind_is_a_light(self, home):
+        assert [t[0] for t in home._resolve_targets("bedroom")] == ["bedroom"]
+        assert "kind" not in home.lights["bedroom"]
+
+    def test_the_light_after_the_heater_is_not_the_heater_but_it_is(self, home):
+        home.last_target = "heater"
+        assert [t[0] for t in home._resolve_targets("the light")] == ["bedroom"]
+        home.last_target = "heater"
+        assert [t[0] for t in home._resolve_targets("")] == ["heater"]          # "turn it off" after "turn on the heater"
+
+    @pytest.mark.asyncio
+    async def test_on_and_off_reach_the_plug_with_its_key(self, home):
+        await home.control_bulb(on=True, target_name="heater")
+        await home.control_bulb(off=True, target_name="the heater")
+        calls = home.tuya["set"].await_args_list
+        assert [c.args[2] for c in calls] == [True, False]
+        assert calls[0].args[0]["device_id"] == "bf1" and calls[0].args[1] == "the-key"
+
+    @pytest.mark.asyncio
+    async def test_toggle_goes_through_the_one_session_toggle(self, home):
+        await home.control_bulb(toggle=True, target_name="heater")
+        home.tuya["toggle"].assert_awaited_once()
+        home.tuya["set"].assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_all_lights_off_never_touches_the_heater(self, home):
+        await home.control_bulb(off=True, target_name="all lights")
+        home.tuya["set"].assert_not_awaited()
+        home.wiz.return_value.turn_off.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("extra", [{"color": "red"}, {"lum": 50}, {"temp": 30}, {"rgb": [1, 2, 3]}])
+    async def test_colour_or_brightness_for_a_plug_is_a_clear_error_and_nothing_happens(self, home, extra):
+        with pytest.raises(LightCommandError, match="heater is a plug"):
+            await home.control_bulb(on=True, target_name="heater", **extra)
+        home.tuya["set"].assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_brightness_steps_for_a_plug_are_refused(self, home):
+        with pytest.raises(LightCommandError, match="no brightness"):
+            await home.adjust_brightness("up", "heater")
+
+    @pytest.mark.asyncio
+    async def test_a_plug_that_fails_is_reported_with_the_reason(self, home):
+        from utils.clTuya import TuyaError
+        home.tuya["set"].side_effect = TuyaError("Check device key or version (when switching the plug): check the local key.")
+        with pytest.raises(LightCommandError, match="couldn't reach the heater.*local key"):
+            await home.control_bulb(on=True, target_name="heater")
+
+    def test_the_key_comes_from_the_environment_never_from_devices_json(self, home, monkeypatch):
+        assert home.tuya_key("heater") == "the-key"
+        monkeypatch.delenv("TUYA_KEY_HEATER")
+        assert home.tuya_key("heater") == ""
+        monkeypatch.setenv("TUYA_KEY_LIVING_ROOM_HEATER", "k2")
+        assert home.tuya_key("living room heater") == "k2"
+        tracked = open(os.path.join(os.path.dirname(__file__), "..", "config", "devices.json"), encoding="utf-8").read()
+        assert "local_key" not in tracked and "TUYA_KEY" not in tracked
+
+
+class TestTuyaPlugStatus:
+    HEATER = TestTuyaPlug.HEATER
+
+    async def _statuses(self, manager, mock_mqtt, mocker, publishes, interval=0.02):
+        import asyncio
+        mocker.patch("clControl.POLL_INTERVAL", interval)
+        task = asyncio.create_task(poll_light_status(manager))
+        for _ in range(300):
+            await asyncio.sleep(0.01)
+            if mock_mqtt.publish.await_count >= publishes:
+                break
+        task.cancel()
+        await task
+        return [{l["name"]: l for l in json.loads(c.args[1])["lights"]} for c in mock_mqtt.publish.await_args_list]
+
+    @pytest.mark.asyncio
+    async def test_a_plug_reports_on_off_as_a_plug_without_colour(self, manager, mocker, mock_mqtt):
+        manager.lights = {"heater": dict(self.HEATER)}
+        manager.current_ssid = "TestNet"
+        mocker.patch("clControl.clTuya.get_power", new=mocker.AsyncMock(return_value=True))
+        first = (await self._statuses(manager, mock_mqtt, mocker, 1))[0]["Heater"]
+        assert (first["is_on"], first["offline"], first["kind"], first["brand"], first["colour"]) == (True, False, "plug", "tuya", False)
+        assert first["brightness"] is None and first["rgb"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_light_reports_kind_light(self, manager, mocker, mock_mqtt):
+        manager.lights = {"bedroom": {"ip": "10.0.0.1", "mac": "AA", "type": "tapo"}}
+        manager.current_ssid = "TestNet"
+        mocker.patch.object(manager, "_tapo_call", new=mocker.AsyncMock(return_value=MagicMock(device_on=True, brightness=50, color_temp=3000)))
+        assert (await self._statuses(manager, mock_mqtt, mocker, 1))[0]["Bedroom"]["kind"] == "light"
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_plug_is_unknown_then_offline_and_never_gets_a_colour_button(self, manager, mocker, mock_mqtt):
+        manager.lights = {"heater": dict(self.HEATER)}
+        manager.current_ssid = "TestNet"
+        mocker.patch("clControl.clTuya.get_power", new=mocker.AsyncMock(side_effect=TimeoutError("no answer")))
+        mocker.patch("clControl.PLUG_POLL_INTERVAL", 0)
+        statuses = [s["Heater"] for s in await self._statuses(manager, mock_mqtt, mocker, 3)]
+        assert [(s["is_on"], s["offline"], s["colour"]) for s in statuses[:3]] == [(None, False, False), (None, False, False), (False, True, False)]
+
+    @pytest.mark.asyncio
+    async def test_a_plug_is_read_less_often_than_the_bulbs_unless_someone_asks(self, manager, mocker, mock_mqtt):
+        manager.lights = {"heater": dict(self.HEATER)}
+        manager.current_ssid = "TestNet"
+        get = mocker.patch("clControl.clTuya.get_power", new=mocker.AsyncMock(return_value=False))
+        await self._statuses(manager, mock_mqtt, mocker, 5)           # five publishes, 20 ms apart: far inside the 45 s plug interval
+        assert get.await_count == 1
