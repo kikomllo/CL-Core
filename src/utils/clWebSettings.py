@@ -26,6 +26,10 @@ START_ON_LOGIN = "start_on_login"
 AUDIO_KEYS = ("audio_settings.input_device", "audio_settings.output_device")    # a device name: any short non-empty string
 WIFI_GATE_KEY, WIFI_MAC_KEY = "monitor_settings.wifi_gate_enabled", "monitor_settings.wifi_mac"
 PRESENCE_ENABLED_KEY, PRESENCE_LIGHT_PREFIX = "automation_settings.presence_lights.enabled", "automation_settings.presence_lights.light."
+# The colour picker's eight colour swatches, by the voice name each one has by default (config/entities.json). A swatch the user
+# changed is stored in settings.light_swatches as {name: [r, g, b]}, under the slot's default name; a slot not in there is the default.
+SWATCH_NAMES = ("red", "orange", "yellow", "green", "cyan", "blue", "purple", "hot pink")
+SWATCH_PREFIX = "light_swatch."
 _LIGHT_NAME = re.compile(r"^[A-Za-z0-9_\- ]{1,64}$")
 _PLAIN_TEXT = re.compile(r"^[^\x00-\x1f\x7f]*$")
 
@@ -46,6 +50,10 @@ def check(key: str, value: Any) -> Any:
         if not isinstance(value, str) or len(value) > 64 or not _PLAIN_TEXT.match(value):
             raise BadSetting(f"{key} must be short plain text")
         return value.strip().lower() or None
+    if key.startswith(SWATCH_PREFIX):                        # a colour [r, g, b] for one swatch, or null to put the default back
+        if key[len(SWATCH_PREFIX):] not in SWATCH_NAMES:
+            raise BadSetting(f"{key!r} is not a colour swatch")
+        return None if value is None else swatch_rgb(value)
     if key in AUDIO_KEYS:
         if not isinstance(value, str) or not value.strip() or len(value) > 300:
             raise BadSetting(f"{key} must be a device name")
@@ -68,6 +76,13 @@ def check(key: str, value: Any) -> Any:
     return value
 
 
+def swatch_rgb(value: Any) -> List[int]:
+    """[r, g, b] with whole numbers 0-255, or BadSetting."""
+    if not isinstance(value, (list, tuple)) or len(value) != 3 or any(isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= 255 for v in value):
+        raise BadSetting("a swatch colour is three whole numbers, 0 to 255: [r, g, b]")
+    return [int(v) for v in value]
+
+
 def apply(loader, key: str, value: Any) -> Any:
     """Validate, then write one setting to core.json atomically. Returns the stored value. start_on_login is not a core.json
     setting (it is an OS startup entry): the caller handles it."""
@@ -77,6 +92,15 @@ def apply(loader, key: str, value: Any) -> Any:
         settings = core.setdefault("settings", {})
         if key.startswith("debug_flags."):
             settings.setdefault("debug_flags", {})[key.split(".", 1)[1]] = value
+            return
+        if key.startswith(SWATCH_PREFIX):
+            swatches = settings.setdefault("light_swatches", {})
+            if value is None:
+                swatches.pop(key[len(SWATCH_PREFIX):], None)
+                if not swatches:
+                    settings.pop("light_swatches", None)
+            else:
+                swatches[key[len(SWATCH_PREFIX):]] = value
             return
         if key in AUDIO_KEYS:
             settings.setdefault("audio_settings", {})[key.split(".", 1)[1]] = value
@@ -135,6 +159,19 @@ def snapshot(loader) -> Dict[str, Any]:
     rule = (settings.get("automation_settings", {}) or {}).get("presence_lights", {}) or {}
     out["presence_lights"] = {"enabled": bool(rule.get("enabled", False)), "lights": [n for n in rule.get("lights", []) if isinstance(n, str)]}
     out["light_names"] = light_names(loader)
+    out["light_swatches"] = swatches_from(settings)
+    return out
+
+
+def swatches_from(settings: Dict[str, Any]) -> Dict[str, List[int]]:
+    """The swatches the user changed, from a settings block: only valid slots with valid colours (a hand-edited file cannot break the picker)."""
+    saved = settings.get("light_swatches", {}) if isinstance(settings, dict) else {}
+    out: Dict[str, List[int]] = {}
+    for name in SWATCH_NAMES:
+        try:
+            out[name] = swatch_rgb(saved[name])
+        except (KeyError, TypeError, BadSetting):
+            continue
     return out
 
 

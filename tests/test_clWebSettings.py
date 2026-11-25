@@ -137,3 +137,49 @@ class TestEndpoint:
             r = await client.post("/api/settings", json=body)
             assert r.status == 400, body
         assert saved(loader)["settings"]["theme"] == "jarvis"
+
+
+class TestLightSwatches:
+    """The colour picker's eight swatches the user can change: one stored colour per slot, a slot with none is the default."""
+
+    def test_a_valid_colour_for_a_known_slot_is_stored_under_light_swatches(self, loader):
+        assert clWebSettings.apply(loader, "light_swatch.red", [10, 20, 30]) == [10, 20, 30]
+        assert clWebSettings.apply(loader, "light_swatch.hot pink", (255, 0, 128)) == [255, 0, 128]
+        assert saved(loader)["settings"]["light_swatches"] == {"red": [10, 20, 30], "hot pink": [255, 0, 128]}
+        assert saved(loader)["settings"]["theme"] == "jarvis"           # nothing else was touched
+
+    def test_null_puts_the_default_back_and_the_last_one_drops_the_block(self, loader):
+        clWebSettings.apply(loader, "light_swatch.red", [1, 2, 3])
+        clWebSettings.apply(loader, "light_swatch.blue", [4, 5, 6])
+        assert clWebSettings.apply(loader, "light_swatch.red", None) is None
+        assert saved(loader)["settings"]["light_swatches"] == {"blue": [4, 5, 6]}
+        clWebSettings.apply(loader, "light_swatch.blue", None)
+        assert "light_swatches" not in saved(loader)["settings"]
+        clWebSettings.apply(loader, "light_swatch.green", None)          # resetting what was never changed is not an error
+        assert "light_swatches" not in saved(loader)["settings"]
+
+    @pytest.mark.parametrize("key,value", [
+        ("light_swatch.magenta", [1, 2, 3]), ("light_swatch.", [1, 2, 3]), ("light_swatch.warm white", [1, 2, 3]),   # not a colour slot
+        ("light_swatch.red", [1, 2]), ("light_swatch.red", [1, 2, 3, 4]), ("light_swatch.red", "red"),
+        ("light_swatch.red", [256, 0, 0]), ("light_swatch.red", [-1, 0, 0]), ("light_swatch.red", [1.5, 0, 0]),
+        ("light_swatch.red", [True, 0, 0]), ("light_swatch.red", {"r": 1}), ("light_swatch.red", 5),
+    ])
+    def test_anything_else_is_refused_and_writes_nothing(self, loader, key, value):
+        with pytest.raises(clWebSettings.BadSetting):
+            clWebSettings.apply(loader, key, value)
+        assert "light_swatches" not in saved(loader)["settings"]
+
+    def test_the_snapshot_carries_only_the_changed_valid_swatches(self, loader):
+        assert clWebSettings.snapshot(loader)["light_swatches"] == {}
+        clWebSettings.apply(loader, "light_swatch.cyan", [0, 100, 200])
+        assert clWebSettings.snapshot(loader)["light_swatches"] == {"cyan": [0, 100, 200]}
+
+        def corrupt(core):                                               # a hand-edited file must not break the picker
+            core["settings"]["light_swatches"] = {"cyan": [0, 100, 200], "red": "nope", "magenta": [1, 2, 3], "blue": [999, 0, 0]}
+        loader.update_json_atomic("core.json", corrupt)
+        assert clWebSettings.snapshot(loader)["light_swatches"] == {"cyan": [0, 100, 200]}
+
+    def test_the_slots_are_the_voice_colours_the_pickers_default_to(self):
+        entities = json.load(open(os.path.join(os.path.dirname(__file__), "..", "config", "entities.json"), encoding="utf-8"))["colors"]
+        for name in clWebSettings.SWATCH_NAMES:
+            assert name in entities and entities[name]["type"] == "rgb", name
