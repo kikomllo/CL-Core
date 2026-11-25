@@ -11,7 +11,6 @@ The one place to see what is still to implement. Updated 2026-11-25. Each item s
 - [ ] **Re-pick the audio output device** in Settings: the pinned "Altifalantes (Realtek High Definition Audio)" no longer exists, so TTS falls back to the default. (S)
 - [ ] **Barge-in live checklist** (say "Hey Jarvis, stop" over a long reply, PTT key, abort key, echo guard). (S) (`voice_latency_plan.md`)
 - [ ] **Decide the deleted `data/notes/1789982628692.json`**: it is a tracked file the app deleted; commit the deletion or restore it. (S)
-- [ ] **Tuya setup for the heater plug**: Tuya IoT developer account, link Smart Life (move the plug from the LSC app), run `python -m tinytuya wizard`, keep id/key/ip/version. Needed before the plug can be built. (S-M) (`smart_devices_plan.md`)
 - [ ] **Google Cloud project** (Desktop-app OAuth client, Calendar API, publish as "In production" so tokens do not expire after 7 days). Needed before the calendar. (S-M) (`google_calendar_plan.md`)
 
 ## Web front end (`docs/web_ui_plan.md`)
@@ -24,6 +23,7 @@ The one place to see what is still to implement. Updated 2026-11-25. Each item s
 - [ ] **Timed on/off (schedules)** in `clAutomation`: weekday + time rules, grace window for missed triggers, **heater max-on fail-safe** persisted across restarts, editor on the light row. (M)
 - [ ] Later: watts in the plug's row if it is an energy-meter model; skip a schedule after a manual change; voice "turn the heater on at seven". (M)
 - [ ] **Voice lines for devices that are not lights**: the spoken reply to "turn off the heater" is the light wording ("lights off"). Give plugs their own replies ("heater off" / "switching the heater on"), chosen from the target's `kind` in `clControl`'s feedback or the daemon's reply path, and add plug phrasing to `config/intents.json` (`{light_target}` already routes "the heater"; check `benchmark_slm.py`). **Batch with the colour-command retrain** so the models are trained once (`training/CLAUDE.md`). (M)
+- [ ] **Tapo colour correction** (`core.json` `settings.light_colour_gamma`, the owner kept 2.2 on 2026-11-25 after comparing; the code default is 1 = none): show it as a slider in Settings -> Lights, and decide whether 2.2 becomes the default so the laptop matches the desktop (`core.json` is per machine). WiZ bulbs are not corrected yet: judge them by eye first. (S)
 
 ## Google Calendar (`docs/google_calendar_plan.md`)
 
