@@ -19,6 +19,11 @@ from nlp.clIntentEngine import IntentEngine
 from nlp.clSLM import SLMInferenceEngine, ReplySLMEngine
 from utils.clActionRouter import ActionRouter
 from utils.clLatency import LatencyTrace
+from utils.clConfirm import is_affirmative, is_shutdown_request
+
+# Powering the computer off by voice: an exact phrase, a spoken yes, then a delay in which "cancel" still stops it (see utils/clConfirm.py).
+POWEROFF_CONFIRM_S = 20          # how long the question waits for its answer (it includes the time the question takes to be spoken)
+POWEROFF_DELAY_S = 20            # after the yes: the computer shuts down this many seconds later unless the user says cancel / stop
 
 # --- LOGGING SETUP ---
 import sys, os
@@ -56,6 +61,7 @@ class CentralDaemon:
             "type": None, 
             "expires_at": 0.0
         }
+        self._poweroff_authorised = False                    # set only by the spoken yes below, consumed by the dispatcher: nothing else may send terminal.shutdown
         self.dialogue_history = collections.deque(maxlen=6)  # Last 3 conversation turns (user + assistant)
         self.last_interaction_time = 0.0
 
@@ -283,6 +289,16 @@ class CentralDaemon:
             
         return False
 
+    def _authorise_dispatch(self, action_id: str) -> bool:
+        """The one gate before an action is sent: a shutdown goes out only with the authorisation the spoken yes set (once), whatever else produced it."""
+        if action_id != "terminal.shutdown":
+            return True
+        if not self._poweroff_authorised:
+            logging.error("[POWER] Refused a shutdown that was not confirmed by voice.")
+            return False
+        self._poweroff_authorised = False
+        return True
+
     def _optimize_intent_queue(self, intents: List[Tuple[Dict[str, Any], str]]) -> List[Tuple[Dict[str, Any], str]]:
         """
         INTENT SHADOWING: Resolves temporal conflicts (self-corrections) 
@@ -389,6 +405,7 @@ class CentralDaemon:
         Pass 3: Fast-Path Regex/Fuzzy Matching (<10ms)
         Pass 4: Smart-Path SLM Cognitive Decoder (150-300ms on CPU)
         """
+        self._poweroff_authorised = False                    # an authorisation never outlives the command it was given for
         sanitized_payload = self.sanitize_transcription(payload_data)
         clean_text = self.nlp.normalize_text(sanitized_payload)
 
@@ -445,6 +462,18 @@ class CentralDaemon:
             self.active_context["type"] = None
             if self.nlp.is_abort_command(clean_text): return [({"action": "abort"}, "system.abort")], None
             return [({"text": clean_text}, "claude.ask")], None
+
+        if self.active_context["type"] == "poweroff_confirm":
+            self.active_context = {"type": None, "expires_at": 0.0}
+            if is_affirmative(clean_text):
+                logging.warning(f"[POWER] Shutdown confirmed by voice ('{clean_text}'): the computer shuts down in {POWEROFF_DELAY_S} s unless cancelled.")
+                self._poweroff_authorised = True
+                return [
+                    ({"action": "shutdown", "delay": POWEROFF_DELAY_S, "silent": True}, "terminal.shutdown"),
+                    ({"text": f"Shutting down in {POWEROFF_DELAY_S} seconds. Say cancel to stop it.", "skip_ducking": True, "ignore_silent": True}, "system.speak"),
+                ], None
+            logging.info(f"[POWER] Shutdown not confirmed ('{clean_text}'): cancelled.")
+            return [({"text": "Shutdown cancelled.", "skip_ducking": True, "ignore_silent": True}, "system.speak")], None
 
         if self.active_context["type"] == "spotify_choice" and choice_num is not None:
             self.active_context["type"] = None
@@ -521,6 +550,13 @@ class CentralDaemon:
             else:
                 logging.warning(f"[ALARM] Deactivation challenge failed for text '{clean_text}'.")
                 return [({"text": "Say disable alarm to turn it off.", "request_reply": True, "skip_ducking": True}, "system.speak")], None
+
+        # 3b. Power off the computer: only an exact phrase, checked before any fuzzy matching (which once took "shut down the heater" for it) and never reachable
+        # from the SLM; it only asks. The shutdown itself comes after a spoken yes (the context above).
+        if is_shutdown_request(clean_text):
+            self.active_context = {"type": "poweroff_confirm", "expires_at": time.time() + POWEROFF_CONFIRM_S}
+            logging.warning("[POWER] Shutdown requested by voice: asking for confirmation.")
+            return [({"text": "Shut down the computer, sir? Say yes to confirm.", "request_reply": True, "skip_ducking": True, "ignore_silent": True}, "system.speak")], None
 
         # 4. Standard Fast-Path (0.01s Pattern Match)
         if not self._is_complex_request(clean_text, payload_data):
@@ -877,6 +913,8 @@ class CentralDaemon:
                                         continue
 
                                     elif action_id:
+                                        if not self._authorise_dispatch(action_id):
+                                            continue
                                         topic_out, payload_out = self.action_router.prepare(action_id, **command)
                                         
                                         if not topic_out:

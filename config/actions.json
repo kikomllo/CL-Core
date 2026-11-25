@@ -29,7 +29,8 @@
         "text": {"type": "string", "required": true},
         "skip_ducking": {"type": "boolean", "default": false},
         "request_reply": {"type": "boolean", "default": false},
-        "claude_session": {"type": "boolean", "default": false}
+        "claude_session": {"type": "boolean", "default": false},
+        "ignore_silent": {"type": "boolean", "default": false}
       }
     },
     "play_audio": {
@@ -196,6 +197,21 @@
         "target": {"type": "string"},
         "level": {"type": "integer"},
         "device_id": {"type": "string"},
+        "silent": {"type": "boolean", "default": false}
+      }
+    },
+    "shutdown": {
+      "topic": "pc/system/control",
+      "payload": {"action": "shutdown"},
+      "schema": {
+        "delay": {"type": "integer"},
+        "silent": {"type": "boolean", "default": false}
+      }
+    },
+    "cancel_shutdown": {
+      "topic": "pc/system/control",
+      "payload": {"action": "cancel_shutdown"},
+      "schema": {
         "silent": {"type": "boolean", "default": false}
       }
     }

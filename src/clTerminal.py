@@ -10,6 +10,7 @@ import argparse
 import aiomqtt
 import time
 import re
+import threading
 import webbrowser
 import urllib.parse
 import shutil
@@ -46,6 +47,8 @@ class TerminalManager:
         self.terminal_is_open: bool = False
         self.pid_file: str = os.path.join(os.path.expanduser("~"), ".jarvis_nav_pid")
         self.media_trigger = asyncio.Event()
+        self._shutdown_timer: Optional[threading.Timer] = None          # a shutdown waiting out its delay, see _schedule_shutdown
+        self._shutdown_lock = threading.Lock()
         
         self._load_shortcuts()
 
@@ -207,8 +210,45 @@ class TerminalManager:
             
         return False, f"Target '{target}' not found in apps."
 
-    def _handle_power(self, action: str) -> Tuple[bool, str]:
+    # --- a shutdown with a delay, which can be cancelled ---
+    POWEROFF_MAX_DELAY_S = 600
+
+    def _run_shutdown(self) -> None:
+        with self._shutdown_lock:
+            self._shutdown_timer = None
+        logging.warning("[POWER] The delay is over: shutting the computer down.")
+        subprocess.Popen(["shutdown", "now"] if CURRENT_OS == "linux" else ["shutdown", "/s", "/t", "0"])
+
+    def _schedule_shutdown(self, delay: int) -> Tuple[bool, str]:
+        """Shuts the computer down after `delay` seconds unless cancel_shutdown (or an abort) comes first. The timer lives in this process on purpose: if the
+        service is restarted during the delay the shutdown is dropped, which is the safe way to fail."""
+        delay = max(1, min(self.POWEROFF_MAX_DELAY_S, int(delay)))
+        with self._shutdown_lock:
+            if self._shutdown_timer is not None:
+                self._shutdown_timer.cancel()
+            self._shutdown_timer = threading.Timer(delay, self._run_shutdown)
+            self._shutdown_timer.daemon = True
+            self._shutdown_timer.start()
+        logging.warning(f"[POWER] The computer will shut down in {delay} seconds (cancel_shutdown or an abort stops it).")
+        return True, f"Shutting down in {delay} seconds."
+
+    def shutdown_pending(self) -> bool:
+        with self._shutdown_lock:
+            return self._shutdown_timer is not None
+
+    def cancel_shutdown(self) -> Tuple[bool, str]:
+        with self._shutdown_lock:
+            timer, self._shutdown_timer = self._shutdown_timer, None
+        if timer is None:
+            return False, "No shutdown is pending."
+        timer.cancel()
+        logging.warning("[POWER] The pending shutdown was cancelled.")
+        return True, "Shutdown cancelled."
+
+    def _handle_power(self, action: str, delay: Optional[int] = None) -> Tuple[bool, str]:
         if action == "shutdown":
+            if delay:
+                return self._schedule_shutdown(delay)
             subprocess.Popen(["shutdown", "now"] if CURRENT_OS == "linux" else ["shutdown", "/s", "/t", "0"])
             return True, "Initiating system shutdown."
         elif action == "restart":
@@ -310,7 +350,8 @@ class TerminalManager:
         except Exception as e:
             return False, f"Browser execution failed: {str(e)}"
 
-    def execute_command(self, action: str, target: Optional[str] = None, level: Optional[int] = None, device_id: Optional[str] = None) -> Tuple[bool, str]:
+    def execute_command(self, action: str, target: Optional[str] = None, level: Optional[int] = None, device_id: Optional[str] = None,
+                        delay: Optional[int] = None) -> Tuple[bool, str]:
         """Main routing switchboard for the actuator."""
         try:
             if action == "open" and target:
@@ -319,8 +360,10 @@ class TerminalManager:
                 return self._handle_close(target)
             elif action in ["search", "open_site"] and target:
                 return self._handle_web(action, target)
+            elif action == "cancel_shutdown":
+                return self.cancel_shutdown()
             elif action in ["shutdown", "restart", "eco_mode_on", "eco_mode_off"]:
-                return self._handle_power(action)
+                return self._handle_power(action, delay)
             elif action in ["media_play", "media_pause", "media_next", "media_prev"]:
                 return self._handle_media(action)
             elif action == "volume" and level is not None:
@@ -1312,8 +1355,14 @@ async def mqtt_service_listener(manager: TerminalManager) -> None:
         try:
             async with aiomqtt.Client("localhost") as mqtt_client:
                 await mqtt_client.subscribe("pc/system/control")
+                await mqtt_client.subscribe("jarvis/sys/abort")                  # any abort ("cancel", "stop") also stops a pending shutdown
                 await mqtt_client.publish("jarvis/sys/module_ready", json.dumps({"module": "terminal"}))
                 async for message in mqtt_client.messages:
+                    if str(message.topic) == "jarvis/sys/abort":
+                        if manager.shutdown_pending():
+                            manager.cancel_shutdown()
+                            await mqtt_client.publish("jarvis/feedback", json.dumps({"device": "terminal", "status": "success", "message": "Shutdown cancelled.", "silent": True}))
+                        continue
                     try:
                         payload = json.loads(message.payload.decode('utf-8'))
                         logging.info(f"Command Received: {payload}")
@@ -1339,7 +1388,8 @@ async def mqtt_service_listener(manager: TerminalManager) -> None:
                             action,
                             payload.get("target"),
                             payload.get("level"),
-                            payload.get("device_id")
+                            payload.get("device_id"),
+                            payload.get("delay")
                         )
 
                         action = payload.get("action")
