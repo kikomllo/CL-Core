@@ -79,15 +79,29 @@ def _wiz_status_fields(bulb) -> Dict[str, Any]:
     return out
 
 
-def _tapo_hue_saturation(r, g, b) -> Tuple[int, int]:
-    """The (hue 0-360, saturation 1-100) a Tapo bulb takes for an rgb colour. Saturation 0 (a white or a grey) is refused by the bulb
-    ("between 1 and 100"), so the lowest a colour can be is 1 %: a near-white tint instead of an error."""
-    h, s, _ = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
+COLOUR_GAMMA_RANGE = (1.0, 3.0)
+
+
+def _clamp_gamma(value) -> float:
+    try:
+        g = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    return min(COLOUR_GAMMA_RANGE[1], max(COLOUR_GAMMA_RANGE[0], g)) if g == g else 1.0        # g == g: not NaN
+
+
+def _tapo_hue_saturation(r, g, b, gamma: float = 1.0) -> Tuple[int, int]:
+    """The (hue 0-360, saturation 1-100) a Tapo bulb takes for an rgb colour as it looks on a screen. Saturation 0 (a white or a grey) is
+    refused by the bulb ("between 1 and 100"), so the lowest a colour can be is 1 %: a near-white tint instead of an error.
+    `gamma` corrects for the bulb driving its LEDs linearly while a screen's colours are gamma encoded (1 = send the colour as it is):
+    the channels are taken to the power gamma first, which deepens the mid tones so the bulb's light matches the screen's colour."""
+    h, s, _ = colorsys.rgb_to_hsv(*((c / 255.0) ** gamma for c in (r, g, b)))
     return min(360, max(0, int(round(h * 360)))), min(100, max(1, int(round(s * 100))))
 
 
-def _tapo_status_fields(info) -> Dict[str, Any]:
-    """Same as _wiz_status_fields for a Tapo bulb: it reports a colour temperature of 0 while in colour mode."""
+def _tapo_status_fields(info, gamma: float = 1.0) -> Dict[str, Any]:
+    """Same as _wiz_status_fields for a Tapo bulb: it reports a colour temperature of 0 while in colour mode. The colour is given back as it
+    looks on a screen (the inverse of the correction _tapo_hue_saturation applies), so the dashboard shows the colour that was picked."""
     out: Dict[str, Any] = {"brightness": getattr(info, "brightness", None), "rgb": None, "kelvin": None}
     kelvin = getattr(info, "color_temp", 0) or 0
     if kelvin:
@@ -95,7 +109,7 @@ def _tapo_status_fields(info) -> Dict[str, Any]:
         return out
     hue, sat = getattr(info, "hue", None), getattr(info, "saturation", None)
     if hue is not None and sat is not None:
-        out["rgb"] = [int(round(c * 255)) for c in colorsys.hsv_to_rgb(hue / 360.0, sat / 100.0, 1.0)]
+        out["rgb"] = [int(round((c ** (1.0 / gamma)) * 255)) for c in colorsys.hsv_to_rgb(hue / 360.0, sat / 100.0, 1.0)]
     return out
 
 
@@ -196,6 +210,16 @@ class LightManager:
                     stale = any(w in str(e).lower() for w in ("session", "handshake", "expired"))
                     if attempt == 2 or not stale:       # only a dead session is worth a second try: a silent bulb will not answer, and a repeated toggle must not run twice
                         raise
+
+    def colour_gamma(self) -> float:
+        """The correction between a screen's colours and what a Tapo bulb shows for the same hue and saturation (core.json
+        settings.light_colour_gamma, 1 = none), read at every colour command so a change applies at once."""
+        core_file = os.path.abspath(os.path.join(self.base_dir, "..", "config", "core.json"))
+        try:
+            with open(core_file, 'r', encoding='utf-8') as f:
+                return _clamp_gamma(json.load(f).get("settings", {}).get("light_colour_gamma", 1.0))
+        except Exception:
+            return 1.0
 
     def _load_last_target(self) -> str:
         core_file = os.path.abspath(os.path.join(self.base_dir, "..", "config", "core.json"))
@@ -538,13 +562,13 @@ class LightManager:
         tasks = []
         if lum is not None: tasks.append(device.set_brightness(lum))
         if rgb:                                       # an explicit colour beats a colour name
-            tasks.append(device.set_hue_saturation(*_tapo_hue_saturation(*rgb)))
+            tasks.append(device.set_hue_saturation(*_tapo_hue_saturation(*rgb, gamma=self.colour_gamma())))
         elif color:
             c_data = self.color_matrix.get(color.lower().strip())
             if c_data:
                 if c_data["type"] == "rgb":
                     r, g, b = c_data["r"], c_data["g"], c_data["b"]
-                    tasks.append(device.set_hue_saturation(*_tapo_hue_saturation(r, g, b)))
+                    tasks.append(device.set_hue_saturation(*_tapo_hue_saturation(r, g, b, gamma=self.colour_gamma())))
                 elif c_data["type"] == "temp":
                     temp = c_data["val"] 
         if temp is not None:
@@ -766,7 +790,7 @@ async def poll_light_status(manager: LightManager) -> None:
                 info = await manager._tapo_call(ip, lambda device: device.get_device_info())
                 is_on = info.device_on
                 detected = model not in TAPO_WHITE_ONLY_MODELS
-                fields = _tapo_status_fields(info)
+                fields = _tapo_status_fields(info, manager.colour_gamma())
             failure_tracker[name] = 0
             status = {"name": name.replace("_", " ").title(), "is_on": is_on, "offline": False, "kind": kind,
                       "brand": l_type, "colour": _colour_capability(info_dict, detected), **fields}

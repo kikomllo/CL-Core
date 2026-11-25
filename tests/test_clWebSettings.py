@@ -183,3 +183,19 @@ class TestLightSwatches:
         entities = json.load(open(os.path.join(os.path.dirname(__file__), "..", "config", "entities.json"), encoding="utf-8"))["colors"]
         for name in clWebSettings.SWATCH_NAMES:
             assert name in entities and entities[name]["type"] == "rgb", name
+
+
+class TestColourGammaSetting:
+    @pytest.mark.parametrize("value, stored", [(1, 1.0), (2.2, 2.2), (3, 3.0), (1.456, 1.46)])
+    def test_a_number_in_range_is_stored_rounded(self, loader, value, stored):
+        assert clWebSettings.apply(loader, "light_colour_gamma", value) == stored
+        assert saved(loader)["settings"]["light_colour_gamma"] == stored
+
+    @pytest.mark.parametrize("value", [0.9, 3.01, -1, "2", None, True, [2]])
+    def test_anything_else_is_refused(self, loader, value):
+        with pytest.raises(clWebSettings.BadSetting):
+            clWebSettings.apply(loader, "light_colour_gamma", value)
+        assert "light_colour_gamma" not in saved(loader)["settings"]
+
+    def test_the_snapshot_defaults_to_no_correction(self, loader):
+        assert clWebSettings.snapshot(loader)["light_colour_gamma"] == 1.0

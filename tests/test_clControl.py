@@ -25,6 +25,7 @@ def manager():
     m.word_to_number = {"zero": "0", "one": "1", "two": "2", "three": "3", "four": "4"}
     
     m.update_env_credentials = MagicMock() 
+    m.colour_gamma = MagicMock(return_value=1.0)           # the tests must not depend on the correction set in the real core.json
     m._save_devices = MagicMock()
     m._save_last_target = MagicMock()
     
@@ -775,3 +776,67 @@ class TestTapoHueSaturation:
         device.set_hue_saturation.assert_awaited_once()
         hue, sat = device.set_hue_saturation.await_args.args
         assert 1 <= sat <= 100
+
+
+class TestColourGamma:
+    """The correction between a screen's colours and a Tapo bulb's light: 1 sends the colour as it is, more deepens the mid tones."""
+
+    def test_gamma_one_changes_nothing(self):
+        from clControl import _tapo_hue_saturation
+        assert _tapo_hue_saturation(116, 10, 255, 1.0) == _tapo_hue_saturation(116, 10, 255) == (266, 96)
+
+    def test_a_higher_gamma_deepens_the_colour_and_moves_a_violet_towards_blue(self):
+        from clControl import _tapo_hue_saturation
+        plain_h, plain_s = _tapo_hue_saturation(116, 10, 255, 1.0)
+        h, s = _tapo_hue_saturation(116, 10, 255, 2.2)
+        assert (h, s) == (251, 100) and h < plain_h and s > plain_s
+
+    @pytest.mark.parametrize("rgb", [(255, 0, 0), (0, 255, 0), (0, 0, 255)])
+    def test_the_pure_colours_do_not_move(self, rgb):
+        from clControl import _tapo_hue_saturation
+        assert _tapo_hue_saturation(*rgb, gamma=2.2) == _tapo_hue_saturation(*rgb, gamma=1.0)
+
+    def test_a_white_is_still_a_valid_saturation(self):
+        from clControl import _tapo_hue_saturation
+        assert _tapo_hue_saturation(255, 255, 255, 2.2)[1] == 1
+
+    def test_the_status_gives_the_picked_colour_back(self):
+        from clControl import _tapo_hue_saturation, _tapo_status_fields
+        for rgb in [(255, 105, 180), (116, 10, 255), (255, 165, 0)]:
+            hue, sat = _tapo_hue_saturation(*rgb, gamma=2.2)
+            info = MagicMock(brightness=100, color_temp=0, hue=hue, saturation=sat)
+            back = _tapo_status_fields(info, 2.2)["rgb"]
+            assert max(abs(a - b) for a, b in zip(back, rgb)) <= 40, (rgb, back)       # a bulb has whole-number hue and saturation only
+            plain = _tapo_status_fields(MagicMock(brightness=100, color_temp=0, hue=hue, saturation=sat), 1.0)["rgb"]
+            assert plain != back or rgb == (255, 0, 0)
+
+    @pytest.mark.parametrize("raw, expected", [(1, 1.0), (2.2, 2.2), (0.2, 1.0), (9, 3.0), ("2", 2.0), ("x", 1.0), (None, 1.0), (float("nan"), 1.0)])
+    def test_a_stored_value_is_kept_in_range(self, raw, expected):
+        from clControl import _clamp_gamma
+        assert _clamp_gamma(raw) == expected
+
+    @pytest.mark.asyncio
+    async def test_the_bulb_gets_the_corrected_hue_and_saturation(self, manager, mocker):
+        device = mocker.MagicMock()
+        for name in ("on", "set_brightness", "set_hue_saturation"):
+            setattr(device, name, mocker.AsyncMock())
+        manager.colour_gamma = lambda: 2.2
+        await manager._apply_tapo(device, False, True, False, None, 100, None, rgb=(116, 10, 255))
+        device.set_hue_saturation.assert_awaited_once_with(251, 100)
+        manager.colour_gamma = lambda: 1.0
+        device.set_hue_saturation.reset_mock()
+        await manager._apply_tapo(device, False, True, False, None, 100, None, rgb=(116, 10, 255))
+        device.set_hue_saturation.assert_awaited_once_with(266, 96)
+
+    def test_the_manager_reads_the_setting_and_falls_back_to_one(self, mocker, tmp_path):
+        from clControl import LightManager
+        with patch.dict(os.environ, {"TAPO_EMAIL": "t@t.com", "TAPO_PASSWORD": "x"}), patch('utils.clEnvLoader.load_dotenv'):
+            m = LightManager()
+        core = tmp_path / "config" / "core.json"
+        core.parent.mkdir()
+        m.base_dir = str(tmp_path / "src")
+        assert m.colour_gamma() == 1.0                                            # no file
+        core.write_text(json.dumps({"settings": {"light_colour_gamma": 1.8}}))
+        assert m.colour_gamma() == 1.8
+        core.write_text(json.dumps({"settings": {"light_colour_gamma": "junk"}}))
+        assert m.colour_gamma() == 1.0

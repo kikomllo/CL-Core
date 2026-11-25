@@ -19,9 +19,11 @@ SETTINGS: Dict[str, Any] = {
     "hardware": ["cpu", "cuda"],
     "update_mode": ["confirm", "direct"],
 }
+GAMMA_KEY = "light_colour_gamma"                    # how much a Tapo bulb's colours are deepened to look like the screen's (1 = not at all)
+GAMMA_RANGE = (1.0, 3.0)
 DEBUG_FLAGS = ("wakeword_debug_logging", "wakeword_debug_saving", "capture_wakeword_positive", "capture_stt_training_data")
 DEFAULTS = {"silent_mode": False, "enable_followup": False, "theme": "jarvis", "ecosystem_state": "normal", "stt_model": "small",
-            "stt_processing_mode": "parallel", "hardware": "cpu", "update_mode": "confirm"}
+            "stt_processing_mode": "parallel", "hardware": "cpu", "update_mode": "confirm", GAMMA_KEY: 1.0}
 START_ON_LOGIN = "start_on_login"
 AUDIO_KEYS = ("audio_settings.input_device", "audio_settings.output_device")    # a device name: any short non-empty string
 WIFI_GATE_KEY, WIFI_MAC_KEY = "monitor_settings.wifi_gate_enabled", "monitor_settings.wifi_mac"
@@ -64,6 +66,10 @@ def check(key: str, value: Any) -> Any:
         if not isinstance(value, bool):
             raise BadSetting(f"{key} must be true or false")
         return value
+    if key == GAMMA_KEY:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not GAMMA_RANGE[0] <= value <= GAMMA_RANGE[1]:
+            raise BadSetting(f"{key} must be a number from {GAMMA_RANGE[0]:g} to {GAMMA_RANGE[1]:g}")
+        return round(float(value), 2)
     kind = SETTINGS.get(key)
     if kind is None:
         raise BadSetting(f"unknown setting {key!r}")
