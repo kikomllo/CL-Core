@@ -18,6 +18,8 @@ Usage:
     python training/tools/collect_voice.py record                  # guided prompts
     python training/tools/collect_voice.py record --free --transcribe
     python training/tools/collect_voice.py capture --transcribe   # play clips, press Enter to stop
+    python training/tools/collect_voice.py capture --unattended --hours 8   # overnight: no keys, saved window by window into training/data/voice_overnight/<date>
+    python training/tools/collect_voice.py adopt training/data/voice_overnight/<date>   # after `review --out` on it: add its clips to the main dataset
     python training/tools/collect_voice.py import ~/Videos ~/rec.m4a --transcribe
     python training/tools/collect_voice.py review [--ids 8 15-18]  # listen + fix transcripts
     python training/tools/collect_voice.py review --from 40 --to 90 [--all]  # only that stretch
@@ -52,6 +54,7 @@ import hashlib
 import json
 import math
 import os
+import queue
 import re
 import shutil
 import sys
@@ -733,6 +736,8 @@ def _open_system_audio():
 def cmd_capture(args):
     global ARGS_SOURCE
     ARGS_SOURCE = args.source
+    if args.unattended:
+        return run_unattended(args)
     ds = Dataset(args.out, args.sr)
     read, start, stop, rate, label = _open_system_audio()
     print(f"Capturing PC audio from: {label}  ->  {ds.dir}")
@@ -759,6 +764,392 @@ def cmd_capture(args):
     print(f"Kept {len(added)} clip(s), rejected: {summarize(rejects)}  (raw kept in captures/)")
     if args.transcribe:
         transcribe_missing(ds, args)
+    cmd_stats(args)
+
+
+# --------------------------------------------------------------------------- unattended (overnight) capture
+#
+# `capture` records ONE take in memory and processes it when Enter is pressed: right for minutes, wrong for a night (the whole recording in RAM, nothing
+# saved if it is interrupted, Enter keys to start and stop, one noise threshold for the whole night, and it records silence for good once the headset
+# switches the default output). `capture --unattended` works in windows instead: audio is read on a thread, cut at a pause every ~10 minutes, processed
+# (clips, noise, speaker filter, dedupe) and saved at once, so a crash or a Ctrl+C loses at most the current window; the new clips go to a STAGING
+# dataset (copy of the voiceprint, so the speaker filter still runs) to be reviewed and then `adopt`ed, never straight into the main dataset.
+
+class SystemAudioReader:
+    """Reads the system audio on a thread into a queue and keeps it alive: a stream that dies is re-opened, and so is one that goes quiet (frames flow even
+    while nothing plays, so no frames at all means the device is gone) or whose output was switched (a wireless headset powering off moves Windows to the
+    speakers, while the stream on the old device keeps delivering silence). `open_fn()` is _open_system_audio's contract: (read, start, stop, rate, label)."""
+
+    def __init__(self, open_fn, device_name_fn=lambda: None, clock=time.monotonic, stale_s=30.0, check_s=15.0, retry_s=5.0, log=print):
+        self.open_fn, self.device_name_fn, self.clock, self.log = open_fn, device_name_fn, clock, log
+        self.stale_s, self.check_s, self.retry_s = stale_s, check_s, retry_s
+        self.q = queue.Queue()
+        self._stop = threading.Event()
+        self._gen = 0
+        self.label = self.rate = self.opened_name = None
+        self.last_data = clock()
+        self._last_check = clock()
+        self.restarts = 0
+        self.failures = 0                    # consecutive failures to open the device
+
+    def start(self):
+        self._spawn()
+
+    def stop(self):
+        self._stop.set()
+        self._gen += 1                       # a reader still blocked in read() leaves quietly when it returns
+
+    def _spawn(self):
+        self._gen += 1
+        threading.Thread(target=self._run, args=(self._gen,), daemon=True).start()
+
+    def _run(self, gen):
+        while not self._stop.is_set() and gen == self._gen:
+            try:
+                read, start, close, rate, label = self.open_fn()
+            except (Exception, SystemExit) as e:             # _open_system_audio exits when the capture package is missing
+                self.failures += 1
+                self.log(f"[reader] cannot open the system audio ({e}); retry {self.failures}")
+                self._stop.wait(self.retry_s)
+                continue
+            self.failures = 0
+            self.label, self.rate = label, rate
+            self.opened_name = self.device_name_fn()
+            self.last_data = self.clock()
+            try:
+                if start:
+                    start()
+                while not self._stop.is_set() and gen == self._gen:
+                    data = read()
+                    if len(data) == 0:
+                        break
+                    self.q.put((rate, data))
+                    self.last_data = self.clock()
+            except Exception as e:
+                self.log(f"[reader] the stream failed ({e}); re-opening")
+            finally:
+                try:
+                    close()
+                except Exception:
+                    pass
+            if not self._stop.is_set() and gen == self._gen:
+                self._stop.wait(self.retry_s)
+
+    def get(self, timeout=1.0):
+        try:
+            return self.q.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def _restart(self, why):
+        self.restarts += 1
+        self.log(f"[reader] {why}: re-opening the system audio (restart {self.restarts})")
+        self.last_data = self.clock()
+        self._spawn()
+
+    def check(self):
+        """Called from the main loop: re-opens a quiet stream or one whose output changed."""
+        now = self.clock()
+        if now - self.last_data > self.stale_s:
+            self._restart(f"no audio frames for {int(now - self.last_data)} s")
+        elif now - self._last_check >= self.check_s:
+            self._last_check = now
+            name = self.device_name_fn()
+            if name and self.opened_name and name != self.opened_name:
+                self._restart(f"the output changed from '{self.opened_name}' to '{name}'")
+
+
+def loopback_device_name():
+    """The output the system audio is taken from right now. A fresh PortAudio instance each time: the device list is read once per instance, so a long-lived
+    one never sees the default output change. None where it cannot tell (Linux: parec follows the default monitor by itself)."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import pyaudiowpatch as pa_mod
+        pa = pa_mod.PyAudio()
+        try:
+            return pa.get_default_wasapi_loopback()["name"]
+        finally:
+            pa.terminate()
+    except Exception:
+        return None
+
+
+class WindowBuffer:
+    """Audio waiting to be processed, as runs of (rate, samples): int16 straight from the device, or float32 already at the output rate (what a cut leaves)."""
+
+    def __init__(self, sr):
+        self.sr = sr
+        self.runs = []
+        self.seconds = 0.0
+
+    def add(self, rate, chunk):
+        if self.runs and self.runs[-1][0] == rate and self.runs[-1][1][0].dtype == chunk.dtype:
+            self.runs[-1][1].append(chunk)
+        else:
+            self.runs.append((rate, [chunk]))
+        self.seconds += len(chunk) / rate
+
+    def audio(self):
+        """Everything waiting, as mono float32 at the output rate. Each run is resampled whole: resampling chunk by chunk would click at every edge."""
+        parts = []
+        for rate, chunks in self.runs:
+            a = np.concatenate(chunks)
+            if a.dtype == np.int16:
+                a = a.astype(np.float32) / 32768.0
+            parts.append(resample(a, rate, self.sr))
+        return np.concatenate(parts) if parts else np.zeros(0, np.float32)
+
+    def replace(self, x):
+        self.runs = [(self.sr, [x.astype(np.float32)])] if len(x) else []
+        self.seconds = len(x) / self.sr
+
+
+def pick_cut(x, sr, target_s, max_s, min_pause_s=0.55):
+    """Where a window ends, as a sample index: the middle of the first pause of at least `min_pause_s` once the audio is `target_s` long. A pause longer than the
+    one that splits clips is a safe place: the clips already end there, so no word is cut in half. None while the audio is shorter than `target_s`, or has no such
+    pause yet and is shorter than `max_s`; the end of the audio when it has none and is `max_s` long (music all night)."""
+    seconds = len(x) / sr
+    if seconds < target_s:
+        return None
+    db, n = frame_db(x, sr)
+    if len(db):
+        live = db[db > -80]
+        floor = float(np.percentile(live if len(live) else db, 10))
+        quiet = db < max(floor + 8, -70)
+        need = int(min_pause_s * 1000 / FRAME_MS)
+        run_start = None
+        for i in range(int(target_s * 1000 / FRAME_MS), len(quiet) + 1):
+            q = i < len(quiet) and quiet[i]
+            if q and run_start is None:
+                run_start = i
+            elif not q and run_start is not None:
+                run_start = None
+            if run_start is not None and i - run_start + 1 >= need:
+                return (run_start + (i - run_start + 1) // 2) * n
+    return len(x) if seconds >= max_s else None
+
+
+def reference_envelopes(out_dir, sr):
+    """Envelopes of the clips already in a dataset, to recognise a repeated line without touching that dataset."""
+    path = os.path.join(out_dir, "manifest.jsonl")
+    envs = []
+    if not os.path.exists(path):
+        return envs
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            wav = os.path.join(out_dir, "wavs", json.loads(line)["id"] + ".wav")
+            if os.path.exists(wav):
+                rate, pcm = wavfile.read(wav)
+                envs.append(envelope(pcm.astype(np.float32) / 32768.0, rate))
+    return envs
+
+
+class UnattendedCapture:
+    """Windows of audio in, saved clips out. `add()` takes what the reader delivers, `step()` cuts and processes a window when one is ready, `finish()`
+    processes what is left. Every window's result is on disk before the next one starts."""
+
+    def __init__(self, args, stage_ds, ref_envs=(), raw_dir=None, log=print, process=None, stamp=None):
+        self.args, self.ds, self.ref_envs, self.log = args, stage_ds, list(ref_envs), log
+        self.sr = args.sr
+        self.buffer = WindowBuffer(self.sr)
+        self.raw_dir = raw_dir
+        self.stamp = stamp or time.strftime("%Y%m%d_%H%M%S")
+        self.target_s, self.max_s = args.window_min * 60.0, args.max_window_min * 60.0
+        self.process = process or self._process
+        self.windows = 0
+        self.minutes = 0.0
+        self.clips = 0
+        self.rejects = collections.Counter()
+
+    def add(self, rate, chunk):
+        self.buffer.add(rate, chunk)
+
+    def step(self, force=False):
+        """Cuts and processes one window if the buffer holds one (or, forced, whatever it holds). Returns whether it did."""
+        if self.buffer.seconds < (1.0 if force else self.target_s):
+            return False
+        x = self.buffer.audio()
+        cut = len(x) if force else pick_cut(x, self.sr, self.target_s, self.max_s, max(0.3, self.args.min_silence + 0.1))
+        if cut is None:
+            return False
+        self.buffer.replace(x[cut:])
+        self.process(x[:cut])
+        return True
+
+    def finish(self):
+        while self.step(force=True):
+            pass
+        self.buffer.replace(np.zeros(0, np.float32))                  # under a second is left: nothing to make a clip of
+
+    def _process(self, x):
+        self.windows += 1
+        self.minutes += len(x) / self.sr / 60
+        clips, rejects = process_audio(x, self.sr, self.args)
+        clips = gate_speaker(clips, self.ds, self.args, rejects)
+        added = []
+        for c in clips:
+            env = envelope(c["audio"], self.sr)
+            if any(overlap_score(env, e)[0] >= DUP_CORR for e in self.ref_envs):       # a line the main dataset already has
+                rejects["duplicate"] += 1
+                continue
+            row = self.ds.add_unique(c, f"overnight:{self.stamp}:w{self.windows}", check=not self.args.no_dedupe)
+            if row:
+                added.append(row)
+            else:
+                rejects["duplicate"] += 1
+        self.clips += len(added)
+        self.rejects.update(rejects)
+        policy = self.args.keep_raw
+        if self.raw_dir and (policy == "all" or (policy == "hits" and added)):
+            os.makedirs(self.raw_dir, exist_ok=True)
+            wavfile.write(os.path.join(self.raw_dir, f"overnight_{self.stamp}_w{self.windows:03d}.wav"), self.sr, (np.clip(x, -1, 1) * 32767).astype(np.int16))
+        self.log(f"[window {self.windows}] {len(x) / self.sr / 60:.1f} min -> kept {len(added)}, rejected: {summarize(rejects)}  (total {self.clips} clips)")
+
+
+def keep_awake(log=print):
+    """Stops the computer from sleeping while it runs (the screen may still turn off). Returns the function that lets it sleep again."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001)       # ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+            return lambda: ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
+        except Exception as e:
+            log(f"[power] could not keep the computer awake ({e}): turn sleep off in the power settings")
+            return lambda: None
+    import shutil as _sh
+    import subprocess as _sp
+    if _sh.which("systemd-inhibit"):
+        proc = _sp.Popen(["systemd-inhibit", "--what=idle:sleep", "--who=collect_voice", "--why=overnight capture", "sleep", "infinity"],
+                         stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+        return proc.terminate
+    log("[power] systemd-inhibit not found: make sure the computer does not suspend")
+    return lambda: None
+
+
+def disable_quickedit():
+    """A click in a Windows console selects text and PAUSES the program until a key is pressed: overnight, a stray click would freeze the capture."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        k = ctypes.windll.kernel32
+        handle, mode = k.GetStdHandle(-10), ctypes.c_uint32()
+        if k.GetConsoleMode(handle, ctypes.byref(mode)):
+            k.SetConsoleMode(handle, (mode.value & ~0x0040) | 0x0080)                   # clear ENABLE_QUICK_EDIT_MODE, set ENABLE_EXTENDED_FLAGS
+    except Exception:
+        pass
+
+
+def jarvis_is_running(port=64000):
+    """boot.py holds a single-instance lock on this port while the ecosystem runs."""
+    import socket
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", port))
+        return False
+    except OSError:
+        return True
+    finally:
+        s.close()
+
+
+def run_unattended(args, reader=None, clock=time.monotonic):
+    """`capture --unattended`: records for --hours (or until Ctrl+C / a STOP file in the staging folder), window by window. Returns a summary dict."""
+    global ARGS_SOURCE
+    ARGS_SOURCE = args.source
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    stage = args.stage_dir or os.path.join(ROOT, "training", "data", "voice_overnight", stamp)
+    os.makedirs(stage, exist_ok=True)
+    log_file = open(os.path.join(stage, f"overnight_{stamp}.log"), "a", encoding="utf-8", buffering=1)
+
+    def log(msg):
+        line = f"{time.strftime('%H:%M:%S')} {msg}"
+        print(line, flush=True)
+        log_file.write(line + "\n")
+
+    main_vp = os.path.join(args.out, VOICEPRINT_NAME)
+    if not args.no_speaker_filter and not os.path.exists(os.path.join(stage, VOICEPRINT_NAME)):
+        if os.path.exists(main_vp):
+            shutil.copy2(main_vp, os.path.join(stage, VOICEPRINT_NAME))
+        else:
+            log("WARNING: no voiceprint in the main dataset (run `enroll`): every voice will be kept, not only the target speaker's.")
+    stage_ds = Dataset(stage, args.sr)
+    ref = reference_envelopes(args.out, args.sr)
+    stop_file = os.path.join(stage, "STOP")
+    if os.path.exists(stop_file):
+        os.remove(stop_file)
+    if jarvis_is_running():
+        log("WARNING: the JARVIS ecosystem is running: its microphone will hear what is played (wake word, speech recognition, commands). Stop it for the night.")
+    release_awake = keep_awake(log)
+    disable_quickedit()
+    reader = reader or SystemAudioReader(_open_system_audio, loopback_device_name, log=log)
+    cap = UnattendedCapture(args, stage_ds, ref, raw_dir=os.path.join(stage, "captures"), log=log, stamp=stamp)
+    log(f"Unattended capture for {args.hours:g} h -> {stage}")
+    log(f"Windows of ~{args.window_min:g} min cut at a pause; {len(ref)} clips of the main dataset are recognised as repeats; to stop early: Ctrl+C or create {stop_file}")
+    started = clock()
+    deadline = started + args.hours * 3600
+    last_status = last_disk = started
+    reason = "time is up"
+    try:
+        reader.start()
+        while True:
+            now = clock()
+            if now >= deadline:
+                break
+            if os.path.exists(stop_file):
+                reason = "STOP file found"
+                break
+            if reader.failures >= 60:
+                reason = "the system audio could not be opened for 5 minutes"
+                break
+            if now - last_disk >= 60:
+                last_disk = now
+                if shutil.disk_usage(stage).free < 3 * 1024 ** 3:
+                    reason = "less than 3 GB of disk space left"
+                    break
+            item = reader.get(timeout=1.0)
+            while item is not None:
+                cap.add(*item)
+                item = reader.get(timeout=0)
+            cap.step()
+            reader.check()
+            if now - last_status >= 1800:
+                last_status = now
+                log(f"[status] {(now - started) / 3600:.1f} h, {cap.minutes:.0f} min processed, {cap.clips} clips kept, device: {reader.label}, restarts: {reader.restarts}")
+    except KeyboardInterrupt:
+        reason = "Ctrl+C"
+    finally:
+        reader.stop()
+        log(f"Stopping ({reason}); processing what is left...")
+        cap.finish()
+        release_awake()
+    if args.transcribe and cap.clips:
+        transcribe_missing(stage_ds, args)
+    summary = {"stage": stage, "reason": reason, "windows": cap.windows, "minutes": round(cap.minutes, 1), "clips": cap.clips,
+               "rejects": dict(cap.rejects), "restarts": reader.restarts}
+    log(f"Done: {summary['minutes']} min captured, {cap.clips} clip(s) kept in {stage}, rejected: {summarize(cap.rejects)}, reader restarts: {reader.restarts}")
+    log(f"Next: python training/tools/collect_voice.py review --out \"{stage}\"   then   python training/tools/collect_voice.py adopt \"{stage}\"")
+    log_file.close()
+    return summary
+
+
+def cmd_adopt(args):
+    """Adds the clips of a staging dataset (an overnight run, reviewed) to the main dataset, skipping repeats."""
+    stage, main = Dataset(args.stage, args.sr), Dataset(args.out, args.sr)
+    added = skipped = 0
+    for r in stage.rows:
+        rate, pcm = wavfile.read(os.path.join(stage.wav_dir, r["id"] + ".wav"))
+        clip = {"audio": resample(pcm.astype(np.float32) / 32768.0, rate, args.sr), "snr_db": r.get("snr_db", 0.0)}
+        if "speaker_sim" in r:
+            clip["speaker_sim"] = r["speaker_sim"]
+        if main.add_unique(clip, r.get("source", "overnight"), r.get("text", ""), check=not args.no_dedupe):
+            added += 1
+        else:
+            skipped += 1
+    print(f"Adopted {added} clip(s) into {main.dir}; skipped {skipped} that were already there.")
     cmd_stats(args)
 
 
@@ -1693,7 +2084,18 @@ def main():
 
     p = sub.add_parser("capture", parents=[common], help="record what the PC is playing (system audio)")
     p.add_argument("--source", help="Linux: PulseAudio/PipeWire source name (default: default output's monitor; see list-sources)")
+    p.add_argument("--unattended", action="store_true",
+                   help="run for hours with no keys to press: windows cut at pauses, processed and saved as it goes, new clips staged apart from the main dataset")
+    p.add_argument("--hours", type=float, default=10.0, help="unattended: how long to record (default 10)")
+    p.add_argument("--window-min", type=float, default=10.0, help="unattended: minutes of audio per window (default 10)")
+    p.add_argument("--max-window-min", type=float, default=14.0, help="unattended: a window is cut by force at this length if it has no pause")
+    p.add_argument("--stage-dir", default=None, help="unattended: staging dataset (default training/data/voice_overnight/<date_time>)")
+    p.add_argument("--keep-raw", choices=["hits", "all", "none"], default="hits",
+                   help="unattended: keep the raw audio of the windows that produced clips (default), of every window, or none")
     p.set_defaults(fn=cmd_capture)
+    p = sub.add_parser("adopt", parents=[common], help="add the clips of a reviewed staging dataset (an overnight run) to the main dataset")
+    p.add_argument("stage", help="the staging dataset directory")
+    p.set_defaults(fn=cmd_adopt)
     p = sub.add_parser("list-sources", help="Linux: list PulseAudio/PipeWire sources, incl. output monitors")
     p.set_defaults(fn=cmd_list_sources)
 
