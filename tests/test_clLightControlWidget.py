@@ -283,3 +283,36 @@ class TestColourPopup:
         w.update_scaling()
         btn = w.light_rows["bedroom"]["colour_btn"]
         assert btn.width() == btn.height()
+
+
+@pytest.fixture(autouse=True)
+def _own_config(tmp_path, monkeypatch):
+    """The popup reads and writes the user's colour swatches in core.json: these tests use a config of their own."""
+    import json
+    from utils.clConfigLoader import ConfigLoader
+    import ui.clLightControlWidget as module
+    (tmp_path / "core.json").write_text(json.dumps({"settings": {}}))
+    monkeypatch.setattr(module, "ConfigLoader", lambda: ConfigLoader(config_dir=str(tmp_path)))
+    return tmp_path
+
+
+class TestCustomSwatchesAreKept:
+    def test_a_changed_swatch_is_saved_and_the_next_popup_shows_it(self, qapp, mocker, _own_config):
+        import json
+        w = _widget(mocker)
+        w.update_status(_status())
+        w.light_rows["bedroom"]["colour_btn"].click()
+        w._picker.swatchChanged.emit("red", [10, 20, 30])
+        assert json.loads((_own_config / "core.json").read_text())["settings"]["light_swatches"] == {"red": [10, 20, 30]}
+        w._close_colour_picker()
+        w.light_rows["bedroom"]["colour_btn"].click()
+        red = next(s for s in w._picker.swatches if s.name == "red")
+        assert red.custom and red.rgb == (10, 20, 30)
+        w._picker.swatchChanged.emit("red", None)                          # Reset
+        assert "light_swatches" not in json.loads((_own_config / "core.json").read_text())["settings"]
+        w._close_colour_picker()
+
+    def test_a_refused_save_is_logged_and_does_not_break_the_picker(self, qapp, mocker, _own_config, caplog):
+        w = _widget(mocker)
+        w._save_swatch("magenta", [1, 2, 3])
+        assert "Failed to save the colour swatch" in caplog.text

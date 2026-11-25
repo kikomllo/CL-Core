@@ -4,11 +4,14 @@ Swatches, the white temperature track and the button's own dot are painted by ha
 they are real colours of a bulb and must not follow the skin (the Ultron skin recolours every warm hue in a stylesheet
 or a `clSkinQt.QColor`, which would turn the orange swatch red). Only the chrome around them uses the theme.
 The swatch names are the ones voice already understands (`config/entities.json`), so a click and "make the bedroom
-purple" do the same thing.
+purple" do the same thing. A swatch can be made another colour (right-click: a colour wheel that recolours the bulb live);
+the new colour is kept (core.json `light_swatches`, saved by the widget) and that swatch then sends its rgb instead of its name.
 """
-from PyQt6.QtWidgets import QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel, QAbstractButton, QSlider, QSizePolicy
-from PyQt6.QtCore import Qt, QPoint, QRectF, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor as RawColor, QPainter, QPen, QLinearGradient, QGuiApplication
+import colorsys
+import math
+from PyQt6.QtWidgets import QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel, QAbstractButton, QSlider, QSizePolicy, QPushButton
+from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor as RawColor, QPainter, QPen, QLinearGradient, QGuiApplication, QImage
 from clSkinQt import QColor                       # chrome only
 from clTheme import Theme
 
@@ -22,6 +25,30 @@ WHITES = [("warm white", 20, "warm"), ("daylight", 50, "day"), ("coolwhite", 80,
 KELVIN_RANGE = {"wiz": (2700, 6500), "tapo": (2500, 6500)}
 
 DEBOUNCE_MS = 200                                  # a dragged slider sends once it settles, not on every pixel
+LIVE_MS = 120                                      # a dragged colour wheel sends at most this often, the last colour always
+WHEEL_SIZE = 150
+
+
+def wheel_colour(dx, dy, radius):
+    """(hue 0-360, saturation 0-1, (r, g, b)) of a point of the wheel, dx/dy from its centre (y down): hue runs clockwise from the
+    right, saturation grows from the middle to the rim, full value (brightness is the popup's own slider). Same maths as
+    web/js/swatch-model.js."""
+    dist = math.hypot(dx, dy)
+    sat = max(0.0, min(1.0, dist / radius)) if radius else 0.0
+    hue = 0.0 if dist == 0 else (math.degrees(math.atan2(dy, dx)) + 360) % 360
+    return hue, sat, tuple(int(round(c * 255)) for c in colorsys.hsv_to_rgb(hue / 360, sat, 1.0))
+
+
+def knob_offset(hue, sat, radius):
+    a = math.radians(hue)
+    return math.cos(a) * sat * radius, math.sin(a) * sat * radius
+
+
+def valid_rgb(value):
+    """A saved colour [r, g, b] of whole numbers 0-255, or None."""
+    if isinstance(value, (list, tuple)) and len(value) == 3 and all(isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 255 for v in value):
+        return tuple(value)
+    return None
 
 
 def temp_to_kelvin(brand, temp):
@@ -110,12 +137,15 @@ class ColourButton(QAbstractButton):
 
 
 class Swatch(QAbstractButton):
-    """A square of a real colour, or a wider tile of a white with a short word on it. Checkable."""
+    """A square of a real colour, or a wider tile of a white with a short word on it. Checkable. A colour swatch the user changed
+    (`custom`) keeps its slot name and the colour it had by default (`default_rgb`, what Reset goes back to)."""
     hovered = pyqtSignal(str)
+    customise = pyqtSignal(str)                    # right-click on a colour swatch
 
     def __init__(self, name, rgb, text="", parent=None):
         super().__init__(parent)
         self.name, self.rgb, self.text_on_swatch = name, tuple(rgb), text
+        self.default_rgb, self.custom = tuple(rgb), False
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip(name)
@@ -126,6 +156,15 @@ class Swatch(QAbstractButton):
     def enterEvent(self, event):
         self.hovered.emit(self.name)
         super().enterEvent(event)
+
+    def set_colour(self, rgb, custom):
+        self.rgb, self.custom = tuple(rgb), bool(custom)
+        self.update()
+
+    def contextMenuEvent(self, event):
+        if self.default_rgb and not self.text_on_swatch:           # only the colour swatches; a white is a temperature
+            self.customise.emit(self.name)
+            event.accept()
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -201,10 +240,138 @@ class GradientSlider(QSlider):
         p.drawEllipse(QRectF(cx - 7, self.height() / 2 - 7, 14, 14))
 
 
+class ColourWheel(QWidget):
+    """A hue / saturation wheel painted with raw colours. `changed(rgb)` while dragging, `released(rgb)` when the button lifts."""
+    changed = pyqtSignal(tuple)
+    released = pyqtSignal(tuple)
+
+    def __init__(self, rgb, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(WHEEL_SIZE, WHEEL_SIZE)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        h, s, v = colorsys.rgb_to_hsv(*(c / 255 for c in rgb))
+        self.hue, self.sat, self.rgb = h * 360, s, tuple(rgb)
+        self._dragging = False
+        self._image = None
+
+    def _wheel_image(self):
+        if self._image is None:
+            n, r = WHEEL_SIZE, WHEEL_SIZE / 2
+            img = QImage(n, n, QImage.Format.Format_ARGB32)
+            img.fill(0)
+            for y in range(n):
+                for x in range(n):
+                    dx, dy = x + 0.5 - r, y + 0.5 - r
+                    if math.hypot(dx, dy) <= r:
+                        img.setPixelColor(x, y, RawColor(*wheel_colour(dx, dy, r)[2]))
+            self._image = img
+        return self._image
+
+    def _at(self, pos):
+        r = WHEEL_SIZE / 2
+        self.hue, self.sat, self.rgb = wheel_colour(pos.x() - r, pos.y() - r, r)
+        self.update()
+        return self.rgb
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = True
+            self.changed.emit(self._at(event.position()))
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._dragging:
+            self.changed.emit(self._at(event.position()))
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if self._dragging:
+            self._dragging = False
+            self.released.emit(self.rgb)
+            event.accept()
+
+    def set_rgb(self, rgb):
+        h, s, v = colorsys.rgb_to_hsv(*(c / 255 for c in rgb))
+        self.hue, self.sat, self.rgb = h * 360, s, tuple(rgb)
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.drawImage(0, 0, self._wheel_image())
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(RawColor(255, 255, 255, 80), 1))
+        p.drawEllipse(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5))
+        r = WHEEL_SIZE / 2
+        kx, ky = knob_offset(self.hue, self.sat, r)
+        p.setPen(QPen(RawColor(0, 0, 0, 170), 3))
+        p.drawEllipse(QPointF(r + kx, r + ky), 7, 7)
+        p.setPen(QPen(RawColor(255, 255, 255), 2))
+        p.drawEllipse(QPointF(r + kx, r + ky), 7, 7)
+
+
+class ColourWheelPopup(QWidget):
+    """The small popup a right-click on a colour swatch opens: the wheel, Reset (the swatch's default colour back) and Done.
+    `changed(rgb)` live, `saved(rgb)` once the drag ends, `reset()`."""
+    changed = pyqtSignal(tuple)
+    saved = pyqtSignal(tuple)
+    reset = pyqtSignal()
+
+    def __init__(self, swatch, parent=None):
+        super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.swatch = swatch
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        card = QFrame()
+        card.setObjectName("ColourWheelCard")
+        card.setStyleSheet(f"QFrame#ColourWheelCard {{ background: {Theme.C_BG_INPUT}; border: 1px solid {Theme.C_BORDER_FOCUS}; border-radius: 8px; }}")
+        outer.addWidget(card)
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(10)
+        title = QLabel(f"{swatch.name} · drag to change it")
+        title.setStyleSheet(f"color: {Theme.C_TEXT}; font-size: {Theme.F_TINY}; border: none; background: transparent;")
+        lay.addWidget(title)
+        self.wheel = ColourWheel(swatch.rgb)
+        lay.addWidget(self.wheel, 0, Qt.AlignmentFlag.AlignHCenter)
+        row = QHBoxLayout()
+        self.reset_btn, self.done_btn = QPushButton("Reset"), QPushButton("Done")
+        for b in (self.reset_btn, self.done_btn):
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet(f"QPushButton {{ color: {Theme.C_TEXT}; background: transparent; border: 1px solid {Theme.C_BORDER_FOCUS}; border-radius: 6px; padding: 4px 12px; font-size: {Theme.F_TINY}; }}"
+                            f"QPushButton:hover {{ background: {Theme.C_BG_INPUT}; border-color: {Theme.C_PRIMARY}; }}")
+            row.addWidget(b)
+        lay.addLayout(row)
+        self.wheel.changed.connect(self.changed)
+        self.wheel.released.connect(self.saved)
+        self.reset_btn.clicked.connect(self._reset)
+        self.done_btn.clicked.connect(self.close)
+
+    def _reset(self):
+        self.wheel.set_rgb(self.swatch.default_rgb)
+        self.reset.emit()
+
+
+def place_near(widget, anchor):
+    """Puts a popup just under `anchor` (a widget), flipped above it when there is no room below, kept on the screen."""
+    widget.adjustSize()
+    below = anchor.mapToGlobal(QPoint(0, anchor.height() + 6))
+    screen = QGuiApplication.screenAt(below) or QGuiApplication.primaryScreen()
+    area = screen.availableGeometry()
+    x = max(area.left() + 4, min(below.x(), area.right() - widget.width() - 4))
+    y = below.y()
+    if y + widget.height() > area.bottom() - 4:
+        y = anchor.mapToGlobal(QPoint(0, 0)).y() - widget.height() - 6
+    widget.move(x, max(area.top() + 4, y))
+
+
 class ColourPicker(QWidget):
     """The popup. Emits `chosen(fields)` with the light.set fields to send (color / temp / lum); it never talks to
     the lights itself, so the widget decides how it is dispatched. Closes on a click outside or Escape (Qt.Popup)."""
     chosen = pyqtSignal(dict)
+    swatchChanged = pyqtSignal(str, object)        # (slot name, [r, g, b]) when the user made it another colour, (slot name, None) when reset
 
     def __init__(self, name, brand, state=None, parent=None):
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
@@ -216,6 +383,11 @@ class ColourPicker(QWidget):
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
         self._debounce.timeout.connect(self._flush)
+        self._live_timer = QTimer(self)
+        self._live_timer.setSingleShot(True)
+        self._live_timer.timeout.connect(self._live_tick)
+        self._live_pending = None
+        self._wheel = None
 
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -247,8 +419,14 @@ class ColourPicker(QWidget):
         row = QHBoxLayout()
         row.setSpacing(6)
         self.swatches = []
+        mine = state.get("swatches") or {}                           # the colours the user changed: {name: [r, g, b]}
         for cname, rgb in PALETTE:
-            row.addWidget(self._swatch(Swatch(cname, rgb)))
+            sw = Swatch(cname, rgb)
+            own = valid_rgb(mine.get(cname))
+            if own:
+                sw.set_colour(own, True)
+            sw.customise.connect(self._on_customise)
+            row.addWidget(self._swatch(sw))
         lay.addLayout(row)
 
         lay.addWidget(self._section("WHITES"))
@@ -308,12 +486,66 @@ class ColourPicker(QWidget):
     # --- behaviour ---
     def _on_hover(self, name):
         shown = "cool white" if name == "coolwhite" else name
-        self.hint.setText(f"{shown} · say \"make the {self.name.lower()} {shown}\"")
+        swatch = next((s for s in self.swatches if s.name == name), None)
+        if swatch is not None and swatch.custom:
+            self.hint.setText(f"your {shown} · right-click to change or reset it")
+        elif swatch is not None and not swatch.text_on_swatch:
+            self.hint.setText(f"{shown} · say \"make the {self.name.lower()} {shown}\" · right-click to change it")
+        else:
+            self.hint.setText(f"{shown} · say \"make the {self.name.lower()} {shown}\"")
 
     def _on_swatch(self, clicked):
         for sw in self.swatches:
             sw.setChecked(sw is clicked)
-        self._send({"color": clicked.name, "lum": self.lum})
+        # the voice colour's name while the swatch is the default, its rgb once it is the user's own colour
+        self._send({"rgb": list(clicked.rgb), "lum": self.lum} if clicked.custom else {"color": clicked.name, "lum": self.lum})
+
+    # --- changing a swatch ---
+    def _on_customise(self, name):
+        swatch = next((s for s in self.swatches if s.name == name), None)
+        if swatch is None:
+            return
+        if self._wheel is not None:
+            self._wheel.close()
+        wheel = ColourWheelPopup(swatch, parent=self)
+        wheel.changed.connect(lambda rgb, s=swatch: self._wheel_changed(s, rgb))
+        wheel.saved.connect(lambda rgb, s=swatch: self._wheel_saved(s))
+        wheel.reset.connect(lambda s=swatch: self._wheel_reset(s))
+        wheel.destroyed.connect(lambda _=None: setattr(self, "_wheel", None))
+        self._wheel = wheel
+        place_near(wheel, swatch)
+        wheel.show()
+
+    def _wheel_changed(self, swatch, rgb):
+        swatch.set_colour(rgb, True)
+        for sw in self.swatches:
+            sw.setChecked(sw is swatch)
+        self._live({"rgb": list(rgb), "lum": self.lum})
+
+    def _wheel_saved(self, swatch):
+        self._live_flush()                                           # the colour the finger lifted on always reaches the bulb
+        self.swatchChanged.emit(swatch.name, list(swatch.rgb))
+
+    def _wheel_reset(self, swatch):
+        swatch.set_colour(swatch.default_rgb, False)
+        self.swatchChanged.emit(swatch.name, None)
+
+    def _live(self, fields):
+        """A dragged wheel: sent at once when free, otherwise the newest colour goes when the window ends."""
+        if self._live_timer.isActive():
+            self._live_pending = fields
+            return
+        self._send(fields)
+        self._live_timer.start(LIVE_MS)
+
+    def _live_tick(self):
+        self._live_flush()
+
+    def _live_flush(self):
+        if self._live_pending:
+            fields, self._live_pending = self._live_pending, None
+            self._send(fields)
+            self._live_timer.start(LIVE_MS)
 
     def _on_lum(self, value):
         self.lum = int(value)
@@ -343,17 +575,12 @@ class ColourPicker(QWidget):
 
     def closeEvent(self, event):
         self._flush()                                # a slider moved just before the popup closed still gets sent
+        self._live_flush()
+        if self._wheel is not None:
+            self._wheel.close()
         super().closeEvent(event)
 
     def show_near(self, anchor):
         """Opens just under `anchor` (a widget), flipped above it when there is no room below, kept on the screen."""
-        self.adjustSize()
-        below = anchor.mapToGlobal(QPoint(0, anchor.height() + 6))
-        screen = QGuiApplication.screenAt(below) or QGuiApplication.primaryScreen()
-        area = screen.availableGeometry()
-        x = max(area.left() + 4, min(below.x(), area.right() - self.width() - 4))
-        y = below.y()
-        if y + self.height() > area.bottom() - 4:
-            y = anchor.mapToGlobal(QPoint(0, 0)).y() - self.height() - 6
-        self.move(x, max(area.top() + 4, y))
+        place_near(self, anchor)
         self.show()

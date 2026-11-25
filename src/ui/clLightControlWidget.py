@@ -5,6 +5,8 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButt
 from PyQt6.QtCore import QTimer, QSize, Qt
 from PyQt6.QtGui import QColor
 from utils.clActionRouter import ActionRouter
+from utils.clConfigLoader import ConfigLoader
+from utils import clWebSettings
 from clUIScaler import UIScaler
 from ui.clColourPicker import ColourButton, ColourPicker, colour_of_command, display_colour
 
@@ -132,6 +134,23 @@ class LightControlWidget(QWidget):
         btn.setEnabled(not row_data.get("is_offline"))
         btn.set_light(display_colour(row_data.get("rgb"), row_data.get("kelvin")), row_data.get("is_on", False))
 
+    @staticmethod
+    def _load_swatches():
+        """The colour swatches the user changed (core.json settings.light_swatches), shared with the web picker."""
+        try:
+            return clWebSettings.swatches_from(ConfigLoader().load_json("core.json").get("settings", {}))
+        except Exception as e:
+            logging.error(f"Failed to read the colour swatches: {e}")
+            return {}
+
+    @staticmethod
+    def _save_swatch(name, rgb):
+        """Keeps a swatch the user changed (rgb), or puts its default back (None), through the same validated write as the web UI."""
+        try:
+            clWebSettings.apply(ConfigLoader(), clWebSettings.SWATCH_PREFIX + name, rgb)
+        except Exception as e:
+            logging.error(f"Failed to save the colour swatch '{name}': {e}")
+
     def _open_colour_picker(self, target_name):
         row_data = self.light_rows.get(target_name)
         if row_data is None:
@@ -142,8 +161,10 @@ class LightControlWidget(QWidget):
             return
         picker = ColourPicker(row_data["name"], row_data.get("brand", ""), {
             "brightness": row_data.get("brightness"), "kelvin": row_data.get("kelvin"),
-            "brand_label": {"wiz": "WiZ", "tapo": "Tapo"}.get(row_data.get("brand", ""), "")}, parent=self)
+            "brand_label": {"wiz": "WiZ", "tapo": "Tapo"}.get(row_data.get("brand", ""), ""),
+            "swatches": self._load_swatches()}, parent=self)
         picker.chosen.connect(lambda fields, t=target_name: self._send_colour(t, fields))
+        picker.swatchChanged.connect(self._save_swatch)
         picker.destroyed.connect(lambda _=None, t=target_name: self._picker_closed(t))
         self._picker, self._picker_target = picker, target_name
         row_data["colour_btn"].set_open(True)

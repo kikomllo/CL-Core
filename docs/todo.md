@@ -24,7 +24,6 @@ The one place to see what is still to implement. Updated 2026-11-25. Each item s
 - [ ] **Timed on/off (schedules)** in `clAutomation`: weekday + time rules, grace window for missed triggers, **heater max-on fail-safe** persisted across restarts, editor on the light row. (M)
 - [ ] Later: watts in the plug's row if it is an energy-meter model; skip a schedule after a manual change; voice "turn the heater on at seven". (M)
 - [ ] **Voice lines for devices that are not lights**: the spoken reply to "turn off the heater" is the light wording ("lights off"). Give plugs their own replies ("heater off" / "switching the heater on"), chosen from the target's `kind` in `clControl`'s feedback or the daemon's reply path, and add plug phrasing to `config/intents.json` (`{light_target}` already routes "the heater"; check `benchmark_slm.py`). **Batch with the colour-command retrain** so the models are trained once (`training/CLAUDE.md`). (M)
-- [ ] **Customisable colour swatches in the light colour picker** (the 8 colours, red to hot pink; web `web/js/lights.js` and Qt `src/ui/clColourPicker.py`): right-click a swatch opens a colour wheel that changes the bulb live **and** replaces that swatch, kept permanently so the user can leave their favourites. Decide at build time: where it is stored (`core.json` settings, so both UIs and both machines agree, not localStorage), a "reset to default" per swatch or for all, whether the 3 whites can be customised too, and that a changed swatch is no longer the voice colour name from `config/entities.json` (the test that keeps swatches and entities in step must allow it). Needs a colour wheel that follows the skin chrome but shows real colours (raw, like the swatches). (M)
 
 ## Google Calendar (`docs/google_calendar_plan.md`)
 
@@ -75,6 +74,7 @@ The one place to see what is still to implement. Updated 2026-11-25. Each item s
 
 ## Done recently
 
+- [x] Customisable colour swatches in the light colour picker (web and Qt): right-click opens a colour wheel that recolours the bulb live and keeps the colour (`core.json` `settings.light_swatches`); Reset per swatch. (`smart_devices_plan.md`)
 - [x] Test-suite housekeeping: the Linux-only Bluetooth scanner tests skip on Windows, the bridge env-var test no longer depends on the Claude Code session running it, and "wait cancel that command" / "please stop doing that" now abort (`wait` and `doing` are filler in `clAbort.py`; a phrase with any other content word is still a command).
 - [x] Floating (unpinned) windows in the web UI, like the Qt widgets: own always-on-top window, any monitor, also from the overlay; seamless unpin/pin (no gap, exact position, Windows' open animation hidden). (`web_ui_plan.md`)
 - [x] Zoom: the whole UI and per window (a factor on the fluid unit: only the content scales, window frames stay as they are); keys, Ctrl+wheel, badge, Settings. (`web_ui_plan.md`)

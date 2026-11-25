@@ -221,3 +221,116 @@ class TestColoursIgnoreTheSkin:
                              capture_output=True, text=True, timeout=120)
         assert out.returncode == 0, out.stderr[-600:]
         assert out.stdout.strip() == "(255, 165, 0) (255, 165, 0)"
+
+
+class TestColourWheelMaths:
+    """The wheel's maths is the web picker's (web/js/swatch-model.js): hue clockwise from the right, white in the middle."""
+
+    @pytest.mark.parametrize("dx, dy, rgb", [(50, 0, (255, 0, 0)), (-50, 0, (0, 255, 255)), (0, 0, (255, 255, 255)), (500, 0, (255, 0, 0))])
+    def test_wheel_colour(self, dx, dy, rgb):
+        from ui.clColourPicker import wheel_colour
+        assert wheel_colour(dx, dy, 50)[2] == rgb
+
+    def test_down_is_ninety_degrees_and_half_way_is_half_saturated(self):
+        from ui.clColourPicker import wheel_colour
+        assert wheel_colour(0, 45, 50)[0] == 90
+        assert wheel_colour(25, 0, 50)[1] == 0.5
+
+    def test_the_knob_sits_where_the_colour_is(self):
+        from ui.clColourPicker import knob_offset, wheel_colour
+        for dx, dy in [(30, 20), (-40, 10), (0, -25)]:
+            hue, sat, _ = wheel_colour(dx, dy, 50)
+            x, y = knob_offset(hue, sat, 50)
+            assert abs(x - dx) < 1e-6 and abs(y - dy) < 1e-6
+
+    @pytest.mark.parametrize("value, ok", [([1, 2, 3], True), ((1, 2, 3), True), ([1, 2], False), ([256, 0, 0], False), ([1.5, 0, 0], False),
+                                           ([True, 0, 0], False), ("red", False), (None, False)])
+    def test_a_saved_colour_must_be_three_whole_numbers(self, value, ok):
+        from ui.clColourPicker import valid_rgb
+        assert (valid_rgb(value) is not None) is ok
+
+
+class TestCustomSwatches:
+    def _red(self, picker):
+        return next(s for s in picker.swatches if s.name == "red")
+
+    def test_a_saved_colour_replaces_only_its_swatch_and_a_click_sends_the_rgb(self, qapp):
+        picker, got = _picker(state={"brightness": 60, "swatches": {"red": [10, 20, 30]}})
+        red, blue = self._red(picker), next(s for s in picker.swatches if s.name == "blue")
+        assert red.custom and red.rgb == (10, 20, 30) and red.default_rgb == (255, 0, 0)
+        assert not blue.custom
+        red.click()
+        blue.click()
+        assert got == [{"rgb": [10, 20, 30], "lum": 60}, {"color": "blue", "lum": 60}]
+
+    def test_a_broken_saved_colour_is_the_default(self, qapp):
+        picker, got = _picker(state={"swatches": {"red": [999, 0, 0], "blue": "x", "magenta": [1, 2, 3]}})
+        assert not any(s.custom for s in picker.swatches)
+        self._red(picker).click()
+        assert got == [{"color": "red", "lum": 100}]
+
+    def test_a_white_cannot_be_customised(self, qapp):
+        picker, _ = _picker()
+        got = []
+        for s in picker.swatches:
+            s.customise.connect(got.append)
+        warm = next(s for s in picker.swatches if s.name == "warm white")
+        from PyQt6.QtGui import QContextMenuEvent
+        from PyQt6.QtCore import QPoint
+        warm.contextMenuEvent(QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(3, 3)))
+        self._red(picker).contextMenuEvent(QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(3, 3)))
+        assert got == ["red"]
+
+    def test_right_click_opens_the_wheel_and_dragging_recolours_the_bulb_and_the_swatch(self, qapp):
+        from PyQt6.QtCore import QPoint, Qt
+        from PyQt6.QtTest import QTest
+        picker, got = _picker(state={"brightness": 70})
+        changed = []
+        picker.swatchChanged.connect(lambda n, c: changed.append((n, c)))
+        picker._on_customise("red")
+        wheel = picker._wheel.wheel
+        r = wheel.width() // 2
+        QTest.mousePress(wheel, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(r + 40, r))        # right of the centre: a red
+        assert got and got[0]["lum"] == 70 and got[0]["rgb"][0] == 255 and got[0]["rgb"][1] == got[0]["rgb"][2]
+        first = got[0]["rgb"]
+        QTest.mouseMove(wheel, QPoint(r, r + 60))                          # down: hue 90, fully saturated
+        assert len(got) == 1 and picker._live_pending is not None          # a drag is limited: the newest colour waits
+        QTest.mouseRelease(wheel, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(r, r + 60))
+        red = self._red(picker)
+        assert red.custom and red.rgb != (255, 0, 0)
+        assert got[-1]["rgb"] == list(red.rgb) and got[-1]["rgb"] != first      # the colour the finger lifted on always reaches the bulb
+        assert changed == [("red", list(red.rgb))]
+        assert red.isChecked()
+        picker.close()
+
+    def test_reset_puts_the_default_back_and_tells_the_owner(self, qapp):
+        picker, _ = _picker(state={"swatches": {"red": [10, 20, 30]}})
+        changed = []
+        picker.swatchChanged.connect(lambda n, c: changed.append((n, c)))
+        picker._on_customise("red")
+        picker._wheel.reset_btn.click()
+        red = self._red(picker)
+        assert not red.custom and red.rgb == (255, 0, 0)
+        assert changed == [("red", None)]
+        picker.close()
+
+    def test_closing_the_picker_closes_its_wheel(self, qapp):
+        picker, _ = _picker()
+        picker._on_customise("red")
+        wheel = picker._wheel
+        picker.close()
+        assert not wheel.isVisible()
+
+    def test_the_hint_says_whether_the_swatch_is_the_default_or_the_users(self, qapp):
+        picker, _ = _picker(state={"swatches": {"red": [10, 20, 30]}})
+        picker._on_hover("red")
+        assert "your red" in picker.hint.text() and "reset" in picker.hint.text()
+        picker._on_hover("blue")
+        assert 'make the bedroom blue' in picker.hint.text() and "right-click" in picker.hint.text()
+        picker._on_hover("daylight")
+        assert "right-click" not in picker.hint.text()
+
+    def test_the_slots_are_the_ones_the_settings_accept(self):
+        from ui.clColourPicker import PALETTE
+        from utils import clWebSettings
+        assert tuple(n for n, _ in PALETTE) == clWebSettings.SWATCH_NAMES
