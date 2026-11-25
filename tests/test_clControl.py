@@ -366,7 +366,7 @@ class TestExplicitRgb:
         return device
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("rgb, hue, sat", [((255, 0, 0), 0, 100), ((0, 0, 255), 240, 100), ((255, 255, 255), 0, 0)])
+    @pytest.mark.parametrize("rgb, hue, sat", [((255, 0, 0), 0, 100), ((0, 0, 255), 240, 100), ((255, 255, 255), 0, 1)])          # a white is 1 %, not 0: the bulb refuses a saturation of 0
     async def test_tapo_gets_hue_and_saturation_for_the_colour(self, manager, mocker, rgb, hue, sat):
         device = self._tapo(manager, mocker)
         await manager._execute_tapo_target("192.168.1.10", False, True, False, None, 50, None, rgb=rgb)
@@ -737,3 +737,41 @@ class TestTuyaPlugStatus:
         get = mocker.patch("clControl.clTuya.get_power", new=mocker.AsyncMock(return_value=False))
         await self._statuses(manager, mock_mqtt, mocker, 5)           # five publishes, 20 ms apart: far inside the 45 s plug interval
         assert get.await_count == 1
+
+
+class TestTapoHueSaturation:
+    """What a Tapo bulb accepts: hue 0-360 and saturation 1-100 (a saturation of 0 is refused)."""
+
+    @pytest.mark.parametrize("rgb, expected", [
+        ((255, 0, 0), (0, 100)), ((0, 255, 0), (120, 100)), ((0, 0, 255), (240, 100)), ((128, 0, 128), (300, 100)),
+        ((116, 10, 255), (266, 96)), ((255, 105, 180), (330, 59)),
+    ])
+    def test_a_colour_converts_to_hue_and_saturation(self, rgb, expected):
+        from clControl import _tapo_hue_saturation
+        assert _tapo_hue_saturation(*rgb) == expected
+
+    @pytest.mark.parametrize("rgb", [(255, 255, 255), (0, 0, 0), (128, 128, 128), (254, 255, 255)])
+    def test_a_white_or_a_grey_never_gives_saturation_zero(self, rgb):
+        from clControl import _tapo_hue_saturation
+        hue, sat = _tapo_hue_saturation(*rgb)
+        assert 0 <= hue <= 360 and 1 <= sat <= 100
+
+    def test_every_colour_the_wheel_can_make_is_in_range(self):
+        import colorsys
+        from clControl import _tapo_hue_saturation
+        for hue in range(0, 360, 7):
+            for sat in (0, 0.01, 0.2, 0.5, 0.99, 1):
+                rgb = tuple(int(round(c * 255)) for c in colorsys.hsv_to_rgb(hue / 360, sat, 1))
+                h, s = _tapo_hue_saturation(*rgb)
+                assert 0 <= h <= 360 and 1 <= s <= 100, (rgb, h, s)
+
+    @pytest.mark.asyncio
+    async def test_a_white_sent_to_a_tapo_bulb_reaches_it_with_a_valid_saturation(self, manager, mocker):
+        device = mocker.MagicMock()
+        device.on = mocker.AsyncMock()
+        device.set_brightness = mocker.AsyncMock()
+        device.set_hue_saturation = mocker.AsyncMock()
+        await manager._apply_tapo(device, False, True, False, None, 60, None, rgb=(255, 255, 255))
+        device.set_hue_saturation.assert_awaited_once()
+        hue, sat = device.set_hue_saturation.await_args.args
+        assert 1 <= sat <= 100

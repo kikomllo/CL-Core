@@ -79,6 +79,13 @@ def _wiz_status_fields(bulb) -> Dict[str, Any]:
     return out
 
 
+def _tapo_hue_saturation(r, g, b) -> Tuple[int, int]:
+    """The (hue 0-360, saturation 1-100) a Tapo bulb takes for an rgb colour. Saturation 0 (a white or a grey) is refused by the bulb
+    ("between 1 and 100"), so the lowest a colour can be is 1 %: a near-white tint instead of an error."""
+    h, s, _ = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
+    return min(360, max(0, int(round(h * 360)))), min(100, max(1, int(round(s * 100))))
+
+
 def _tapo_status_fields(info) -> Dict[str, Any]:
     """Same as _wiz_status_fields for a Tapo bulb: it reports a colour temperature of 0 while in colour mode."""
     out: Dict[str, Any] = {"brightness": getattr(info, "brightness", None), "rgb": None, "kelvin": None}
@@ -531,17 +538,13 @@ class LightManager:
         tasks = []
         if lum is not None: tasks.append(device.set_brightness(lum))
         if rgb:                                       # an explicit colour beats a colour name
-            h, s, v = colorsys.rgb_to_hsv(rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0)
-            tasks.append(device.set_hue_saturation(int(h * 360), int(s * 100)))
+            tasks.append(device.set_hue_saturation(*_tapo_hue_saturation(*rgb)))
         elif color:
             c_data = self.color_matrix.get(color.lower().strip())
             if c_data:
                 if c_data["type"] == "rgb":
                     r, g, b = c_data["r"], c_data["g"], c_data["b"]
-                    h, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
-                    tapo_h = int(h * 360)
-                    tapo_s = int(s * 100)
-                    tasks.append(device.set_hue_saturation(tapo_h, tapo_s))
+                    tasks.append(device.set_hue_saturation(*_tapo_hue_saturation(r, g, b)))
                 elif c_data["type"] == "temp":
                     temp = c_data["val"] 
         if temp is not None:
