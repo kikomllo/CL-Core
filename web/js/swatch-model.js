@@ -82,9 +82,23 @@ export function modeAfter(fields) {
   return null;
 }
 
-/** The same rules as src/utils/clColour.py. The brightness slider is the overall brightness; a colour's own value (its brightest channel as a fraction
- *  of 255, to the power gamma: the light a screen would give) scales it, because the darkness of a mix such as (0, 100, 0) is not part of a bulb's hue. */
-export const valueFactor = (rgb, gamma = 1) => Math.pow(Math.max(...rgb) / 255, gamma);
+// ---- how a colour is applied to a bulb (the same rule as src/utils/clColour.py) ----
+// A colour carries its own brightness: a Tapo bulb is told a hue, a saturation and a brightness, so how dark a mix such as (0, 100, 0) is cannot be part of its
+// hue, it is sent as the brightness, as the light a screen would give (the brightest channel / 255 to the power gamma). The colour itself is sent at full
+// value. The same colour is therefore always the same light; the brightness slider is the bulb's real brightness and is never multiplied by anything.
 
-/** The brightness (1-100) to send for an overall brightness `master` and a colour's `factor`. */
-export const composeBrightness = (master, factor) => (factor >= 0.995 ? master : Math.max(1, Math.min(100, Math.round(master * factor))));
+/** 0-1: the brightest channel as a fraction of 255. */
+export const valueOf = (rgb) => Math.max(...rgb) / 255;
+
+/** The brightness (1-100) a colour is as a light. */
+export const valueBrightness = (rgb, gamma = 1) => Math.max(1, Math.min(100, Math.round(100 * Math.pow(valueOf(rgb), gamma))));
+
+/** The light.set fields that make a bulb show `rgb`: the colour at full value and its brightness. Black has no colour: the dimmest light, in the colour the bulb has. */
+export function colourCommand(rgb, gamma = 1) {
+  const v = valueOf(rgb);
+  if (v === 0) return { lum: 1 };
+  return { rgb: rgb.map((c) => Math.min(255, Math.round(c / v))), lum: valueBrightness(rgb, gamma) };
+}
+
+/** A colour from the wheel (always full value) with the value of the colour it replaces: the wheel picks hue and saturation only, so a dark swatch stays dark. */
+export const keepValue = (fullRgb, current) => { const v = valueOf(current) || 1; return fullRgb.map((c) => Math.round(c * v)); };

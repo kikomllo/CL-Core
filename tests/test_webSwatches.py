@@ -151,17 +151,25 @@ def test_the_web_wheel_has_red_green_and_blue_sliders_under_it():
     assert src.index('class: "wh-disc"') < src.index('class: "rgb-rows"') < src.index('class: "pk-row"')       # wheel, then the sliders, then Reset / Done
 
 
-class TestValueRulesMatchPython:
-    """web/js/swatch-model.js and src/utils/clColour.py are the same rules."""
+class TestColourRuleMatchesPython:
+    """web/js/swatch-model.js and src/utils/clColour.py are the same rule (tests/test_clColour.py has the same tables)."""
 
     @pytest.mark.parametrize("rgb, gamma, expected", [
-        ((255, 0, 0), 1.0, 1.0), ((0, 100, 0), 1.0, 0.392), ((0, 100, 0), 2.2, 0.128), ((0, 20, 0), 2.2, 0.004), ((128, 0, 128), 1.0, 0.502), ((0, 0, 0), 2.2, 0.0),
+        ((255, 0, 0), 1.0, 100), ((0, 255, 0), 2.2, 100), ((254, 0, 0), 1.0, 100), ((0, 100, 0), 1.0, 39), ((0, 20, 0), 1.0, 8), ((0, 100, 0), 2.2, 13),
+        ((0, 20, 0), 2.2, 1), ((128, 0, 128), 1.0, 50), ((128, 0, 191), 2.2, 53), ((0, 0, 0), 2.2, 1), ((1, 1, 1), 1.0, 1),
     ])
-    def test_value_factor(self, rgb, gamma, expected):
-        assert call("valueFactor", list(rgb), gamma) == pytest.approx(expected, abs=0.001)
+    def test_value_brightness(self, rgb, gamma, expected):
+        assert call("valueBrightness", list(rgb), gamma) == expected
 
-    @pytest.mark.parametrize("master, factor, expected", [
-        (100, 1.0, 100), (100, 0.996, 100), (100, 0.128, 13), (50, 0.128, 6), (100, 0.004, 1), (100, 0.0, 1), (1, 0.5, 1), (80, 0.5, 40),
+    @pytest.mark.parametrize("rgb, gamma, expected", [
+        ((255, 0, 0), 2.2, {"rgb": [255, 0, 0], "lum": 100}), ((0, 100, 0), 2.2, {"rgb": [0, 255, 0], "lum": 13}),
+        ((128, 0, 191), 2.2, {"rgb": [171, 0, 255], "lum": 53}), ((128, 64, 0), 1.0, {"rgb": [255, 128, 0], "lum": 50}),
+        ((0, 0, 0), 2.2, {"lum": 1}), ((10, 20, 30), 1.0, {"rgb": [85, 170, 255], "lum": 12}),
     ])
-    def test_compose_brightness(self, master, factor, expected):
-        assert call("composeBrightness", master, factor) == expected
+    def test_colour_command(self, rgb, gamma, expected):
+        assert call("colourCommand", list(rgb), gamma) == expected
+
+    def test_keep_value(self):
+        assert call("keepValue", [255, 0, 0], [0, 100, 0]) == [100, 0, 0]
+        assert call("keepValue", [10, 200, 255], [255, 0, 0]) == [10, 200, 255]
+        assert call("keepValue", [10, 200, 255], [0, 0, 0]) == [10, 200, 255]

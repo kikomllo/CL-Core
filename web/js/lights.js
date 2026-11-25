@@ -3,7 +3,7 @@
 import { bridge } from "./bridge.js";
 import { h, icon } from "./ui.js";
 import { pickerSpot } from "./picker-spot.js";
-import { mergeSwatches, swatchCommand, wheelColour, knobOffset, rgbToHsv, liveSender, isWhiteLight, modeAfter, valueFactor, composeBrightness } from "./swatch-model.js";
+import { mergeSwatches, swatchCommand, wheelColour, knobOffset, rgbToHsv, liveSender, isWhiteLight, modeAfter, valueOf, colourCommand, keepValue } from "./swatch-model.js";
 
 const PALETTE = [["red", [255, 0, 0]], ["orange", [255, 165, 0]], ["yellow", [255, 255, 0]], ["green", [0, 255, 0]],
   ["cyan", [0, 255, 255]], ["blue", [0, 0, 255]], ["purple", [128, 0, 128]], ["hot pink", [255, 105, 180]]];
@@ -23,13 +23,7 @@ function whiteTint(k) {
 }
 // The colour swatches the user changed ({name: [r, g, b]}), kept in core.json (settings.light_swatches) through /api/settings so the Qt picker and
 // every window of the UI agree. Read when the window builds and again after every picker opens, so a change made elsewhere shows next time.
-// The overall brightness the user chose for a light, and how dark its colour is, kept per light: the bulb only reports the brightness it was sent (the two multiplied),
-// so reopening the picker would take that for the overall brightness and a dark colour would darken twice. Valid only while the bulb still reports what was sent.
-const LUM_KEY = "jarvis.lightlum.v1";
-const loadLum = () => { try { return JSON.parse(localStorage.getItem(LUM_KEY)) || {}; } catch { return {}; } };
-const saveLum = (name, v) => { try { localStorage.setItem(LUM_KEY, JSON.stringify({ ...loadLum(), [name]: v })); } catch { /* private mode */ } };
-
-let savedSwatches = {}, colourGamma = 1;          // colourGamma: core.json settings.light_colour_gamma, how a darker mix maps to brightness
+let savedSwatches = {}, colourGamma = 1;          // colourGamma: core.json settings.light_colour_gamma, the correction between a screen's colours and a bulb's light
 async function loadSwatches() {
   try {
     const r = await fetch("/api/settings");
@@ -93,38 +87,29 @@ export const lightsWindow = {
     function openPicker(l, anchor) {
       const same = picker?.t === l.name; closePicker(); if (same) return;
       const t = target(l.name), brand = l.brand || "";
-      const kept = loadLum()[l.name];
-      const still = kept && kept.sent === l.brightness;                                // the bulb is as this picker left it: its overall brightness and colour value still hold
-      let lum = still ? kept.master : (l.brightness ?? 100), factor = still ? kept.factor : 1;
-      let temp = l.kelvin ? kToTemp(brand, l.kelvin) : 50, timer = null, pending = null;
-      let tempSlider = null;
+      // The slider is the bulb's real brightness: it opens on what the bulb reports, a colour that is applied moves it to the brightness that colour is, and dragging it
+      // sets the brightness exactly (1-100) whatever the colour. Nothing is remembered or multiplied: the same colour is always the same light.
+      let lum = l.brightness ?? 100, temp = l.kelvin ? kToTemp(brand, l.kelvin) : 50, timer = null, pending = null;
+      let tempSlider = null, lumSlider = null;
       // The temperature slider belongs to white mode: locked while the bulb is a colour, unlocked by a white swatch (or by the bulb already being white).
       const setWhite = (isWhite) => tempSlider?.setLocked(!isWhite);
-      let lumSlider = null;
-      // The slider shows the brightness the bulb really has (the overall brightness times the colour's value), and moves when a colour changes it. Dragging it is the
-      // user choosing the brightness: any value from 1 to 100, whatever the colour (a colour's darkness only sets the brightness when it is picked).
-      const send = (f) => {
+      // `follow`: the slider is moved to the brightness sent (a colour or a white applied); a drag of the slider itself must not be moved under the finger.
+      const send = (f, follow = true) => {
         clearTimeout(timer); pending = null;
-        // The slider is the overall brightness and the colour's own value scales it: a dark mix (0, 100, 0) is a dimmer light than a bright one (0, 255, 0),
-        // and a name or a white is at full value.
-        if (Array.isArray(f.rgb)) factor = valueFactor(f.rgb, colourGamma); else if (f.color !== undefined || f.temp !== undefined) factor = 1;
-        if (f.lum !== undefined) {
-          const colourChange = f.rgb !== undefined || f.color !== undefined || f.temp !== undefined;
-          f = { ...f, lum: composeBrightness(f.lum, factor) };
-          saveLum(l.name, { master: lum, factor, sent: f.lum });
-          if (colourChange) lumSlider?.setValue(f.lum);                       // a colour changed the brightness: the slider follows
-        }
+        if (f.lum !== undefined && follow) { lum = f.lum; lumSlider?.setValue(f.lum); }
         bridge.act("light.set", { action: "on", light_target: t, silent: true, ...f });
         const m = modeAfter(f); if (m) setWhite(m === "white");
       };
-      const queue = (f) => { pending = f; clearTimeout(timer); timer = setTimeout(() => pending && send(pending), 200); };
+      const queue = (f) => { pending = f; clearTimeout(timer); timer = setTimeout(() => pending && send(pending, false), 200); };
+      const applyColour = (rgb) => send(colourCommand(rgb, colourGamma));        // a colour: its hue and its brightness
+      // A white: the temperature only, the bulb keeps its brightness.
       const sw = (name, rgb, label, tp) => h("button", { class: "sw", "aria-label": label ? "White" : "Colour", style: `--c:${css(rgb)}`,
         onclick: () => { send({ color: name, lum }); if (tp !== undefined) { temp = tp; tempSlider?.setValue(tp); } } }, label || "");
       const swatches = mergeSwatches(PALETTE, savedSwatches);
       // A colour swatch: a click sets the light to it; a right click opens the wheel to make it another colour, which stays.
       const paletteSw = (s) => {
         const el = h("button", { class: "sw", "aria-label": "Colour", style: `--c:${css(s.rgb)}`,
-          onclick: () => send(swatchCommand(s, lum)), oncontextmenu: (e) => { e.preventDefault(); openWheel(s, el); } });
+          onclick: () => (s.custom ? applyColour(s.rgb) : send({ color: s.name, lum: 100 })), oncontextmenu: (e) => { e.preventDefault(); openWheel(s, el); } });
         return el;
       };
       function openWheel(s, swEl) {
@@ -134,7 +119,7 @@ export const lightsWindow = {
         const knob = h("i", { class: "wh-knob" });
         const place = (hue, sat) => { const k = knobOffset(hue, sat, 1); knob.style.left = 50 + k.x * 50 + "%"; knob.style.top = 50 + k.y * 50 + "%"; };
         place(hsv.h, hsv.s);
-        const live = liveSender((rgb) => send({ rgb, lum }), 120);          // the bulb follows the drag, at most a few messages a second
+        const live = liveSender((rgb) => applyColour(rgb), 120);            // the bulb follows the drag, at most a few messages a second
         const disc = h("div", { class: "wh-disc" }, knob);
         // Red, green and blue sliders under the wheel: the same colour, any mix (the wheel is always full value). Each track runs from 0 to 255 of its
         // channel with the other two as they are now, so what a move does is visible.
@@ -160,7 +145,8 @@ export const lightsWindow = {
         const paint = (e) => {
           const r = disc.getBoundingClientRect();
           const c = wheelColour(e.clientX - (r.left + r.width / 2), e.clientY - (r.top + r.height / 2), r.width / 2);
-          show(c.rgb, c.h, c.s); live.push(c.rgb);
+          const rgb = keepValue(c.rgb, s.rgb);                                  // the wheel picks the hue and the saturation: the value of the swatch stays
+          show(rgb, c.h, c.s); live.push(rgb);
         };
         let dragging = false;
         disc.addEventListener("pointerdown", (e) => { if (e.button !== 0) return; dragging = true; try { disc.setPointerCapture(e.pointerId); } catch { /* not an active pointer */ } paint(e); });
@@ -184,7 +170,6 @@ export const lightsWindow = {
         s.addEventListener("input", () => { fill(); v.textContent = fmt(+s.value); on(+s.value); }); fill();
         const box = h("div", { class: "pk-slider" }, h("div", { class: "pk-cap dim" }, h("span", {}, cap), v), s);
         box.setValue = (n) => { s.value = n; fill(); v.textContent = fmt(+s.value); };
-        s.addEventListener("change", () => box.onRelease?.());
         box.setLocked = (locked) => { s.disabled = locked; box.classList.toggle("locked", locked); v.textContent = locked ? "pick a white" : fmt(+s.value); };
         return box;
       };
@@ -192,9 +177,8 @@ export const lightsWindow = {
         h("div", { class: "pk-title" }, l.name, h("span", { class: "dim" }, { wiz: " · WiZ", tapo: " · Tapo" }[String(brand).toLowerCase()] || "")),
         h("div", { class: "pk-swatches" }, swatches.map(paletteSw)),
         h("div", { class: "pk-swatches" }, WHITES.map(([n, tp, lab]) => sw(n, whiteTint(tempToK(brand, tp)), lab, tp))),
-        lumSlider = slider("BRIGHTNESS", composeBrightness(lum, factor), 1, 100, (v) => v + " %", (v) => { lum = v; factor = 1; queue({ lum }); }),
+        lumSlider = slider("BRIGHTNESS", lum, 1, 100, (v) => v + " %", (v) => { lum = v; queue({ lum }); }),
         tempSlider = slider("TEMPERATURE", temp, 0, 100, (v) => tempToK(brand, v) + " K", (v) => { temp = v; queue({ temp, lum }); }));
-      lumSlider.onRelease = () => lumSlider.setValue(composeBrightness(lum, factor));      // after a drag it shows what the bulb really got
       setWhite(isWhiteLight(l));
       document.body.append(el);
       const spot = pickerSpot(anchor.getBoundingClientRect(), el.getBoundingClientRect(), { width: innerWidth, height: innerHeight });

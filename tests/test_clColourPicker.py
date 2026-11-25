@@ -91,11 +91,11 @@ class TestSwatchesAreVoiceColours:
 
 
 class TestPickerSendsFields:
-    def test_a_colour_swatch_sends_its_name_and_the_current_brightness(self, qapp):
+    def test_a_colour_swatch_sends_its_name_at_full_brightness(self, qapp):
         picker, got = _picker(state={"brightness": 60})
         purple = next(s for s in picker.swatches if s.name == "purple")
         purple.click()
-        assert got == [{"color": "purple", "lum": 60}]
+        assert got == [{"color": "purple", "lum": 100}]                       # a colour carries its brightness
 
     def test_a_white_swatch_sends_its_voice_name(self, qapp):
         picker, got = _picker()
@@ -125,7 +125,7 @@ class TestPickerSendsFields:
         got.clear()
         picker.temp_slider.setValue(80)
         picker._flush()
-        assert got == [{"temp": 80, "lum": 70}]
+        assert got == [{"temp": 80, "lum": 100}]                              # the red swatch set the bulb to 100 %, and the slider says so
         assert not any(s.isChecked() for s in picker.swatches)
 
     def test_closing_sends_a_slider_move_that_had_not_settled(self, qapp):
@@ -254,7 +254,7 @@ class TestCustomSwatches:
         assert not blue.custom
         red.click()
         blue.click()
-        assert got == [{"rgb": [10, 20, 255], "lum": 60}, {"color": "blue", "lum": 60}]
+        assert got == [{"rgb": [10, 20, 255], "lum": 100}, {"color": "blue", "lum": 100}]       # a colour carries its brightness
 
     def test_a_broken_saved_colour_is_the_default(self, qapp):
         picker, got = _picker(state={"swatches": {"red": [999, 0, 0], "blue": "x", "magenta": [1, 2, 3]}})
@@ -284,7 +284,7 @@ class TestCustomSwatches:
         wheel = picker._wheel.wheel
         r = wheel.width() // 2
         QTest.mousePress(wheel, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(r + 40, r))        # right of the centre: a red
-        assert got and got[0]["lum"] == 70 and got[0]["rgb"][0] == 255 and got[0]["rgb"][1] == got[0]["rgb"][2]
+        assert got and got[0]["lum"] == 100 and got[0]["rgb"][0] == 255 and got[0]["rgb"][1] == got[0]["rgb"][2]
         first = got[0]["rgb"]
         QTest.mouseMove(wheel, QPoint(r, r + 60))                          # down: hue 90, fully saturated
         assert len(got) == 1 and picker._live_pending is not None          # a drag is limited: the newest colour waits
@@ -392,7 +392,7 @@ class TestRgbSliders:
         popup.rgb_sliders[1].setValue(90)                                         # green, as a key press would
         red = next(s for s in picker.swatches if s.name == "red")
         assert red.rgb == (255, 90, 0) and red.custom
-        assert got[-1] == {"rgb": [255, 90, 0], "lum": 70}                          # a colour at full value keeps the overall brightness
+        assert got[-1] == {"rgb": [255, 90, 0], "lum": 100}                         # a colour at full value is full brightness
         assert saved == [("red", [255, 90, 0])]
         assert abs(popup.wheel.hue - 21.18) < 0.1 and popup.wheel.rgb == (255, 90, 0)      # the knob followed
         assert popup.rgb_values[1].text() == "90"
@@ -437,99 +437,83 @@ class TestRgbSliders:
         picker.close()
 
 
-class TestDarkerMixesAreDarkerLights:
-    """A Tapo bulb takes a hue, a saturation and a brightness: the slider is the overall brightness and a colour's own value scales it."""
+class TestAColourIsOneLight:
+    """A colour carries its own brightness: the same colour is always the same light, and the slider is the bulb's real brightness."""
 
-    def test_a_dark_mix_is_a_dimmer_light_and_the_slider_shows_it(self, qapp):
-        picker, got = _picker(state={"brightness": 100, "gamma": 2.2})
+    def _red_popup(self, picker):
         picker._on_customise("red")
-        picker._wheel.rgb_sliders[0].setValue(100)                                # (100, 0, 0): a dark red
-        assert got[-1] == {"rgb": [100, 0, 0], "lum": 13}                         # (100/255) ** 2.2 = 0.127
-        assert picker.lum_slider.value() == 13 and picker.lum_value.text() == "13 %"      # the slider shows what the bulb has
-        assert picker.lum == 100                                                  # the overall brightness behind it is untouched
+        return picker._wheel
+
+    def test_the_same_swatch_gives_the_same_light_at_any_brightness_and_the_slider_says_so(self, qapp):
+        picker, got = _picker(state={"brightness": 100, "gamma": 2.2, "swatches": {"red": [128, 0, 191]}})
+        purple = next(s for s in picker.swatches if s.name == "red")
+        results = []
+        for before in (100, 80, 30, 1):
+            picker._set_lum_slider(before)                                         # the bulb was at some other brightness
+            purple.click()
+            results.append((got[-1], picker.lum_slider.value()))
+        assert all(r == ({"rgb": [171, 0, 255], "lum": 53}, 53) for r in results), results
         picker.close()
 
-    def test_a_brighter_mix_is_a_brighter_light(self, qapp):
+    def test_a_darker_mix_is_a_dimmer_light_and_a_brighter_one_a_brighter_light(self, qapp):
         picker, got = _picker(state={"gamma": 2.2})
-        picker._on_customise("red")
+        popup = self._red_popup(picker)
         sent = []
         for v in (20, 100, 160, 255):
-            picker._wheel.rgb_sliders[0].setValue(v)
+            popup.rgb_sliders[0].setValue(v)
             picker._live_flush()
-            sent.append(got[-1]["lum"])
-        assert sent == sorted(sent) and sent[0] == 1 and sent[-1] == 100 and len(set(sent)) == 4
+            sent.append((got[-1]["lum"], picker.lum_slider.value()))
+        assert [s[0] for s in sent] == sorted(s[0] for s in sent) and sent[0][0] == 1 and sent[-1][0] == 100
+        assert all(a == b for a, b in sent)                                        # the slider follows every one
         picker.close()
 
-    def test_a_wheel_colour_after_a_dark_one_is_bright_again(self, qapp):
-        picker, got = _picker(state={"brightness": 80, "gamma": 2.2})
-        picker._on_customise("red")
-        picker._wheel.rgb_sliders[0].setValue(100)
-        assert got[-1]["lum"] < 80
-        picker._wheel._wheel_moved((10, 200, 255))                                # full value: the overall brightness
-        picker._live_flush()
-        assert got[-1]["lum"] == 80 and picker.lum_slider.value() == 80
-        picker.close()
-
-    def test_dragging_the_slider_sets_the_brightness_the_bulb_has_whatever_the_colour(self, qapp):
-        picker, got = _picker(state={"brightness": 100, "gamma": 2.2})
-        picker._on_customise("red")
-        picker._wheel.rgb_sliders[0].setValue(100)                                # the bulb is at 13 %
-        picker._flush()
-        picker.lum_slider.setValue(8)
-        picker._flush()
-        assert got[-1] == {"lum": 8}                                              # what the slider says is what the bulb gets
-        picker.lum_slider.setValue(100)                                           # a dark colour can still be at full brightness
-        picker._flush()
-        assert got[-1] == {"lum": 100}
-        picker.lum_slider.sliderReleased.emit()
-        assert picker.lum_slider.value() == 100
-        picker.close()
-
-    def test_a_dark_swatch_can_be_taken_to_full_brightness_and_a_colour_picked_after_keeps_it(self, qapp):
-        picker, got = _picker(state={"brightness": 100, "gamma": 2.2, "swatches": {"red": [128, 0, 191]}})
-        next(s for s in picker.swatches if s.name == "red").click()               # the purple: the bulb goes to 53 %
-        assert got[-1]["lum"] == 53 and picker.lum_slider.value() == 53
-        picker.lum_slider.setValue(100)                                           # the user wants it at full
-        picker._flush()
-        assert got[-1] == {"lum": 100}
+    def test_a_default_swatch_is_its_voice_colour_at_full_brightness(self, qapp):
+        picker, got = _picker(state={"brightness": 30})
         next(s for s in picker.swatches if s.name == "blue").click()
-        assert got[-1] == {"color": "blue", "lum": 100}
+        assert got[-1] == {"color": "blue", "lum": 100} and picker.lum_slider.value() == 100
         picker.close()
 
-    def test_a_swatch_click_moves_the_slider_to_the_brightness_it_gave_the_bulb(self, qapp):
-        picker, got = _picker(state={"brightness": 90, "gamma": 2.2, "swatches": {"red": [0, 104, 0], "blue": [0, 0, 255]}})
-        red, blue = (next(s for s in picker.swatches if s.name == n) for n in ("red", "blue"))
-        assert picker.lum_slider.value() == 90
-        red.click()                                                               # a dark green swatch
-        assert got[-1] == {"rgb": [0, 104, 0], "lum": 13} and picker.lum_slider.value() == 13 and picker.lum_value.text() == "13 %"
-        blue.click()                                                              # a full-value colour is the overall brightness again
-        assert got[-1]["lum"] == 90 and picker.lum_slider.value() == 90
+    def test_a_white_changes_the_temperature_only_and_keeps_the_brightness(self, qapp):
+        picker, got = _picker("wiz", {"brightness": 30})
         next(s for s in picker.swatches if s.name == "daylight").click()
-        assert got[-1]["lum"] == 90 and picker.lum_slider.value() == 90
-        picker.close()
-
-    def test_it_reports_what_to_remember_for_the_next_time(self, qapp):
-        picker, got = _picker(state={"brightness": 100, "gamma": 2.2})
-        memory = []
-        picker.lumMemory.connect(lambda m, f, s: memory.append((m, round(f, 3), s)))
-        picker._on_customise("red")
-        picker._wheel.rgb_sliders[0].setValue(100)
-        assert memory[-1] == (100, 0.128, 13)
-        picker.close()
-
-    def test_it_opens_with_the_overall_brightness_and_the_colour_value_it_is_given(self, qapp):
-        picker, got = _picker(state={"brightness": 100, "factor": 0.128, "gamma": 2.2})
-        assert picker.lum == 100 and picker.lum_slider.value() == 13 and got == []      # the slider shows what the bulb has: 100 % of a dark colour
-        picker.lum_slider.setValue(8)
+        assert got[-1] == {"color": "daylight", "lum": 30} and picker.lum_slider.value() == 30
+        picker.temp_slider.setValue(70)
         picker._flush()
-        assert got[-1] == {"lum": 8}
+        assert got[-1] == {"temp": 70, "lum": 30}
         picker.close()
 
-    def test_without_a_correction_the_darkness_maps_straight(self, qapp):
-        picker, got = _picker(state={})
-        picker._on_customise("red")
-        picker._wheel.rgb_sliders[0].setValue(128)
-        assert got[-1] == {"rgb": [128, 0, 0], "lum": 50}
+    def test_dragging_the_slider_sets_the_brightness_exactly_whatever_the_colour(self, qapp):
+        picker, got = _picker(state={"gamma": 2.2, "swatches": {"red": [0, 100, 0]}})
+        next(s for s in picker.swatches if s.name == "red").click()                # a dark green: 13 %
+        assert picker.lum_slider.value() == 13
+        for v in (8, 60, 100, 1):
+            picker.lum_slider.setValue(v)
+            picker._flush()
+            assert got[-1] == {"lum": v}
         picker.close()
 
+    def test_the_wheel_changes_the_hue_and_keeps_the_value_of_the_swatch(self, qapp):
+        picker, got = _picker(state={"gamma": 2.2, "swatches": {"red": [0, 100, 0]}})
+        popup = self._red_popup(picker)
+        popup._wheel_moved((255, 0, 0))                                            # the wheel is always full value
+        assert popup.rgb == (100, 0, 0)                                            # as dark as the swatch was
+        picker._live_flush()
+        assert got[-1] == {"rgb": [255, 0, 0], "lum": 13} and picker.lum_slider.value() == 13
+        picker.close()
 
+    def test_a_black_mix_is_the_dimmest_light_in_the_colour_the_bulb_has(self, qapp):
+        picker, got = _picker(state={"brightness": 70})
+        popup = self._red_popup(picker)
+        for i in range(3):
+            popup.rgb_sliders[i].setValue(0)
+        picker._live_flush()
+        assert got[-1] == {"lum": 1} and picker.lum_slider.value() == 1
+        picker.close()
+
+    def test_nothing_is_remembered_between_popups(self, qapp):
+        first, _ = _picker(state={"brightness": 100, "gamma": 2.2, "swatches": {"red": [0, 100, 0]}})
+        next(s for s in first.swatches if s.name == "red").click()
+        first.close()
+        second, got = _picker(state={"brightness": 13, "gamma": 2.2})              # the bulb reports 13: that is all there is
+        assert second.lum_slider.value() == 13 and got == []
+        second.close()

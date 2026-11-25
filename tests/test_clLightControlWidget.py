@@ -219,7 +219,7 @@ class TestColourPopup:
         w.update_status(_status())
         self._open(w)
         next(s for s in w._picker.swatches if s.name == "blue").click()
-        w.router.dispatch.assert_called_with("light.set", action="on", light_target="bedroom", silent=True, color="blue", lum=60)
+        w.router.dispatch.assert_called_with("light.set", action="on", light_target="bedroom", silent=True, color="blue", lum=100)   # a colour carries its brightness
         w._close_colour_picker()
 
     def test_a_slider_move_dispatches_brightness_only(self, qapp, mocker):
@@ -237,7 +237,7 @@ class TestColourPopup:
         self._open(w, "living_room")
         next(s for s in w._picker.swatches if s.name == "red").click()
         row = w.light_rows["living_room"]
-        assert row["colour_btn"]._rgb == (255, 0, 0) and row["is_on"] is True and row["brightness"] == 80
+        assert row["colour_btn"]._rgb == (255, 0, 0) and row["is_on"] is True and row["brightness"] == 100          # the red swatch is full brightness
         w._close_colour_picker()
 
     def test_a_failed_dispatch_is_logged_and_changes_nothing(self, qapp, mocker):
@@ -318,33 +318,16 @@ class TestCustomSwatchesAreKept:
         assert "Failed to save the colour swatch" in caplog.text
 
 
-class TestOverallBrightnessIsRemembered:
-    """The bulb only reports the brightness it was sent (overall brightness times the colour's value); the widget remembers the overall one."""
-
-    def test_reopening_after_a_dark_colour_keeps_the_overall_brightness_and_does_not_darken_twice(self, qapp, mocker):
+class TestTheSliderIsTheBulbsBrightness:
+    def test_the_popup_opens_on_the_brightness_the_bulb_reports_every_time(self, qapp, mocker):
         w = _widget(mocker)
         w.update_status(_status())
         w.light_rows["bedroom"]["colour_btn"].click()
         picker = w._picker
-        picker.gamma = 2.2
-        picker._on_customise("red")
-        picker._wheel.rgb_sliders[0].setValue(100)                                # a dark red: the bulb is sent 13 % of the overall brightness
-        sent = w.light_rows["bedroom"]["brightness"]
-        assert sent < picker.lum
-        overall = picker.lum
+        assert picker.lum_slider.value() == w.light_rows["bedroom"]["brightness"] == 60
+        picker._apply_colour((0, 100, 0))                                          # a dark green: the bulb goes dim and the row says so
+        assert picker.lum_slider.value() == 39 and w.light_rows["bedroom"]["brightness"] == 39      # no correction in this test's own config
         w._close_colour_picker()
-        w.light_rows["bedroom"]["colour_btn"].click()                             # the bulb reports what it was sent
-        reopened = w._picker
-        assert reopened.lum == overall and reopened.factor < 1 and reopened.lum_slider.value() == sent
-        w._close_colour_picker()
-
-    def test_a_bulb_changed_elsewhere_is_taken_as_it_reports(self, qapp, mocker):
-        w = _widget(mocker)
-        w.update_status(_status())
         w.light_rows["bedroom"]["colour_btn"].click()
-        w._picker._send({"rgb": [100, 0, 0], "lum": 100})
-        w._close_colour_picker()
-        w.light_rows["bedroom"]["brightness"] = 35                                # changed in the app, say
-        w.light_rows["bedroom"]["colour_btn"].click()
-        assert w._picker.lum == 35 and w._picker.factor == 1.0
+        assert w._picker.lum_slider.value() == 39                                  # nothing remembered, nothing multiplied: what the bulb has
         w._close_colour_picker()

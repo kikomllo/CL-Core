@@ -77,7 +77,6 @@ class LightControlWidget(QWidget):
         self.light_rows = {}
         self._picker = None                  # the open colour popup and which light it is for
         self._picker_target = None
-        self._lum_memory = {}                # per light: (overall brightness, colour factor, brightness sent), see _open_colour_picker
 
     def update_scaling(self):
         self.layout.setContentsMargins(s(15), s(8), s(15), 0)
@@ -167,15 +166,10 @@ class LightControlWidget(QWidget):
         self._close_colour_picker()
         if not reopen:
             return
-        # The bulb only reports the brightness it was sent (the overall brightness times the colour's value): taking that for the overall brightness would darken
-        # a dark colour twice, so what the last popup chose is used while the bulb still reports what that popup sent.
-        kept = self._lum_memory.get(target_name)
-        still = bool(kept) and kept[2] == row_data.get("brightness")
         picker = ColourPicker(row_data["name"], row_data.get("brand", ""), {
-            "brightness": kept[0] if still else row_data.get("brightness"), "factor": kept[1] if still else 1.0, "kelvin": row_data.get("kelvin"),
+            "brightness": row_data.get("brightness"), "kelvin": row_data.get("kelvin"),
             "brand_label": {"wiz": "WiZ", "tapo": "Tapo"}.get(row_data.get("brand", ""), ""),
             "swatches": self._load_swatches(), "gamma": self._load_gamma()}, parent=self)
-        picker.lumMemory.connect(lambda master, factor, sent, t=target_name: self._lum_memory.__setitem__(t, (master, factor, sent)))
         picker.chosen.connect(lambda fields, t=target_name: self._send_colour(t, fields))
         picker.swatchChanged.connect(self._save_swatch)
         picker.destroyed.connect(lambda _=None, t=target_name: self._picker_closed(t))

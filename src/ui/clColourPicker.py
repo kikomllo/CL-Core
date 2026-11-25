@@ -9,7 +9,7 @@ the new colour is kept (core.json `light_swatches`, saved by the widget) and tha
 """
 import colorsys
 import math
-from utils.clColour import value_factor, compose_brightness
+from utils.clColour import colour_command, keep_value
 from PyQt6.QtWidgets import QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel, QAbstractButton, QSlider, QSizePolicy, QPushButton
 from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor as RawColor, QPainter, QPen, QLinearGradient, QGuiApplication, QImage
@@ -386,8 +386,10 @@ class ColourWheelPopup(QWidget):
             lo[i], hi[i] = 0, 255
             slider.set_stops([(0.0, tuple(lo)), (1.0, tuple(hi))])
 
-    def _wheel_moved(self, rgb):
+    def _wheel_moved(self, full_rgb):
+        rgb = keep_value(full_rgb, self.rgb)                         # the wheel picks the hue and the saturation: the value of the swatch stays
         self._show_rgb(rgb)
+        self.wheel.set_rgb(rgb)
         self.changed.emit(tuple(rgb))
 
     def _slider_moved(self, index, value):
@@ -425,7 +427,6 @@ class ColourPicker(QWidget):
     """The popup. Emits `chosen(fields)` with the light.set fields to send (color / temp / lum); it never talks to
     the lights itself, so the widget decides how it is dispatched. Closes on a click outside or Escape (Qt.Popup)."""
     chosen = pyqtSignal(dict)
-    lumMemory = pyqtSignal(int, float, int)         # (overall brightness, colour factor, brightness sent): what to remember for the next time the popup opens
     swatchChanged = pyqtSignal(str, object)        # (slot name, [r, g, b]) when the user made it another colour, (slot name, None) when reset
 
     def __init__(self, name, brand, state=None, parent=None):
@@ -433,8 +434,7 @@ class ColourPicker(QWidget):
         state = state or {}
         self.name, self.brand = name, str(brand).lower()
         self.gamma = float(state.get("gamma") or 1.0)               # how a darker mix maps to brightness (core.json light_colour_gamma)
-        self.lum = int(state.get("brightness") or 100)               # the overall brightness: the slider, never overwritten by a colour
-        self.factor = float(state.get("factor") or 1.0)              # how dark the colour the bulb has now is (1 = full value): it scales the slider
+        self.lum = int(state.get("brightness") or 100)               # the bulb's real brightness: what the slider shows, never multiplied by anything
         self.temp = kelvin_to_temp(self.brand, state["kelvin"]) if state.get("kelvin") else 50
         self._pending = {}
         self._debounce = QTimer(self)
@@ -495,10 +495,9 @@ class ColourPicker(QWidget):
         lay.addLayout(wrow)
 
 
-        # The slider shows the brightness the bulb really has (the overall brightness times the colour's value) and moves when a colour changes it.
-        self.lum_value, self.lum_slider = self._slider(lay, "Brightness", [(0.0, (42, 28, 16)), (1.0, (255, 230, 204))], 1, 100, compose_brightness(self.lum, self.factor))
+        # The slider is the bulb's real brightness: a colour that is applied moves it to the brightness that colour is, and dragging it sets the brightness exactly.
+        self.lum_value, self.lum_slider = self._slider(lay, "Brightness", [(0.0, (42, 28, 16)), (1.0, (255, 230, 204))], 1, 100, self.lum)
         self.lum_slider.valueChanged.connect(self._on_lum)
-        self.lum_slider.sliderReleased.connect(self._lum_released)
         self.temp_value, self.temp_slider = self._slider(
             lay, "White temperature", [(0.0, (255, 162, 77)), (0.5, (255, 243, 224)), (1.0, (188, 214, 255))], 0, 100, self.temp)
         self.temp_slider.valueChanged.connect(self._on_temp)
@@ -552,8 +551,12 @@ class ColourPicker(QWidget):
             self.temp_slider.setValue(temp)
             self.temp_slider.blockSignals(False)
         self._set_white(bool(clicked.text_on_swatch))
-        # the voice colour's name while the swatch is the default, its rgb once it is the user's own colour
-        self._send({"rgb": list(clicked.rgb), "lum": self.lum} if clicked.custom else {"color": clicked.name, "lum": self.lum})
+        if clicked.text_on_swatch:                                   # a white: the temperature only, the bulb keeps its brightness
+            self._send({"color": clicked.name, "lum": self.lum})
+        elif clicked.custom:                                         # the user's own colour: its hue and its brightness
+            self._apply_colour(clicked.rgb)
+        else:                                                        # a default colour: the voice colour's name, at full value
+            self._send({"color": clicked.name, "lum": 100}, follow=True)
 
     # --- changing a swatch ---
     def _on_customise(self, name):
@@ -576,7 +579,7 @@ class ColourPicker(QWidget):
         swatch.set_colour(rgb, True)
         for sw in self.swatches:
             sw.setChecked(sw is swatch)
-        self._live({"rgb": list(rgb), "lum": self.lum})
+        self._live(colour_command(rgb, self.gamma))
 
     def _wheel_saved(self, swatch):
         self._live_flush()                                           # the colour the finger lifted on always reaches the bulb
@@ -591,7 +594,7 @@ class ColourPicker(QWidget):
         if self._live_timer.isActive():
             self._live_pending = fields
             return
-        self._send(fields)
+        self._send(fields, follow=True)
         self._live_timer.start(LIVE_MS)
 
     def _live_tick(self):
@@ -600,23 +603,24 @@ class ColourPicker(QWidget):
     def _live_flush(self):
         if self._live_pending:
             fields, self._live_pending = self._live_pending, None
-            self._send(fields)
+            self._send(fields, follow=True)
             self._live_timer.start(LIVE_MS)
 
     def _set_lum_slider(self, shown):
         """Shows a brightness on the slider without it counting as a move."""
+        self.lum = int(shown)
         self.lum_slider.blockSignals(True)
-        self.lum_slider.setValue(int(shown))
+        self.lum_slider.setValue(self.lum)
         self.lum_slider.blockSignals(False)
         self._show_values()
 
-    def _lum_released(self):
-        self._set_lum_slider(compose_brightness(self.lum, self.factor))        # after a drag it shows what the bulb really got
+    def _apply_colour(self, rgb):
+        """A colour: its hue and its brightness (the same colour is always the same light)."""
+        self._send(colour_command(rgb, self.gamma), follow=True)
 
     def _on_lum(self, value):
-        # Dragging the slider is the user choosing the brightness: any value, whatever the colour (a colour's darkness only sets the brightness when it is picked).
+        # Dragging the slider sets the brightness exactly, whatever the colour.
         self.lum = int(value)
-        self.factor = 1.0
         self._show_values()
         self._queue({"lum": self.lum})
 
@@ -636,20 +640,14 @@ class ColourPicker(QWidget):
             fields, self._pending = self._pending, {}
             self._send(fields)
 
-    def _send(self, fields):
+    def _send(self, fields, follow=False):
+        """Emits the fields to send. `follow`: the slider is moved to the brightness sent (a colour or a white applied); a drag of the slider
+        itself must not be moved under the finger."""
         self._debounce.stop()
         self._pending = {}
         fields = dict(fields)
-        # The slider is the overall brightness and the colour's own value scales it: a dark mix is a dimmer light than a bright one; a name or a white is at full value.
-        if fields.get("rgb"):
-            self.factor = value_factor(fields["rgb"], self.gamma)
-        elif "color" in fields or "temp" in fields:
-            self.factor = 1.0
-        if "lum" in fields:
-            fields["lum"] = compose_brightness(int(fields["lum"]), self.factor)
-            self.lumMemory.emit(self.lum, self.factor, fields["lum"])
-            if any(k in fields for k in ("rgb", "color", "temp")):              # a colour changed the brightness: the slider follows
-                self._set_lum_slider(fields["lum"])
+        if follow and "lum" in fields:
+            self._set_lum_slider(fields["lum"])
         self.chosen.emit(fields)
 
     def closeEvent(self, event):

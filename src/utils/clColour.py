@@ -1,28 +1,34 @@
-"""Colour rules shared by the light service and the Qt colour picker (web/js/swatch-model.js has the same ones for the web picker).
+"""How a colour is applied to a bulb, shared by the Qt colour picker (web/js/swatch-model.js has the same rule for the web picker).
 
-A Tapo bulb is told a hue, a saturation and, separately, a brightness. The darkness of a mix such as (0, 100, 0) is not part of its hue, so
-it goes into the brightness: the brightness slider is the overall brightness, and the colour's own value (its brightest channel as a fraction of
-255, to the power `gamma`, the light a screen would give) scales it. A bright colour is therefore a brighter light than a dark one, and the
-slider itself is never overwritten by a colour."""
-from typing import Optional, Sequence
-
-FULL = 0.995                                        # a value this close to 1 is full value: nothing to scale
-
-
-def value_factor(rgb: Sequence[int], gamma: float = 1.0) -> float:
-    """0-1: how much of full brightness a colour is (1 for every wheel colour and default swatch)."""
-    return (max(rgb) / 255.0) ** gamma
+One rule: a colour carries its own brightness. A Tapo bulb is told a hue, a saturation and, separately, a brightness, so how dark a mix such as
+(0, 100, 0) is cannot be part of its hue: it is sent as the brightness, as the light a screen would give (the brightest channel as a fraction of
+255, to the power `gamma`, the same correction that is applied to the colour). The colour itself is sent at full value, which is what every
+bulb type understands (a WiZ bulb takes the rgb and its brightness separately too). The same colour is therefore always the same light; the brightness
+slider is the bulb's real brightness and is never multiplied by anything."""
+from typing import Dict, Sequence
 
 
-def compose_brightness(master: int, factor: float) -> int:
-    """The brightness (1-100) to send for an overall brightness `master` and a colour's `factor`."""
-    return master if factor >= FULL else max(1, min(100, int(round(master * factor))))
+def value_of(rgb: Sequence[int]) -> float:
+    """0-1: the brightest channel as a fraction of 255 (how bright the colour is on a screen, before the gamma)."""
+    return max(rgb) / 255.0
 
 
-def brightness_for(rgb: Sequence[int], lum: Optional[int], gamma: float = 1.0) -> Optional[int]:
-    """The brightness to send with an explicit colour: `lum` (100 when none was given) scaled by the colour's value, or `lum` untouched for a colour
-    at full value (None stays None: nothing to say about the brightness)."""
-    factor = value_factor(rgb, gamma)
-    if factor >= FULL:
-        return lum
-    return compose_brightness(100 if lum is None else lum, factor)
+def value_brightness(rgb: Sequence[int], gamma: float = 1.0) -> int:
+    """The brightness (1-100) a colour is as a light."""
+    return max(1, min(100, int(round(100 * value_of(rgb) ** gamma))))
+
+
+def colour_command(rgb: Sequence[int], gamma: float = 1.0) -> Dict[str, object]:
+    """The light.set fields that make a bulb show `rgb`: the colour at full value and its brightness. Black has no colour: it is the dimmest
+    light the bulb can give, in the colour it already has."""
+    v = value_of(rgb)
+    if v == 0:
+        return {"lum": 1}
+    return {"rgb": [min(255, int(round(c / v))) for c in rgb], "lum": value_brightness(rgb, gamma)}
+
+
+def keep_value(full_rgb: Sequence[int], current: Sequence[int]) -> tuple:
+    """A colour from the wheel (always full value) with the value of the colour it replaces: the wheel picks the hue and the saturation only, as in
+    any HSV picker, so a dark swatch stays dark when its hue is changed (black, which has no value to keep, becomes full value)."""
+    v = value_of(current) or 1.0
+    return tuple(int(round(c * v)) for c in full_rgb)
