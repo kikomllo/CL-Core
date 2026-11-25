@@ -29,7 +29,9 @@ function setUnit() {
   const box = currentMode() === "overlay" ? screen : { width: innerWidth, height: innerHeight };
   const long = Math.max(box.width, box.height), short = Math.min(box.width, box.height);
   // the zoom (Ctrl + / - / 0, Settings) is a factor on the unit; the overlay is a fixed box and is not zoomed
-  U = Math.min(long / 1920, short / 1080) * (currentMode() === "overlay" ? 1 : getGlobal());
+  const base = Math.min(long / 1920, short / 1080);
+  U = base * (currentMode() === "overlay" ? 1 : getGlobal());
+  document.documentElement.style.setProperty("--ub", base + "px");      // the unit without the zoom: what window frames (size, position) are made of
   document.documentElement.style.setProperty("--u", U + "px");
   document.documentElement.style.setProperty("--ug", U + "px");      // the same, for a window that has a zoom of its own on top
   fitDock();

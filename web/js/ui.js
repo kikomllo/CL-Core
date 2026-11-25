@@ -69,6 +69,10 @@ function applyZoom(el) {
 /** The unit inside a window: the global one times its own zoom (what its minimum size is measured in). */
 const unitOf = (el) => unit() * getWidget(el.dataset.id);
 
+/** The unit without the zoom (--ub): window frames (their size, their position, their saved layout) are made of this, so zooming the UI scales what is
+ *  inside the frames and leaves the frames where and as big as they are. Falls back to --u where --ub is not set (the unzoomed case). */
+const baseUnit = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--ub")) || unit();
+
 export const unit = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--u")) || 1;
 
 // ---------- windows ----------
@@ -177,7 +181,7 @@ function applyMin(el) {
 /** `at` = {x, y, width, height} in page px puts the window exactly there (a window pinned back from where it floated), instead of at its saved place. */
 export function openWindow(def, at) {
   if (open.has(def.id)) { focus(open.get(def.id).el); return open.get(def.id); }
-  const u = unit(), layout = widgetMode ? undefined : loadLayout()[def.id];
+  const u = baseUnit(), layout = widgetMode ? undefined : loadLayout()[def.id];
   const el = h("div", { class: "win panel", "data-id": def.id });
   applyZoom(el);
   // pinned (in the dashboard): the dimmed pin_off icon; unpinned (a window of its own): the bright pin icon, like the Qt widgets. Needs the shell.
@@ -255,7 +259,7 @@ function place(el, x, y) {
 function persist(id, el) {
   const r = el.getBoundingClientRect(), l = loadLayout();
   if (!r.width || !r.height) return;                    // not drawn (display: none): there is nothing to save
-  l[id] = toLayout(r, unit(), innerWidth, innerHeight);
+  l[id] = toLayout(r, baseUnit(), innerWidth, innerHeight);
   saveLayout(l);
 }
 function drag(handle, el, done) {
@@ -287,7 +291,7 @@ function resizeGrip(grip, el, done) {
 function refit() {
   if (widgetMode) return;                              // a floating window fills its own page, it has no saved layout to go back to
   if (!windowsDrawn(document.documentElement.dataset.mode)) return;
-  const u = unit(), layouts = loadLayout();
+  const u = baseUnit(), layouts = loadLayout();
   open.forEach(({ el }, id) => {
     const l = layouts[id];
     if (!l) return;
@@ -296,8 +300,8 @@ function refit() {
   });
 }
 addEventListener("resize", refit);
-// the unit changed (a zoom): every window is placed and sized again from its saved layout, which is in design px, so frames follow the zoom;
-// and what must fit is measured again at the new size
+// the unit changed (a zoom): what must fit in each window is measured again at the new size. The frames stay (they are made of the unit
+// without the zoom); a window only grows when its content, zoomed in, no longer fits, and goes back to its size when zoomed out again
 addEventListener("jarvis-widget-zoom", (e) => {                     // one window's zoom changed (here or in another window of the UI): its content only
   for (const { el } of open.values()) if (!e.detail || !e.detail.id || el.dataset.id === e.detail.id) { applyZoom(el); requestAnimationFrame(() => applyMin(el)); }
 });

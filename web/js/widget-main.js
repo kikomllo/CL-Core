@@ -19,18 +19,14 @@ const DEFS = [mediaWindow, lightsWindow, remindersWindow, todoWindow, notesWindo
 // One fluid unit like the dashboard's, from the monitor the window is on (not the window: it is small), and again when it is dragged to another.
 function setUnit() {
   const long = Math.max(screen.width, screen.height), short = Math.min(screen.width, screen.height);
-  const u = Math.min(long / 1920, short / 1080) * getGlobal() + "px";
+  const base = Math.min(long / 1920, short / 1080), u = base * getGlobal() + "px";
+  document.documentElement.style.setProperty("--ub", base + "px");
   document.documentElement.style.setProperty("--u", u); document.documentElement.style.setProperty("--ug", u);
   window.dispatchEvent(new Event("jarvis-unit"));
 }
 setUnit(); addEventListener("resize", setUnit);
-// the global zoom: the content scales, and the window (its frame) by the same ratio, like the dashboard's windows
-let lastZoom = getGlobal();
-addEventListener("jarvis-zoom", () => {
-  const ratio = getGlobal() / lastZoom; lastZoom = getGlobal();
-  setUnit();
-  if (window.jarvisShell && window.jarvisShell.resizeSelf) window.jarvisShell.resizeSelf(Math.round(innerWidth * ratio), Math.round(innerHeight * ratio));
-});
+// the global zoom: the content scales, the window (its frame) stays as it is, like the dashboard's windows (it only grows if its content no longer fits)
+addEventListener("jarvis-zoom", setUnit);
 startZoomInput();
 
 fetch("/api/config").then((r) => r.json()).catch(() => ({})).then((s) => setSkin(s.theme));

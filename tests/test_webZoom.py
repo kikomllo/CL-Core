@@ -110,7 +110,7 @@ def test_a_window_zoom_is_a_unit_of_its_own_and_never_changes_its_frame():
     assert "el.style.setProperty(\"--u\", `calc(var(--ug) * ${z})`)" in ui          # content only: the frame's px size is untouched
     assert "export function fitMin(el, u = unitOf(el))" in ui                        # what must fit is measured in the window's own unit
     assert "const unitOf = (el) => unit() * getWidget(el.dataset.id);" in ui
-    assert "toLayout(r, unit()," in ui, "saved frames stay in the global unit, so a window zoom never reaches the layout"
+    assert "toLayout(r, baseUnit()," in ui, "saved frames are made of the unit without any zoom, so no zoom ever reaches the layout"
     assert "--ug: 1px;" in _read("web", "style.css"), "calc(var(--ug) * z) must never be invalid"
     assert 'addEventListener("jarvis-widget-zoom"' in ui and '"jarvis-widget-zoom"' in zoom
 
@@ -120,3 +120,14 @@ def test_ctrl_wheel_over_a_window_is_its_zoom_and_with_alt_the_whole_uis():
     assert "const win = !e.altKey && (" in zoom
     assert "setWidget(win.dataset.id, z); showWidgetBadge(" in zoom
     assert 'document.documentElement.dataset.mode === "widget" && document.querySelector(".win")' in zoom      # a floating window is one window
+
+
+
+def test_frames_are_made_of_the_unzoomed_unit_so_a_global_zoom_leaves_them_alone():
+    """Zooming out used to shrink every window frame (and zooming in to grow it). The frames now keep their size and position and only what is
+    inside them scales: frames use --ub (no zoom), content uses --u."""
+    ui, main, widget = _read("web", "js", "ui.js"), _read("web", "js", "main.js"), _read("web", "js", "widget-main.js")
+    assert 'setProperty("--ub", base + "px")' in main and 'setProperty("--ub", base + "px")' in widget
+    assert "const u = baseUnit(), layout = widgetMode" in ui and "const u = baseUnit(), layouts = loadLayout();" in ui
+    assert "resizeSelf" not in widget, "a floating window's OS window no longer follows the global zoom"
+    assert "--ub: 1px;" in _read("web", "style.css")
