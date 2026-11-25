@@ -1,6 +1,7 @@
 // Shared UI helpers: inline-SVG icons (recoloured with currentColor) and the floating-window manager.
 import { toLayout, fromLayout, windowsDrawn } from "./layout-model.js";
 import { wheelScroll, edges, revealOffset } from "./tabstrip-model.js";
+import { getWidget } from "./zoom.js";
 
 const svgCache = new Map();
 /** Resolves when every icon asked for so far has arrived (a window shown before that has gaps where its icons go). */
@@ -59,6 +60,14 @@ export function enableTabScroll(strip) {
   new MutationObserver(reveal).observe(strip, { childList: true, subtree: true, attributes: true, attributeFilter: ["aria-pressed"] });
   requestAnimationFrame(reveal);
 }
+
+/** A window can have a zoom of its own: its content scales (its --u is the global unit times that zoom), its frame does not. */
+function applyZoom(el) {
+  const z = getWidget(el.dataset.id);
+  if (z === 1) el.style.removeProperty("--u"); else el.style.setProperty("--u", `calc(var(--ug) * ${z})`);
+}
+/** The unit inside a window: the global one times its own zoom (what its minimum size is measured in). */
+const unitOf = (el) => unit() * getWidget(el.dataset.id);
 
 export const unit = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--u")) || 1;
 
@@ -123,7 +132,7 @@ const FIT_FLOOR = { w: 120, h: 80 };                       // design px: below t
 
 /** The smallest {w, h} in px at which `el` (an open window) shows its fixed content. Measures with the live DOM and restores it within the
  *  same task, so nothing is painted in between. */
-export function fitMin(el, u = unit()) {
+export function fitMin(el, u = unitOf(el)) {
   const saved = [];
   const touch = (n, props) => { saved.push([n, n.style.cssText]); Object.assign(n.style, props); };
   const elastic = new Set();
@@ -170,6 +179,7 @@ export function openWindow(def, at) {
   if (open.has(def.id)) { focus(open.get(def.id).el); return open.get(def.id); }
   const u = unit(), layout = widgetMode ? undefined : loadLayout()[def.id];
   const el = h("div", { class: "win panel", "data-id": def.id });
+  applyZoom(el);
   // pinned (in the dashboard): the dimmed pin_off icon; unpinned (a window of its own): the bright pin icon, like the Qt widgets. Needs the shell.
   const pin = h("button", { class: "chrome-btn pin" + (widgetMode ? " on" : ""), hidden: !canFloat,
     title: widgetMode ? "Pin back into the dashboard" : "Unpin: a window of its own, on top of other apps", "aria-label": widgetMode ? "Pin" : "Unpin",
@@ -288,5 +298,8 @@ function refit() {
 addEventListener("resize", refit);
 // the unit changed (a zoom): every window is placed and sized again from its saved layout, which is in design px, so frames follow the zoom;
 // and what must fit is measured again at the new size
+addEventListener("jarvis-widget-zoom", (e) => {                     // one window's zoom changed (here or in another window of the UI): its content only
+  for (const { el } of open.values()) if (!e.detail || !e.detail.id || el.dataset.id === e.detail.id) { applyZoom(el); requestAnimationFrame(() => applyMin(el)); }
+});
 addEventListener("jarvis-unit", () => { refit(); for (const { el } of open.values()) requestAnimationFrame(() => applyMin(el)); });
 addEventListener("jarvis-mode", refit);               // fired by shell.js once the mode changed: the screen the dashboard returns to may differ

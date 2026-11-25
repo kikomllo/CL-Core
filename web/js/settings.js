@@ -4,7 +4,7 @@
 import { bridge } from "./bridge.js";
 import { h, enableTabScroll, loadUiState, saveUiState } from "./ui.js";
 import { savedChoice } from "./session-model.js";
-import { getGlobal, setGlobal } from "./zoom.js";
+import { getGlobal, setGlobal, resetWidgets } from "./zoom.js";
 import { GLOBAL_RANGE, percent } from "./zoom-model.js";
 import { audioTab, keybindsTab, presenceTab } from "./settings-tabs.js";
 import { lightsTab, spotifyTab } from "./settings-lights.js";
@@ -20,7 +20,7 @@ const TABS = [
       toggle("enable_followup", "Follow-ups", (on) => bridge.act("state.daemon", { action: on ? "followup_on" : "followup_off" })),
     ] },
     { title: "Startup", rows: [toggle("start_on_login", "Start JARVIS when I log in")] },
-    { title: "Display", rows: [{ kind: "zoom", label: "Zoom (Ctrl + / - / 0)" }] },
+    { title: "Display", rows: [{ kind: "zoom", label: "Zoom (Ctrl + / - / 0)" }, { kind: "zoomreset", label: "Zoom of single windows (Ctrl + wheel)" }] },
     { title: "Persona (look and voice, needs a reboot)", rows: [select("theme", "Assistant", ["jarvis", "ultron"], { reboot: true })] },
     { title: "System Core", rows: [select("ecosystem_state", "Ecosystem Mode", ["normal", "debug", "background"], { after: (v) => bridge.act("state.change", { action: v }) })] },
     { title: "Inference Engine", rows: [
@@ -76,6 +76,7 @@ export const settingsWindow = {
     }
 
     function control(row) {
+      if (row.kind === "zoomreset") return h("button", { class: "btn", onclick: resetWidgets }, "Reset all");
       if (row.kind === "zoom") {                       // the zoom of the whole UI: client-side (localStorage), not a core.json setting
         const range = h("input", { type: "range", class: "slider", min: percent(GLOBAL_RANGE[0]), max: percent(GLOBAL_RANGE[1]), step: 5, "aria-label": row.label });
         const val = h("span", { class: "dim" }, "");
