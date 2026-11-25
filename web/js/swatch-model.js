@@ -82,10 +82,9 @@ export function modeAfter(fields) {
   return null;
 }
 
-/** The brightness (1-100) a colour that is not at full value asks for, or null at full value: the darkness of a mix such as (0, 100, 0) is not
- *  part of a bulb's hue, so it becomes brightness, as the light a screen would give (the brightest channel to the power gamma). The same rule as
- *  src/utils/clColour.py. */
-export function darkBrightness(rgb, gamma = 1) {
-  const v = Math.pow(Math.max(...rgb) / 255, gamma);
-  return v >= 0.995 ? null : Math.max(1, Math.min(100, Math.round(100 * v)));
-}
+/** The same rules as src/utils/clColour.py. The brightness slider is the overall brightness; a colour's own value (its brightest channel as a fraction
+ *  of 255, to the power gamma: the light a screen would give) scales it, because the darkness of a mix such as (0, 100, 0) is not part of a bulb's hue. */
+export const valueFactor = (rgb, gamma = 1) => Math.pow(Math.max(...rgb) / 255, gamma);
+
+/** The brightness (1-100) to send for an overall brightness `master` and a colour's `factor`. */
+export const composeBrightness = (master, factor) => (factor >= 0.995 ? master : Math.max(1, Math.min(100, Math.round(master * factor))));

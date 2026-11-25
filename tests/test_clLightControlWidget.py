@@ -316,3 +316,35 @@ class TestCustomSwatchesAreKept:
         w = _widget(mocker)
         w._save_swatch("magenta", [1, 2, 3])
         assert "Failed to save the colour swatch" in caplog.text
+
+
+class TestOverallBrightnessIsRemembered:
+    """The bulb only reports the brightness it was sent (overall brightness times the colour's value); the widget remembers the overall one."""
+
+    def test_reopening_after_a_dark_colour_keeps_the_overall_brightness_and_does_not_darken_twice(self, qapp, mocker):
+        w = _widget(mocker)
+        w.update_status(_status())
+        w.light_rows["bedroom"]["colour_btn"].click()
+        picker = w._picker
+        picker.gamma = 2.2
+        picker._on_customise("red")
+        picker._wheel.rgb_sliders[0].setValue(100)                                # a dark red: the bulb is sent 13 % of the overall brightness
+        sent = w.light_rows["bedroom"]["brightness"]
+        assert sent < picker.lum
+        overall = picker.lum
+        w._close_colour_picker()
+        w.light_rows["bedroom"]["colour_btn"].click()                             # the bulb reports what it was sent
+        reopened = w._picker
+        assert reopened.lum == overall and reopened.factor < 1 and reopened.lum_slider.value() == overall
+        w._close_colour_picker()
+
+    def test_a_bulb_changed_elsewhere_is_taken_as_it_reports(self, qapp, mocker):
+        w = _widget(mocker)
+        w.update_status(_status())
+        w.light_rows["bedroom"]["colour_btn"].click()
+        w._picker._send({"rgb": [100, 0, 0], "lum": 100})
+        w._close_colour_picker()
+        w.light_rows["bedroom"]["brightness"] = 35                                # changed in the app, say
+        w.light_rows["bedroom"]["colour_btn"].click()
+        assert w._picker.lum == 35 and w._picker.factor == 1.0
+        w._close_colour_picker()

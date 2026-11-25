@@ -9,7 +9,7 @@ the new colour is kept (core.json `light_swatches`, saved by the widget) and tha
 """
 import colorsys
 import math
-from utils.clColour import dark_brightness
+from utils.clColour import value_factor, compose_brightness
 from PyQt6.QtWidgets import QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel, QAbstractButton, QSlider, QSizePolicy, QPushButton
 from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor as RawColor, QPainter, QPen, QLinearGradient, QGuiApplication, QImage
@@ -321,7 +321,6 @@ class ColourWheelPopup(QWidget):
     def __init__(self, swatch, parent=None):
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.swatch = swatch
-        self.from_sliders = False                       # True while `changed` comes from a red / green / blue slider (the wheel only makes full-value colours)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         outer = QVBoxLayout(self)
@@ -396,11 +395,7 @@ class ColourWheelPopup(QWidget):
         rgb[index] = int(value)
         self._show_rgb(rgb)
         self.wheel.set_rgb(tuple(rgb))
-        self.from_sliders = True
-        try:
-            self.changed.emit(tuple(rgb))
-        finally:
-            self.from_sliders = False
+        self.changed.emit(tuple(rgb))
         if not self.rgb_sliders[index].isSliderDown():               # a key press: there is no release to keep it on
             self.saved.emit(tuple(rgb))
 
@@ -430,6 +425,7 @@ class ColourPicker(QWidget):
     """The popup. Emits `chosen(fields)` with the light.set fields to send (color / temp / lum); it never talks to
     the lights itself, so the widget decides how it is dispatched. Closes on a click outside or Escape (Qt.Popup)."""
     chosen = pyqtSignal(dict)
+    lumMemory = pyqtSignal(int, float, int)         # (overall brightness, colour factor, brightness sent): what to remember for the next time the popup opens
     swatchChanged = pyqtSignal(str, object)        # (slot name, [r, g, b]) when the user made it another colour, (slot name, None) when reset
 
     def __init__(self, name, brand, state=None, parent=None):
@@ -437,7 +433,8 @@ class ColourPicker(QWidget):
         state = state or {}
         self.name, self.brand = name, str(brand).lower()
         self.gamma = float(state.get("gamma") or 1.0)               # how a darker mix maps to brightness (core.json light_colour_gamma)
-        self.lum = int(state.get("brightness") or 100)
+        self.lum = int(state.get("brightness") or 100)               # the overall brightness: the slider, never overwritten by a colour
+        self.factor = float(state.get("factor") or 1.0)              # how dark the colour the bulb has now is (1 = full value): it scales the slider
         self.temp = kelvin_to_temp(self.brand, state["kelvin"]) if state.get("kelvin") else 50
         self._pending = {}
         self._debounce = QTimer(self)
@@ -577,13 +574,6 @@ class ColourPicker(QWidget):
         swatch.set_colour(rgb, True)
         for sw in self.swatches:
             sw.setChecked(sw is swatch)
-        if self._wheel is not None and self._wheel.from_sliders:
-            # The three sliders are the colour and its brightness: the brightest channel at 255 is full brightness, less is darker (the wheel keeps the slider's).
-            self.lum = dark_brightness(rgb, self.gamma) or 100
-            self.lum_slider.blockSignals(True)
-            self.lum_slider.setValue(self.lum)
-            self.lum_slider.blockSignals(False)
-            self._show_values()
         self._live({"rgb": list(rgb), "lum": self.lum})
 
     def _wheel_saved(self, swatch):
@@ -636,13 +626,14 @@ class ColourPicker(QWidget):
         self._debounce.stop()
         self._pending = {}
         fields = dict(fields)
-        dark = dark_brightness(fields["rgb"], self.gamma) if fields.get("rgb") else None
-        if dark is not None:                                         # a mix that is not at full value is a darker light: the brightness shows it
-            fields["lum"] = self.lum = dark
-            self.lum_slider.blockSignals(True)
-            self.lum_slider.setValue(dark)
-            self.lum_slider.blockSignals(False)
-            self._show_values()
+        # The slider is the overall brightness and the colour's own value scales it: a dark mix is a dimmer light than a bright one; a name or a white is at full value.
+        if fields.get("rgb"):
+            self.factor = value_factor(fields["rgb"], self.gamma)
+        elif "color" in fields or "temp" in fields:
+            self.factor = 1.0
+        if "lum" in fields:
+            fields["lum"] = compose_brightness(int(fields["lum"]), self.factor)
+            self.lumMemory.emit(self.lum, self.factor, fields["lum"])
         self.chosen.emit(fields)
 
     def closeEvent(self, event):

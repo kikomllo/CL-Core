@@ -3,7 +3,7 @@
 import { bridge } from "./bridge.js";
 import { h, icon } from "./ui.js";
 import { pickerSpot } from "./picker-spot.js";
-import { mergeSwatches, swatchCommand, wheelColour, knobOffset, rgbToHsv, liveSender, isWhiteLight, modeAfter, darkBrightness } from "./swatch-model.js";
+import { mergeSwatches, swatchCommand, wheelColour, knobOffset, rgbToHsv, liveSender, isWhiteLight, modeAfter, valueFactor, composeBrightness } from "./swatch-model.js";
 
 const PALETTE = [["red", [255, 0, 0]], ["orange", [255, 165, 0]], ["yellow", [255, 255, 0]], ["green", [0, 255, 0]],
   ["cyan", [0, 255, 255]], ["blue", [0, 0, 255]], ["purple", [128, 0, 128]], ["hot pink", [255, 105, 180]]];
@@ -23,6 +23,12 @@ function whiteTint(k) {
 }
 // The colour swatches the user changed ({name: [r, g, b]}), kept in core.json (settings.light_swatches) through /api/settings so the Qt picker and
 // every window of the UI agree. Read when the window builds and again after every picker opens, so a change made elsewhere shows next time.
+// The overall brightness the user chose for a light, and how dark its colour is, kept per light: the bulb only reports the brightness it was sent (the two multiplied),
+// so reopening the picker would take that for the overall brightness and a dark colour would darken twice. Valid only while the bulb still reports what was sent.
+const LUM_KEY = "jarvis.lightlum.v1";
+const loadLum = () => { try { return JSON.parse(localStorage.getItem(LUM_KEY)) || {}; } catch { return {}; } };
+const saveLum = (name, v) => { try { localStorage.setItem(LUM_KEY, JSON.stringify({ ...loadLum(), [name]: v })); } catch { /* private mode */ } };
+
 let savedSwatches = {}, colourGamma = 1;          // colourGamma: core.json settings.light_colour_gamma, how a darker mix maps to brightness
 async function loadSwatches() {
   try {
@@ -87,16 +93,19 @@ export const lightsWindow = {
     function openPicker(l, anchor) {
       const same = picker?.t === l.name; closePicker(); if (same) return;
       const t = target(l.name), brand = l.brand || "";
-      let lum = l.brightness ?? 100, temp = l.kelvin ? kToTemp(brand, l.kelvin) : 50, timer = null, pending = null;
+      const kept = loadLum()[l.name];
+      const still = kept && kept.sent === l.brightness;                                // the bulb is as this picker left it: its overall brightness and colour value still hold
+      let lum = still ? kept.master : (l.brightness ?? 100), factor = still ? kept.factor : 1;
+      let temp = l.kelvin ? kToTemp(brand, l.kelvin) : 50, timer = null, pending = null;
       let tempSlider = null;
       // The temperature slider belongs to white mode: locked while the bulb is a colour, unlocked by a white swatch (or by the bulb already being white).
       const setWhite = (isWhite) => tempSlider?.setLocked(!isWhite);
-      let lumSlider = null;
       const send = (f) => {
         clearTimeout(timer); pending = null;
-        // A mix that is not at full value (a dark green from the sliders) is a darker light: its darkness becomes the brightness, and the slider shows it.
-        const dark = Array.isArray(f.rgb) ? darkBrightness(f.rgb, colourGamma) : null;
-        if (dark !== null) { lum = dark; lumSlider?.setValue(dark); f = { ...f, lum: dark }; }
+        // The slider is the overall brightness and the colour's own value scales it: a dark mix (0, 100, 0) is a dimmer light than a bright one (0, 255, 0),
+        // and a name or a white is at full value.
+        if (Array.isArray(f.rgb)) factor = valueFactor(f.rgb, colourGamma); else if (f.color !== undefined || f.temp !== undefined) factor = 1;
+        if (f.lum !== undefined) { f = { ...f, lum: composeBrightness(f.lum, factor) }; saveLum(l.name, { master: lum, factor, sent: f.lum }); }
         bridge.act("light.set", { action: "on", light_target: t, silent: true, ...f });
         const m = modeAfter(f); if (m) setWhite(m === "white");
       };
@@ -124,13 +133,7 @@ export const lightsWindow = {
         const rows = ["R", "G", "B"].map((letter, i) => {
           const input = h("input", { type: "range", class: "slider rgb-slider", min: 0, max: 255, value: s.rgb[i], "aria-label": letter });
           const num = h("span", { class: "rgb-v dim" }, String(s.rgb[i]));
-          input.addEventListener("input", () => {
-            const c = [...s.rgb]; c[i] = +input.value;
-            // The three sliders are the colour and its brightness: the brightest channel at 255 is full brightness, less is darker (a wheel colour keeps the slider's).
-            const b = darkBrightness(c, colourGamma) ?? 100;
-            lum = b; lumSlider?.setValue(b);
-            show(c); live.push(c);
-          });
+          input.addEventListener("input", () => { const c = [...s.rgb]; c[i] = +input.value; show(c); live.push(c); });
           input.addEventListener("change", release);                         // a key press or a lifted drag: kept for good
           return { input, num, el: h("div", { class: "rgb-row" }, h("span", { class: "rgb-l" }, letter), input, num) };
         });
@@ -180,7 +183,7 @@ export const lightsWindow = {
         h("div", { class: "pk-title" }, l.name, h("span", { class: "dim" }, { wiz: " · WiZ", tapo: " · Tapo" }[String(brand).toLowerCase()] || "")),
         h("div", { class: "pk-swatches" }, swatches.map(paletteSw)),
         h("div", { class: "pk-swatches" }, WHITES.map(([n, tp, lab]) => sw(n, whiteTint(tempToK(brand, tp)), lab, tp))),
-        lumSlider = slider("BRIGHTNESS", lum, 1, 100, (v) => v + " %", (v) => { lum = v; queue({ lum }); }),
+        slider("BRIGHTNESS", lum, 1, 100, (v) => v + " %", (v) => { lum = v; queue({ lum }); }),
         tempSlider = slider("TEMPERATURE", temp, 0, 100, (v) => tempToK(brand, v) + " K", (v) => { temp = v; queue({ temp, lum }); }));
       setWhite(isWhiteLight(l));
       document.body.append(el);
