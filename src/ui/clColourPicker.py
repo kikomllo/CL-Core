@@ -614,8 +614,9 @@ class ColourPicker(QWidget):
         self._set_lum_slider(compose_brightness(self.lum, self.factor))        # after a drag it shows what the bulb really got
 
     def _on_lum(self, value):
-        # What the slider says is the brightness of the bulb: for a dark colour the overall brightness is what gives it.
-        self.lum = int(value) if self.factor >= 0.995 else min(100, int(round(int(value) / self.factor)))
+        # Dragging the slider is the user choosing the brightness: any value, whatever the colour (a colour's darkness only sets the brightness when it is picked).
+        self.lum = int(value)
+        self.factor = 1.0
         self._show_values()
         self._queue({"lum": self.lum})
 

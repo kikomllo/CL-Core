@@ -101,9 +101,8 @@ export const lightsWindow = {
       // The temperature slider belongs to white mode: locked while the bulb is a colour, unlocked by a white swatch (or by the bulb already being white).
       const setWhite = (isWhite) => tempSlider?.setLocked(!isWhite);
       let lumSlider = null;
-      // The slider shows the brightness the bulb really has (the overall brightness times the colour's value), and moves when a colour changes it. What the user
-      // drags it to is that brightness: for a dark colour the overall brightness is what gives it (the most a dark colour can reach is its own value).
-      const overallFor = (shown) => (factor >= 0.995 ? shown : Math.min(100, Math.round(shown / factor)));
+      // The slider shows the brightness the bulb really has (the overall brightness times the colour's value), and moves when a colour changes it. Dragging it is the
+      // user choosing the brightness: any value from 1 to 100, whatever the colour (a colour's darkness only sets the brightness when it is picked).
       const send = (f) => {
         clearTimeout(timer); pending = null;
         // The slider is the overall brightness and the colour's own value scales it: a dark mix (0, 100, 0) is a dimmer light than a bright one (0, 255, 0),
@@ -193,7 +192,7 @@ export const lightsWindow = {
         h("div", { class: "pk-title" }, l.name, h("span", { class: "dim" }, { wiz: " · WiZ", tapo: " · Tapo" }[String(brand).toLowerCase()] || "")),
         h("div", { class: "pk-swatches" }, swatches.map(paletteSw)),
         h("div", { class: "pk-swatches" }, WHITES.map(([n, tp, lab]) => sw(n, whiteTint(tempToK(brand, tp)), lab, tp))),
-        lumSlider = slider("BRIGHTNESS", composeBrightness(lum, factor), 1, 100, (v) => v + " %", (v) => { lum = overallFor(v); queue({ lum }); }),
+        lumSlider = slider("BRIGHTNESS", composeBrightness(lum, factor), 1, 100, (v) => v + " %", (v) => { lum = v; factor = 1; queue({ lum }); }),
         tempSlider = slider("TEMPERATURE", temp, 0, 100, (v) => tempToK(brand, v) + " K", (v) => { temp = v; queue({ temp, lum }); }));
       lumSlider.onRelease = () => lumSlider.setValue(composeBrightness(lum, factor));      // after a drag it shows what the bulb really got
       setWhite(isWhiteLight(l));

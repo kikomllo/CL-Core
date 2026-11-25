@@ -470,7 +470,7 @@ class TestDarkerMixesAreDarkerLights:
         assert got[-1]["lum"] == 80 and picker.lum_slider.value() == 80
         picker.close()
 
-    def test_dragging_the_slider_sets_the_brightness_the_bulb_has_and_a_dark_colour_cannot_pass_its_own(self, qapp):
+    def test_dragging_the_slider_sets_the_brightness_the_bulb_has_whatever_the_colour(self, qapp):
         picker, got = _picker(state={"brightness": 100, "gamma": 2.2})
         picker._on_customise("red")
         picker._wheel.rgb_sliders[0].setValue(100)                                # the bulb is at 13 %
@@ -478,11 +478,22 @@ class TestDarkerMixesAreDarkerLights:
         picker.lum_slider.setValue(8)
         picker._flush()
         assert got[-1] == {"lum": 8}                                              # what the slider says is what the bulb gets
-        picker.lum_slider.setValue(60)                                            # more than this colour can give
+        picker.lum_slider.setValue(100)                                           # a dark colour can still be at full brightness
         picker._flush()
-        assert got[-1] == {"lum": 13}                                             # its own value is the most
+        assert got[-1] == {"lum": 100}
         picker.lum_slider.sliderReleased.emit()
-        assert picker.lum_slider.value() == 13                                    # and the slider shows the truth after the drag
+        assert picker.lum_slider.value() == 100
+        picker.close()
+
+    def test_a_dark_swatch_can_be_taken_to_full_brightness_and_a_colour_picked_after_keeps_it(self, qapp):
+        picker, got = _picker(state={"brightness": 100, "gamma": 2.2, "swatches": {"red": [128, 0, 191]}})
+        next(s for s in picker.swatches if s.name == "red").click()               # the purple: the bulb goes to 53 %
+        assert got[-1]["lum"] == 53 and picker.lum_slider.value() == 53
+        picker.lum_slider.setValue(100)                                           # the user wants it at full
+        picker._flush()
+        assert got[-1] == {"lum": 100}
+        next(s for s in picker.swatches if s.name == "blue").click()
+        assert got[-1] == {"color": "blue", "lum": 100}
         picker.close()
 
     def test_a_swatch_click_moves_the_slider_to_the_brightness_it_gave_the_bulb(self, qapp):
