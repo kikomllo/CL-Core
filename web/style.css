@@ -120,7 +120,7 @@ input { font: inherit; color: inherit; }
   background: linear-gradient(135deg, transparent 55%, rgba(255,180,0,.45) 55% 62%, transparent 62% 75%, rgba(255,180,0,.45) 75% 82%, transparent 82%); }
 
 /* ---------- dock: pill row in the left margin, command bar centred (the "Widget Dock Row" artifact) ---------- */
-#dock { position: fixed; left: 0; right: 0; bottom: calc(40 * var(--u)); height: calc(44 * var(--u)); z-index: 5000; pointer-events: none; }
+#dock { position: fixed; left: 0; right: 0; bottom: calc(40 * var(--u)); height: calc(44 * var(--u)); z-index: 8; pointer-events: none; }   /* above the lyrics (5), below the windows (#widgets, 10): a window dragged over the pills or the command bar covers them and keeps all its clicks */
 #dock > * { pointer-events: auto; }
 .text-bar { position: absolute; left: 50%; top: 0; bottom: 0; width: min(calc(600 * var(--u)), calc(100% - 40 * var(--u))); transform: translateX(-50%);
   display: flex; align-items: center; border: 1px solid var(--panel-border); border-radius: 999px; background: rgba(15,9,4,.55); padding: 0 calc(20 * var(--u)); }
