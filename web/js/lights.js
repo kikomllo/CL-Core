@@ -40,13 +40,14 @@ export const lightsWindow = {
 
     function row(l) {
       const t = target(l.name), off = !!l.offline, c = css(shown(l));
+      const ic = l.kind === "plug" ? "plug.svg" : "lights.svg";                   // a plug (the heater) is not a bulb
       // The bulb disc shows the light's state and colour, and clicking it opens the colour popover (a light without colour is just the indicator).
       const discStyle = l.is_on && !off ? `background:${c};box-shadow:0 0 calc(12 * var(--u)) ${c}66` : "";
       const discClass = "disc" + (l.is_on && !off ? " on" : "");
       const disc = l.colour === false
-        ? h("span", { class: discClass, style: discStyle }, icon("lights.svg", { size: 18 }))
+        ? h("span", { class: discClass, style: discStyle }, icon(ic, { size: 18 }))
         : h("button", { class: discClass + " pick", "aria-label": `Colour of ${l.name}`, "aria-haspopup": "dialog", disabled: off, style: discStyle,
-            onclick: (e) => openPicker(l, e.currentTarget) }, icon("lights.svg", { size: 18 }));
+            onclick: (e) => openPicker(l, e.currentTarget) }, icon(ic, { size: 18 }));
       const sw = h("button", { class: "switch" + (l.is_on ? " on" : ""), role: "switch", "aria-checked": String(!!l.is_on), "aria-label": l.name, disabled: off,
         onclick: () => { bridge.act("light.set", { action: "toggle", light_target: t, silent: true }); l.is_on = !l.is_on; render(); } }, h("i"));
       const rm = h("button", { class: "bare", title: "Remove light", "aria-label": "Remove " + l.name,
