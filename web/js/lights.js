@@ -119,7 +119,7 @@ export const lightsWindow = {
           const f = rgbToHsv(fallback); s.rgb = fallback; s.custom = false; swEl.style.setProperty("--c", css(fallback)); place(f.h, f.s); saveSwatch(s.name, null);
         } }, "Reset");
         const el = h("div", { class: "picker panel wheel-pop" },
-          h("div", { class: "pk-title" }, s.name, h("span", { class: "dim" }, " · drag to change it")),
+          h("div", { class: "pk-title" }, "Drag to change the colour"),
           disc, h("div", { class: "pk-row" }, reset, h("button", { class: "btn", onclick: closeWheel }, "Done")));
         document.body.append(el);
         const spot = pickerSpot(swEl.getBoundingClientRect(), el.getBoundingClientRect(), { width: innerWidth, height: innerHeight });

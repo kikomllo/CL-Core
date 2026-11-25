@@ -120,3 +120,9 @@ class TestNoNamesOnTheSwatches:
         src = open(os.path.join(ROOT, "web", "js", "lights.js"), encoding="utf-8").read()
         for m in re.finditer(r'h\("button", \{ class: "sw"[^}]*\}', src):
             assert "title" not in m.group(0) and "s.name" not in m.group(0) and ": name" not in m.group(0), m.group(0)
+
+
+def test_the_web_wheel_title_has_no_swatch_name():
+    src = open(os.path.join(ROOT, "web", "js", "lights.js"), encoding="utf-8").read()
+    title = [l for l in src.splitlines() if "Drag to change the colour" in l]
+    assert len(title) == 1 and "s.name" not in title[0]

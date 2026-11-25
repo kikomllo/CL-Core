@@ -325,7 +325,7 @@ class ColourWheelPopup(QWidget):
         lay = QVBoxLayout(card)
         lay.setContentsMargins(12, 12, 12, 12)
         lay.setSpacing(10)
-        title = QLabel(f"{swatch.name} · drag to change it")
+        title = QLabel("Drag to change the colour")
         title.setStyleSheet(f"color: {Theme.C_TEXT}; font-size: {Theme.F_TINY}; border: none; background: transparent;")
         lay.addWidget(title)
         self.wheel = ColourWheel(swatch.rgb)

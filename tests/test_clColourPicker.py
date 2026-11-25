@@ -323,3 +323,13 @@ class TestCustomSwatches:
         from ui.clColourPicker import PALETTE
         from utils import clWebSettings
         assert tuple(n for n, _ in PALETTE) == clWebSettings.SWATCH_NAMES
+
+
+class TestWheelTitleHasNoName:
+    def test_the_wheel_popup_says_what_to_do_and_not_which_swatch_it_is(self, qapp):
+        from PyQt6.QtWidgets import QLabel
+        picker, _ = _picker()
+        picker._on_customise("red")
+        texts = [l.text() for l in picker._wheel.findChildren(QLabel)]
+        assert texts == ["Drag to change the colour"]
+        picker.close()
