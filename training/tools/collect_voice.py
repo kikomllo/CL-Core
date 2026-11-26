@@ -18,6 +18,7 @@ Usage:
     python training/tools/collect_voice.py record                  # guided prompts
     python training/tools/collect_voice.py record --free --transcribe
     python training/tools/collect_voice.py capture --transcribe   # play clips, press Enter to stop
+    python training/tools/collect_voice.py capture --unattended --hours 8 --device altifalantes   # overnight, recording that output (list-devices shows them)
     python training/tools/collect_voice.py capture --unattended --hours 8   # overnight: no keys, saved window by window into training/data/voice_overnight/<date>
     python training/tools/collect_voice.py adopt training/data/voice_overnight/<date>   # after `review --out` on it: add its clips to the main dataset
     python training/tools/collect_voice.py import ~/Videos ~/rec.m4a --transcribe
@@ -77,6 +78,7 @@ MEDIA_EXTS = {
 }
 
 ARGS_SOURCE = None
+ARGS_DEVICE = None          # Windows: part of the name of the output to capture (None = whatever the default output is)
 FRAME_MS = 20
 TARGET_SPEECH_DB = -20.0
 PEAK_LIMIT = 0.97
@@ -692,6 +694,25 @@ def cmd_record(args):
     cmd_stats(args)
 
 
+def loopback_outputs(pa):
+    """Every output whose playback can be captured (Windows WASAPI loopback), as PyAudioWPatch's device dicts."""
+    return list(pa.get_loopback_device_info_generator())
+
+
+def pick_loopback(pa, wanted=None):
+    """The output to capture: the default one, or the one whose name contains `wanted` (case-insensitive). Exits with the list when the name matches none or
+    several: a guess here would record the wrong audio all night."""
+    if not wanted:
+        return pa.get_default_wasapi_loopback()
+    outputs = loopback_outputs(pa)
+    hits = [o for o in outputs if wanted.lower() in o["name"].lower()]
+    if len(hits) == 1:
+        return hits[0]
+    listing = "\n".join(f"    {o['name']}  ({int(o['defaultSampleRate'])} Hz)" for o in outputs)
+    sys.exit(f"--device '{wanted}' matches {'no output' if not hits else str(len(hits)) + ' outputs'}; "
+             f"use a part of the name that picks exactly one of:\n{listing}")
+
+
 def _open_system_audio():
     """Returns (read_chunk, start, stop, rate, label) for capturing what the PC is playing.
     Linux: `parec` on the default sink's monitor (PulseAudio/PipeWire). Windows: WASAPI
@@ -702,7 +723,11 @@ def _open_system_audio():
         except ImportError:
             sys.exit("Windows system-audio capture needs:  pip install PyAudioWPatch")
         pa = pa_mod.PyAudio()
-        info = pa.get_default_wasapi_loopback()
+        try:
+            info = pick_loopback(pa, ARGS_DEVICE)
+        except SystemExit:
+            pa.terminate()
+            raise
         rate, ch = int(info["defaultSampleRate"]), int(info["maxInputChannels"])
         stream = pa.open(format=pa_mod.paInt16, channels=ch, rate=rate, input=True,
                          input_device_index=info["index"], frames_per_buffer=1024)
@@ -814,6 +839,7 @@ class SystemAudioReader:
                 continue
             self.failures = 0
             self.label, self.rate = label, rate
+            self.log(f"[reader] recording from: {label} ({rate} Hz)")
             self.opened_name = self.device_name_fn()
             self.last_data = self.clock()
             try:
@@ -859,19 +885,20 @@ class SystemAudioReader:
                 self._restart(f"the output changed from '{self.opened_name}' to '{name}'")
 
 
-def loopback_device_name():
-    """The output the system audio is taken from right now. A fresh PortAudio instance each time: the device list is read once per instance, so a long-lived
-    one never sees the default output change. None where it cannot tell (Linux: parec follows the default monitor by itself)."""
+def loopback_device_name(wanted=None):
+    """The output the system audio is taken from right now: the default one (a fresh PortAudio instance each time: the device list is read once per instance, so a
+    long-lived one never sees the default output change) or, with `wanted`, the one that name picks (None while it is absent or ambiguous). None where it cannot
+    tell (Linux: parec follows the default monitor by itself)."""
     if sys.platform != "win32":
         return None
     try:
         import pyaudiowpatch as pa_mod
         pa = pa_mod.PyAudio()
         try:
-            return pa.get_default_wasapi_loopback()["name"]
+            return pick_loopback(pa, wanted)["name"]
         finally:
             pa.terminate()
-    except Exception:
+    except (Exception, SystemExit):
         return None
 
 
@@ -951,8 +978,9 @@ class UnattendedCapture:
     """Windows of audio in, saved clips out. `add()` takes what the reader delivers, `step()` cuts and processes a window when one is ready, `finish()`
     processes what is left. Every window's result is on disk before the next one starts."""
 
-    def __init__(self, args, stage_ds, ref_envs=(), raw_dir=None, log=print, process=None, stamp=None):
+    def __init__(self, args, stage_ds, ref_envs=(), raw_dir=None, log=print, process=None, stamp=None, label=lambda: None):
         self.args, self.ds, self.ref_envs, self.log = args, stage_ds, list(ref_envs), log
+        self.label = label                      # what is being recorded, for the log
         self.sr = args.sr
         self.buffer = WindowBuffer(self.sr)
         self.raw_dir = raw_dir
@@ -1006,7 +1034,9 @@ class UnattendedCapture:
         if self.raw_dir and (policy == "all" or (policy == "hits" and added)):
             os.makedirs(self.raw_dir, exist_ok=True)
             wavfile.write(os.path.join(self.raw_dir, f"overnight_{self.stamp}_w{self.windows:03d}.wav"), self.sr, (np.clip(x, -1, 1) * 32767).astype(np.int16))
-        self.log(f"[window {self.windows}] {len(x) / self.sr / 60:.1f} min -> kept {len(added)}, rejected: {summarize(rejects)}  (total {self.clips} clips)")
+        peak = 20 * math.log10(float(np.max(np.abs(x))) + 1e-9) if len(x) else -180.0
+        self.log(f"[window {self.windows}] {len(x) / self.sr / 60:.1f} min from {self.label() or '?'}, peak {peak:.0f} dB -> kept {len(added)}, "
+                 f"rejected: {summarize(rejects)}  (total {self.clips} clips)")
 
 
 def keep_awake(log=print):
@@ -1058,8 +1088,19 @@ def jarvis_is_running(port=64000):
 
 def run_unattended(args, reader=None, clock=time.monotonic):
     """`capture --unattended`: records for --hours (or until Ctrl+C / a STOP file in the staging folder), window by window. Returns a summary dict."""
-    global ARGS_SOURCE
+    global ARGS_SOURCE, ARGS_DEVICE
     ARGS_SOURCE = args.source
+    ARGS_DEVICE = getattr(args, "device", None)
+    if reader is None and sys.platform == "win32" and ARGS_DEVICE:
+        try:                                                  # a name that picks no output, or several, stops here, before anything is created
+            import pyaudiowpatch as pa_mod
+            pa = pa_mod.PyAudio()
+            try:
+                pick_loopback(pa, ARGS_DEVICE)
+            finally:
+                pa.terminate()
+        except ImportError:
+            sys.exit("Windows system-audio capture needs:  pip install PyAudioWPatch")
     stamp = time.strftime("%Y%m%d_%H%M%S")
     stage = args.stage_dir or os.path.join(ROOT, "training", "data", "voice_overnight", stamp)
     os.makedirs(stage, exist_ok=True)
@@ -1085,9 +1126,10 @@ def run_unattended(args, reader=None, clock=time.monotonic):
         log("WARNING: the JARVIS ecosystem is running: its microphone will hear what is played (wake word, speech recognition, commands). Stop it for the night.")
     release_awake = keep_awake(log)
     disable_quickedit()
-    reader = reader or SystemAudioReader(_open_system_audio, loopback_device_name, log=log)
-    cap = UnattendedCapture(args, stage_ds, ref, raw_dir=os.path.join(stage, "captures"), log=log, stamp=stamp)
+    reader = reader or SystemAudioReader(_open_system_audio, lambda: loopback_device_name(ARGS_DEVICE), log=log)
+    cap = UnattendedCapture(args, stage_ds, ref, raw_dir=os.path.join(stage, "captures"), log=log, stamp=stamp, label=lambda: reader.label)
     log(f"Unattended capture for {args.hours:g} h -> {stage}")
+    log(f"Output to record: {ARGS_DEVICE + ' (a part of the name)' if ARGS_DEVICE else 'the default output, followed if it changes'}")
     log(f"Windows of ~{args.window_min:g} min cut at a pause; {len(ref)} clips of the main dataset are recognised as repeats; to stop early: Ctrl+C or create {stop_file}")
     started = clock()
     deadline = started + args.hours * 3600
@@ -1118,7 +1160,7 @@ def run_unattended(args, reader=None, clock=time.monotonic):
             reader.check()
             if now - last_status >= 1800:
                 last_status = now
-                log(f"[status] {(now - started) / 3600:.1f} h, {cap.minutes:.0f} min processed, {cap.clips} clips kept, device: {reader.label}, restarts: {reader.restarts}")
+                log(f"[status] {(now - started) / 3600:.1f} h, {cap.minutes:.0f} min processed, {cap.clips} clips kept, recording from: {reader.label}, restarts: {reader.restarts}")
     except KeyboardInterrupt:
         reason = "Ctrl+C"
     finally:
@@ -2046,6 +2088,19 @@ def cmd_list_devices(args):
                 print(f"{i:3d}  {info['name']}  ({int(info['defaultSampleRate'])} Hz)")
     finally:
         pa.terminate()
+    if sys.platform == "win32":
+        try:
+            import pyaudiowpatch as pa_mod
+            pa = pa_mod.PyAudio()
+            try:
+                default = pa.get_default_wasapi_loopback()["name"]
+                print("\nOutputs whose playback `capture` can record (--device NAME picks one by a part of its name; the default is marked):")
+                for o in loopback_outputs(pa):
+                    print(f"     {o['name']}  ({int(o['defaultSampleRate'])} Hz){'   <- default' if o['name'] == default else ''}")
+            finally:
+                pa.terminate()
+        except Exception as e:
+            print(f"(could not list the outputs: {e})")
 
 
 def main():
@@ -2084,6 +2139,8 @@ def main():
 
     p = sub.add_parser("capture", parents=[common], help="record what the PC is playing (system audio)")
     p.add_argument("--source", help="Linux: PulseAudio/PipeWire source name (default: default output's monitor; see list-sources)")
+    p.add_argument("--device", default=None,
+                   help="Windows: record this output instead of the default one, by a part of its name, e.g. --device altifalantes (see list-devices; a name that matches none or several is refused)")
     p.add_argument("--unattended", action="store_true",
                    help="run for hours with no keys to press: windows cut at pauses, processed and saved as it goes, new clips staged apart from the main dataset")
     p.add_argument("--hours", type=float, default=10.0, help="unattended: how long to record (default 10)")

@@ -495,3 +495,137 @@ class TestCommandLine:
         monkeypatch.setattr(sys, "argv", ["collect_voice.py", "adopt", "some/stage"])
         cv.main()
         assert seen[0].stage == "some/stage"
+
+
+# ------------------------------------------------------------------------------------------------ choosing the output
+OUTPUTS = [
+    {"index": 31, "name": "CABLE In 16ch (VB-Audio Virtual Cable) [Loopback]", "defaultSampleRate": 48000.0, "maxInputChannels": 2},
+    {"index": 32, "name": "Headset Earphone (G435 Wireless Gaming Headset) [Loopback]", "defaultSampleRate": 48000.0, "maxInputChannels": 2},
+    {"index": 33, "name": "Altifalantes (Realtek High Definition Audio) [Loopback]", "defaultSampleRate": 192000.0, "maxInputChannels": 2},
+    {"index": 34, "name": "Realtek Digital Output (Realtek High Definition Audio) [Loopback]", "defaultSampleRate": 48000.0, "maxInputChannels": 2},
+]
+
+
+class FakePortAudio:
+    """What `pyaudiowpatch.PyAudio()` gives: the loopback outputs, the default one, and open() remembering which index was opened."""
+    paInt16 = 8
+    opened = []
+    instances = 0
+
+    def __init__(self):
+        FakePortAudio.instances += 1
+
+    def get_default_wasapi_loopback(self):
+        return OUTPUTS[1]
+
+    def get_loopback_device_info_generator(self):
+        return iter(OUTPUTS)
+
+    def open(self, **kw):
+        FakePortAudio.opened.append(kw["input_device_index"])
+        stream = type("S", (), {"read": lambda self, n, exception_on_overflow=False: np.zeros(n * 2, np.int16).tobytes(), "stop_stream": lambda self: None,
+                                "close": lambda self: None})()
+        return stream
+
+    def terminate(self):
+        pass
+
+
+@pytest.fixture
+def windows_audio(monkeypatch):
+    fake_module = type(sys)("pyaudiowpatch")
+    fake_module.PyAudio, fake_module.paInt16 = FakePortAudio, 8
+    monkeypatch.setitem(sys.modules, "pyaudiowpatch", fake_module)
+    monkeypatch.setattr(cv.sys, "platform", "win32")
+    monkeypatch.setattr(cv, "ARGS_DEVICE", None)
+    FakePortAudio.opened = []
+    return fake_module
+
+
+class TestChoosingTheOutput:
+    def test_without_a_name_it_is_the_default_output(self, windows_audio):
+        assert cv.pick_loopback(FakePortAudio(), None)["index"] == 32
+
+    def test_a_part_of_the_name_picks_that_output_whatever_the_case(self, windows_audio):
+        assert cv.pick_loopback(FakePortAudio(), "ALTIFALANTES")["index"] == 33
+        assert cv.pick_loopback(FakePortAudio(), "digital output")["index"] == 34
+        assert cv.pick_loopback(FakePortAudio(), "g435")["index"] == 32
+
+    def test_a_name_that_matches_several_is_refused_with_the_list(self, windows_audio):
+        with pytest.raises(SystemExit) as e:
+            cv.pick_loopback(FakePortAudio(), "realtek")                           # the speakers AND the digital output
+        message = str(e.value)
+        assert "matches 2 outputs" in message and "Altifalantes" in message and "Realtek Digital Output" in message and "Headset Earphone" in message
+
+    def test_a_name_that_matches_none_is_refused_with_the_list(self, windows_audio):
+        with pytest.raises(SystemExit) as e:
+            cv.pick_loopback(FakePortAudio(), "sonos")
+        assert "matches no output" in str(e.value) and "Altifalantes" in str(e.value)
+
+    def test_opening_the_capture_uses_the_chosen_output_and_its_own_rate(self, windows_audio, monkeypatch):
+        monkeypatch.setattr(cv, "ARGS_DEVICE", "altifalantes")
+        read, start, stop, rate, label = cv._open_system_audio()
+        assert FakePortAudio.opened == [33] and rate == 192000 and "Altifalantes" in label
+        stop()
+
+    def test_opening_without_a_name_is_the_default_as_before(self, windows_audio):
+        _, _, stop, rate, label = cv._open_system_audio()
+        assert FakePortAudio.opened == [32] and rate == 48000 and "G435" in label
+        stop()
+
+    def test_the_watched_name_is_the_chosen_output_or_the_default(self, windows_audio):
+        assert "Altifalantes" in cv.loopback_device_name("altifalantes")
+        assert "G435" in cv.loopback_device_name()
+        assert cv.loopback_device_name("realtek") is None                          # ambiguous: nothing to compare against, and no exit inside the watcher
+        assert cv.loopback_device_name("nothing like it") is None
+
+    def test_an_ambiguous_name_stops_the_run_before_anything_is_created(self, windows_audio, tmp_path):
+        a = args(tmp_path, device="realtek")
+        with pytest.raises(SystemExit):
+            cv.run_unattended(a)
+        assert not (tmp_path / "stage").exists()
+
+    def test_the_chosen_output_is_said_at_the_start(self, windows_audio, tmp_path, quiet_system, capsys):
+        a = args(tmp_path, hours=0.0001, device="altifalantes")
+        cv.run_unattended(a, reader=ScriptedReader(np.zeros(10, np.float32)))
+        assert "Output to record: altifalantes" in capsys.readouterr().out
+
+    def test_the_default_is_said_too(self, tmp_path, quiet_system, capsys):
+        cv.run_unattended(args(tmp_path, hours=0.0001), reader=ScriptedReader(np.zeros(10, np.float32)))
+        assert "Output to record: the default output" in capsys.readouterr().out
+
+    def test_the_option_is_on_capture(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(cv, "cmd_capture", lambda a: seen.append(a))
+        monkeypatch.setattr(sys, "argv", ["collect_voice.py", "capture", "--unattended", "--device", "altifalantes"])
+        cv.main()
+        assert seen[0].device == "altifalantes"
+
+
+class TestTheLogSaysWhatIsRecorded:
+    def test_the_reader_names_the_output_each_time_it_opens_it(self):
+        logs = []
+        d = FakeDevice(["die_after_3", "ok"])
+        r = cv.SystemAudioReader(d.open, lambda: None, stale_s=60, check_s=60, retry_s=0.01, log=logs.append)
+        r.start()
+        assert wait_for(lambda: d.opens >= 2 and r.q.qsize() > 5)
+        r.stop()
+        said = [m for m in logs if m.startswith("[reader] recording from:")]
+        assert len(said) >= 2 and "fake1" in said[0] and "fake2" in said[1] and "48000 Hz" in said[0]
+
+    def test_every_window_says_where_it_came_from_and_how_loud_it_was(self, tmp_path):
+        a = args(tmp_path, window_min=0.3, max_window_min=1.0)
+        logs = []
+        cap = cv.UnattendedCapture(a, cv.Dataset(str(tmp_path / "stage"), SR), log=logs.append, label=lambda: "Altifalantes (Realtek High Definition Audio) [Loopback]")
+        TestUnattendedCapture().feed(cap, np.concatenate([night(8), quiet(30)]))
+        cap.finish()
+        lines = [m for m in logs if m.startswith("[window")]
+        assert lines and all("from Altifalantes (Realtek High Definition Audio) [Loopback]" in m and "peak " in m and " dB" in m for m in lines)
+
+    def test_a_silent_window_shows_as_silence_in_the_log(self, tmp_path):
+        a = args(tmp_path, window_min=0.3, max_window_min=1.0)
+        logs = []
+        cap = cv.UnattendedCapture(a, cv.Dataset(str(tmp_path / "stage"), SR), log=logs.append, label=lambda: "X")
+        TestUnattendedCapture().feed(cap, np.zeros(SR * 40, np.float32))
+        cap.finish()
+        assert any("peak -180 dB" in m for m in logs)                              # nothing is being played: visible at a glance
