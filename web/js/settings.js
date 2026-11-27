@@ -6,6 +6,8 @@ import { h, enableTabScroll, loadUiState, saveUiState } from "./ui.js";
 import { savedChoice } from "./session-model.js";
 import { getGlobal, setGlobal, resetWidgets } from "./zoom.js";
 import { GLOBAL_RANGE, percent } from "./zoom-model.js";
+import { getLyricsSettings, setLyricsSettings } from "./lyrics-settings.js";
+import { COUNT_RANGE, SIZE_RANGE, percent as sizePercent } from "./lyrics-model.js";
 import { audioTab, keybindsTab, presenceTab } from "./settings-tabs.js";
 import { lightsTab, spotifyTab } from "./settings-lights.js";
 
@@ -21,6 +23,11 @@ const TABS = [
     ] },
     { title: "Startup", rows: [toggle("start_on_login", "Start JARVIS when I log in")] },
     { title: "Display", rows: [{ kind: "zoom", label: "Zoom (Ctrl + / - / 0)" }, { kind: "zoomreset", label: "Zoom of single windows (Ctrl + wheel)" }] },
+    { title: "Lyrics", rows: [
+      { kind: "lyrics", field: "after", label: "Upcoming lines" },
+      { kind: "lyrics", field: "before", label: "Previous lines" },
+      { kind: "lyrics", field: "size", label: "Font size" },
+    ] },
     { title: "Persona (look and voice, needs a reboot)", rows: [select("theme", "Assistant", ["jarvis", "ultron"], { reboot: true })] },
     { title: "System Core", rows: [select("ecosystem_state", "Ecosystem Mode", ["normal", "debug", "background"], { after: (v) => bridge.act("state.change", { action: v }) })] },
     { title: "Inference Engine", rows: [
@@ -56,6 +63,7 @@ export const settingsWindow = {
   build(body) {
     let values = {}, tab = savedChoice(loadUiState(), "settings.tab", TABS.map((t) => t.id), TABS[0].id);      // the tab you were on
     let zoomOff = null;
+    const offs = [];                              // listeners to remove when the window closes
     const controls = new Map();                   // key -> set(value): the page is built once and synced in place (an open dropdown survives)
     const tabs = h("div", { class: "tabs-pill" });
     enableTabScroll(tabs);
@@ -86,6 +94,20 @@ export const settingsWindow = {
         window.addEventListener("jarvis-zoom", paint); zoomOff = () => window.removeEventListener("jarvis-zoom", paint);
         paint();
         return h("span", { class: "set-zoom" }, range, val, reset);
+      }
+      if (row.kind === "lyrics") {                     // lines before / after and the font size of the lyrics: client-side (localStorage) like the zoom
+        const isSize = row.field === "size", [lo, hi] = isSize ? SIZE_RANGE.map(sizePercent) : COUNT_RANGE;
+        const range = h("input", { type: "range", class: "slider", min: lo, max: hi, step: isSize ? 5 : 1, "aria-label": row.label });
+        const val = h("span", { class: "dim set-val" }, "");
+        const paint = () => {
+          const v = getLyricsSettings()[row.field];
+          range.value = isSize ? sizePercent(v) : v; val.textContent = isSize ? sizePercent(v) + " %" : String(v);
+          range.style.setProperty("--fill", ((range.value - range.min) / (range.max - range.min)) * 100 + "%");
+        };
+        range.addEventListener("input", () => setLyricsSettings({ [row.field]: isSize ? +range.value / 100 : +range.value }));
+        window.addEventListener("jarvis-lyrics-settings", paint); offs.push(() => window.removeEventListener("jarvis-lyrics-settings", paint));
+        paint();
+        return h("span", { class: "set-zoom" }, range, val);
       }
       if (row.kind === "toggle") {
         const sw = h("button", { class: "switch", role: "switch", "aria-label": row.label, onclick: () => {
@@ -124,6 +146,6 @@ export const settingsWindow = {
     showTab(); customById.get(tab)?.show?.(); load();      // a restored tab starts its own work (polling...) like a clicked one
     // core.json can change under us (a voice command flips silent mode), so follow it like the Qt widget does
     const poll = setInterval(() => { if (!pages.contains(document.activeElement) || document.activeElement.tagName !== "SELECT") load(); }, 3000);
-    return { onClose: () => { zoomOff?.(); clearInterval(poll); customs.forEach((c) => c.destroy?.()); } };
+    return { onClose: () => { zoomOff?.(); offs.forEach((f) => f()); clearInterval(poll); customs.forEach((c) => c.destroy?.()); } };
   },
 };

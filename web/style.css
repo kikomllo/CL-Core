@@ -208,14 +208,14 @@ input { font: inherit; color: inherit; }
 .menu button { background: none; border: 0; text-align: left; padding: calc(6 * var(--u)) calc(10 * var(--u)); color: var(--text); border-radius: 6px; }
 .menu button:hover { background: rgba(255,150,0,.24); color: #fff; }
 
-/* ---------- lyrics: three rows, bottom-anchored above the dock ---------- */
+/* ---------- lyrics: the current row and 0-5 next / previous rows (a setting), bottom-anchored above the dock ---------- */
 /* #lyrics is the centre line (zero height); lyrics.js places each row around it by its own height, so nothing is clipped.
    Lines are wrapped once at the big style and shown with those breaks (white-space: pre) at every size. */
 #lyrics { position: fixed; left: 50%; bottom: calc(240 * var(--u)); transform: translateX(-50%); width: min(calc(700 * var(--u)), calc(100% - 32 * var(--u))); height: 0; pointer-events: none; z-index: 5; }
 .ly-row { position: absolute; left: 0; width: 100%; text-align: center; white-space: pre; line-height: 1.15; padding: 0 8px; box-sizing: border-box; }
-.ly-next { color: rgba(255,170,0,.588); font-size: calc(14 * var(--u)); font-weight: 400; }
-.ly-cur { color: rgba(255,170,0,.9); font-size: calc(26 * var(--u)); font-weight: 800; text-shadow: 0 0 calc(18 * var(--u)) rgba(255,140,0,.35); }
-.ly-prev { color: rgba(255,170,0,.588); font-size: calc(14 * var(--u)); font-weight: 400; }
+.ly-next { color: rgba(255,170,0,.588); font-size: calc(14 * var(--u) * var(--ly-s, 1)); font-weight: 400; }
+.ly-cur { color: rgba(255,170,0,.9); font-size: calc(26 * var(--u) * var(--ly-s, 1)); font-weight: 800; text-shadow: 0 0 calc(18 * var(--u)) rgba(255,140,0,.35); }
+.ly-prev { color: rgba(255,170,0,.588); font-size: calc(14 * var(--u) * var(--ly-s, 1)); font-weight: 400; }
 
 /* ---------- list modules: Lights / To-Do / Notes / Reminders (the "Brand*" module artifacts) ---------- */
 .mod { height: 100%; display: flex; flex-direction: column; padding: calc(16 * var(--u)) calc(20 * var(--u)) calc(14 * var(--u)); background: linear-gradient(180deg, #1b0c03, #0e0500); }
@@ -562,6 +562,7 @@ button.disc:disabled { cursor: default; }
 .zoom-badge[hidden] { display: none; }
 .set-zoom { display: inline-flex; align-items: center; gap: calc(10 * var(--u)); }
 .set-zoom .slider { width: calc(140 * var(--u)); }
+.set-zoom .set-val { min-width: calc(40 * var(--u)); text-align: right; }
 /* a floating (unpinned) window's page (widget.html): the window fills the page, and its title bar moves the window; no lyrics here */
 html[data-mode="widget"], html[data-mode="widget"] body { background: transparent !important; }
 html[data-mode="widget"] #lyrics { display: none !important; }
