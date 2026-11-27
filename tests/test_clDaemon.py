@@ -754,6 +754,29 @@ class TestCutOffCommands:
         lights = [json.loads(c[0][1]) for c in mock_mqtt.publish.call_args_list if c[0][0] == "home/room/all/set"]
         assert len(lights) == 1 and lights[0]["action"] == "on"
 
+    @pytest.mark.asyncio
+    async def test_the_window_held_open_for_the_rest_is_closed_once_it_arrives(self, daemon, mock_mqtt, message_stream):
+        mock_mqtt.messages = message_stream([
+            ("jarvis/sensor/voice", json.dumps({"text": "Hey Jarvis, turn on the-"})),
+            ("jarvis/sensor/voice", json.dumps({"text": "lights"})),
+        ])
+
+        await daemon.run()
+
+        actions = [json.loads(c[0][1])["action"] for c in mock_mqtt.publish.call_args_list if c[0][0] == "jarvis/sys/mic_control"]
+        assert actions.index("open_window") < actions.index("close_window")
+
+    @pytest.mark.asyncio
+    async def test_a_plain_command_never_closes_a_window(self, daemon, mock_mqtt, message_stream):
+        mock_mqtt.messages = message_stream([
+            ("jarvis/sensor/voice", json.dumps({"text": "Hey Jarvis, turn on the lights"})),
+        ])
+
+        await daemon.run()
+
+        actions = [json.loads(c[0][1]).get("action") for c in mock_mqtt.publish.call_args_list if c[0][0] == "jarvis/sys/mic_control"]
+        assert "close_window" not in actions
+
 
 class TestWhichLightQuestion:
     """When a light command has no usable target the daemon asks which light, instead of dropping it

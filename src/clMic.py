@@ -85,6 +85,7 @@ class VoiceSensor:
         
         self.active_window_end: float = 0.0
         self.pending_active_window: bool = False
+        self._last_dispatch: float = 0.0   # when the last command was sent on; a wake word right after it is the same phrase firing twice
         self.awaiting_reply: bool = False
         self.attention_mode: bool = False
         
@@ -171,6 +172,8 @@ class VoiceSensor:
             return self.aec.process(raw, far)
         return raw
 
+    BARGE_QUIET_SECONDS = 2.0
+
     def _barge_in_step(self) -> bool:
         """One 80ms listening step while JARVIS speaks. True when the user said the wake word over it:
         speech is stopped and the next recording starts from the cleaned audio around the trigger."""
@@ -185,6 +188,12 @@ class VoiceSensor:
         # requiring two chunks in a row missed most interruptions without preventing any false stop.
         self._barge_hits = self._barge_hits + 1 if score > self.barge_cfg["wake_threshold"] else 0
         if self._barge_hits < self.barge_cfg["hits"]:
+            return False
+        if time.time() - self._last_dispatch < self.BARGE_QUIET_SECONDS:
+            # The model fires late, on the tail of the command just sent ("Hey Jarvis, play music" -> a second
+            # hit a second later): not an interruption, and acting on it cut the reply off for a bare "How can I help?".
+            self._barge_hits = 0
+            self.oww_model.reset()
             return False
 
         logging.info(f"BARGE-IN: wake word heard over JARVIS (score {score:.2f}) -> stopping speech.")
@@ -388,7 +397,12 @@ class VoiceSensor:
                 
         elif msg.topic == "jarvis/sys/mic_open" or action == "open_window":
             self.pending_active_window = True
-            
+
+        elif action == "close_window":
+            # The rest of a cut-off command already arrived, so the window held open for it is not needed.
+            self.pending_active_window = False
+            self.active_window_end = 0.0
+
         elif action == "ptt_start":
             if self.tts_busy:
                 self._interrupt_speech()          # pressing the key while JARVIS talks cuts it off
@@ -978,7 +992,8 @@ class VoiceSensor:
                 
                 if command_text:
                     self._publish("jarvis/sensor/voice", command_text)
-                    
+                    self._last_dispatch = time.time()
+
                 if not self.attention_mode: logging.info("="*50 + "\n")
                 
                 self.oww_model.reset()

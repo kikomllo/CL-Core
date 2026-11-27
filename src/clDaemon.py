@@ -70,6 +70,7 @@ class CentralDaemon:
         self.mic_state: str = "idle"
         self._trace: Optional[LatencyTrace] = None  # current voice command's latency stamps
         self._partial: Optional[Tuple[str, float]] = None  # a command that stopped mid-phrase, waiting for the rest
+        self._joined_partial: bool = False                 # the last utterance was joined onto a held fragment
         self._light_asks: Tuple[int, float] = (0, 0.0)     # (times in a row we asked "which light?", when last)
         self.is_ducked: bool = False
         self.attention_mode: bool = False
@@ -403,7 +404,9 @@ class CentralDaemon:
         light every light) and the next utterance is joined onto it; a second cut-off, a new wake word
         or a stale fragment is not joined, so nothing is held forever."""
         pending, self._partial = self._partial, None
+        self._joined_partial = False
         if pending and text and not has_wake_word and time.time() - pending[1] <= self.PARTIAL_JOIN_SECONDS:
+            self._joined_partial = True
             return f"{pending[0]} {text}", False
         if self.is_truncated(text):
             self._partial = (re.sub(r"[\s\-–—….]+$", "", text), time.time())
@@ -957,6 +960,9 @@ class CentralDaemon:
                             raw_payload = self.sanitize_transcription(text_payload)
                             raw_payload, is_wakeword_present = self.strip_wake_word(raw_payload)
                             raw_payload, hold_partial = self.join_or_hold_partial(raw_payload, is_wakeword_present)
+                            if self._joined_partial:
+                                # The window opened for the rest of that command isn't needed any more.
+                                await client.publish("jarvis/sys/mic_control", json.dumps({"action": "close_window"}))
                             if hold_partial:
                                 logging.info(f"[VOICE INPUT] Cut off mid-phrase ('{self._partial[0]}'): holding it and listening for the rest.")
                             clean_text = self.nlp.normalize_text(raw_payload)

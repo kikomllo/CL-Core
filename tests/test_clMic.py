@@ -509,6 +509,27 @@ class TestBargeIn:
         assert len(sensor._forced_wake) == 2                    # the cleaned audio around the trigger
         assert sensor.bargein_hold_until > time.time()
 
+    def test_a_wake_word_right_after_a_command_was_sent_is_not_an_interruption(self, sensor):
+        # Live log 2026-11-27 19:39: "Hey Jarvis, play music" -> a second hit a second later cut the reply
+        # off and opened a recording that said "How can I help?".
+        sensor._last_dispatch = time.time() - 1.0
+        sensor.oww_model = FakeOww([0.9, 0.9])
+        assert [sensor._barge_in_step() for _ in range(2)] == [False, False]
+        assert self.published(sensor, "jarvis/sys/tts_stop") == []
+        assert sensor.oww_model.resets == 2 and sensor.tts_busy is True
+
+    def test_it_interrupts_again_once_the_quiet_time_has_passed(self, sensor):
+        sensor._last_dispatch = time.time() - sensor.BARGE_QUIET_SECONDS - 0.5
+        sensor.oww_model = FakeOww([0.9])
+        assert sensor._barge_in_step() is True
+
+    def test_closing_the_window_cancels_a_pending_or_open_one(self, sensor):
+        self.send(sensor, "jarvis/sys/mic_control", '{"action": "open_window"}')
+        assert sensor.pending_active_window is True
+        sensor.active_window_end = time.time() + 5
+        self.send(sensor, "jarvis/sys/mic_control", '{"action": "close_window"}')
+        assert sensor.pending_active_window is False and sensor.active_window_end == 0.0
+
     def test_a_single_strong_chunk_is_enough_because_the_wake_word_peaks_briefly(self, sensor):
         sensor.oww_model = FakeOww([0.0, 0.7])
         assert [sensor._barge_in_step() for _ in range(2)] == [False, True]
