@@ -13,6 +13,7 @@ import { settingsWindow } from "./settings.js";
 import { logsWindow } from "./logs.js";
 import { updatesWindow } from "./updates.js";
 import { claudeWindow } from "./claude.js";
+import { startBoot } from "./boot.js";
 
 const DEFS = [mediaWindow, lightsWindow, remindersWindow, todoWindow, notesWindow, settingsWindow, updatesWindow, claudeWindow, logsWindow];
 
@@ -28,6 +29,7 @@ setUnit(); addEventListener("resize", setUnit);
 // the global zoom: the content scales, the window (its frame) stays as it is, like the dashboard's windows (it only grows if its content no longer fits)
 addEventListener("jarvis-zoom", setUnit);
 startZoomInput();
+startBoot({ readout: false });      // while the system starts the window stays clear (the dashboard shows the readout), then comes in
 
 fetch("/api/config").then((r) => r.json()).catch(() => ({})).then((s) => setSkin(s.theme));
 

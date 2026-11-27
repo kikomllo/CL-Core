@@ -1,0 +1,40 @@
+/* ---------- startup cover (web/js/boot.js): while the system starts, the windows and the dock stay off the screen and the clock and the orb show
+   what is loading; they come in, already filled, once everything has reported in (jarvis/sys/boot_state). <html data-boot="1"> is the switch. ---------- */
+#widgets > .win, #dock { transition: opacity .55s ease, transform .55s ease; }
+.cal-tab { transition: right .4s cubic-bezier(.33,1,.68,1), background .15s, opacity .55s ease, transform .55s ease; }
+html[data-boot="1"] #widgets > .win, html[data-boot="1"] #dock, html[data-boot="1"] .cal-tab { opacity: 0; transform: translateY(calc(14 * var(--u))); pointer-events: none; }
+html[data-boot="1"] #lyrics { opacity: 0; }
+/* they arrive one after another, not all at once */
+#widgets > .win:nth-child(2) { transition-delay: .08s; } #widgets > .win:nth-child(3) { transition-delay: .16s; } #widgets > .win:nth-child(n+4) { transition-delay: .24s; }
+#dock { transition-delay: .3s; }
+html[data-boot="1"] #widgets > .win, html[data-boot="1"] #dock { transition-delay: 0s; }
+
+#boot { position: fixed; inset: 0; z-index: 9; pointer-events: none; transition: opacity .5s ease, visibility 0s linear 0s; }
+#boot.gone { opacity: 0; visibility: hidden; transition: opacity .5s ease, visibility 0s linear .5s; }
+/* under the orb, set like the clock's date line: spaced capitals in the amber at .62, and a rule that fills as modules report in */
+.boot-stack { position: absolute; left: 50%; top: calc(50% + 150 * var(--u)); transform: translateX(-50%); width: calc(900 * var(--u)); text-align: center; }
+.boot-title { font-size: calc(16 * var(--u)); line-height: 1; letter-spacing: .34em; padding-left: .34em; text-transform: uppercase; color: rgba(255,170,0,.62); }
+.boot-rule { position: relative; width: calc(420 * var(--u)); height: calc(2 * var(--u)); margin: calc(18 * var(--u)) auto 0; background: linear-gradient(90deg, transparent, rgba(255,170,0,.28), transparent); }
+.boot-rule i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: linear-gradient(90deg, rgba(255,170,0,0), rgba(255,170,0,.9) 30%, var(--accent));
+  box-shadow: 0 0 calc(10 * var(--u)) rgba(255,140,0,.55); transition: width .35s cubic-bezier(.215,.61,.355,1); }
+.boot-count { margin-top: calc(14 * var(--u)); font-size: calc(12 * var(--u)); letter-spacing: .24em; padding-left: .24em; text-transform: uppercase; color: rgba(255,170,0,.55); font-variant-numeric: tabular-nums; }
+.boot-sub { margin-top: calc(8 * var(--u)); min-height: calc(18 * var(--u)); font-size: calc(13 * var(--u)); color: var(--text-dim); }
+.boot-sub.warn { color: var(--title-accent); }
+.boot-win { left: 50%; top: calc(50% + 292 * var(--u)); transform: translateX(-50%); width: calc(860 * var(--u)); }
+.boot-win .win-time { font-size: calc(12 * var(--u)); color: var(--text-dim); font-variant-numeric: tabular-nums; padding-right: calc(8 * var(--u)); }
+.boot-log { list-style: none; margin: 0; padding: calc(10 * var(--u)) calc(18 * var(--u)) calc(12 * var(--u)); display: grid; grid-auto-flow: column;
+  grid-template-columns: repeat(var(--cols, 3), 1fr); grid-template-rows: repeat(var(--rows, 5), auto); column-gap: calc(30 * var(--u)); }
+.boot-log li { display: flex; align-items: center; gap: calc(10 * var(--u)); height: calc(26 * var(--u)); font-size: calc(12 * var(--u)); color: var(--text-dim); border-bottom: 1px solid var(--divider); }
+.boot-log li.col-end { border-bottom: 0; }
+.boot-log .d { width: calc(6 * var(--u)); height: calc(6 * var(--u)); border-radius: 50%; background: rgba(255,150,0,.25); flex: none; }
+.boot-log .tm { margin-left: auto; font-variant-numeric: tabular-nums; }
+.boot-log li.wait .d { animation: boot-dot 1s ease-in-out infinite; }
+.boot-log li.done { color: var(--text); }
+.boot-log li.done .d { background: var(--accent); box-shadow: 0 0 calc(5 * var(--u)) 1px rgba(255,170,0,.65), 0 0 calc(12 * var(--u)) calc(4 * var(--u)) rgba(255,140,0,.32); }
+.boot-log li.stuck { color: var(--title-accent); }
+.boot-log li.stuck .d { background: var(--title-accent); }
+@keyframes boot-dot { 50% { background: rgba(255,150,0,.6); } }
+@media (prefers-reduced-motion: reduce) {
+  .boot-log li.wait .d { animation: none; }
+  #widgets > .win, #dock, .cal-tab, #boot, .boot-rule i { transition: none; }
+}

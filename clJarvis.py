@@ -14,7 +14,8 @@ try:
 except Exception as e:
     print(f"[SUPERVISOR] Could not prepare config/core.json: {e}")
 
-from clModuleMatch import services_to_restart      # src/utils is on sys.path from the block above
+from clModuleMatch import services_to_restart
+from clBootState import build_boot_state, module_key      # src/utils is on sys.path from the block above
 
 # --- OS SETTINGS & DEBUG FLAG ---
 def load_settings():
@@ -166,14 +167,32 @@ PROCESSES = {}
 READY_MODULES = set()
 EXPECTED_MODULES = set()
 
+BOOT_STARTED = time.time()
+BOOT_READY_AT = {}          # module key -> seconds after this boot began (what the dashboard's startup cover lists)
+
+def publish_boot_state(online: bool = False) -> None:
+    """Retained on jarvis/sys/boot_state: a dashboard window that opens at any moment reads where the boot is (web/js/boot.js)."""
+    if client is None:
+        return
+    try:
+        native_cfg = MODULES_CONFIG.get("native", {})
+        expected = [desc for desc, _ in NATIVE_SERVICES if native_cfg.get(desc, True)]
+        state = build_boot_state(expected, BOOT_READY_AT, online, BOOT_STARTED)
+        client.publish("jarvis/sys/boot_state", json.dumps(state), qos=1, retain=True)
+    except Exception as e:
+        print(f"[SUPERVISOR] Could not publish the boot state: {e}")
+
 def update_expected_modules():
-    global EXPECTED_MODULES, READY_MODULES
+    global EXPECTED_MODULES, READY_MODULES, BOOT_STARTED
     READY_MODULES.clear()
     EXPECTED_MODULES.clear()
     native_cfg = MODULES_CONFIG.get("native", {})
     for desc, filename in NATIVE_SERVICES:
         if native_cfg.get(desc, True):
             EXPECTED_MODULES.add(desc.lower())
+    BOOT_STARTED = time.time()
+    BOOT_READY_AT.clear()
+    publish_boot_state(False)          # a new boot: the dashboards cover themselves again
 
 def _wait_for_module_ready(target_mod: str, timeout_s: float = 30.0) -> None:
     """Polls READY_MODULES on its own thread. Must never be called from
@@ -426,10 +445,14 @@ def on_message(client, userdata, msg):
             mod_name = payload.get("module", "").lower()
             if mod_name:
                 READY_MODULES.add(mod_name)
+                BOOT_READY_AT.setdefault(module_key(mod_name), time.time() - BOOT_STARTED)
                 print(f"[SUPERVISOR] Module '{mod_name}' is ready. ({len(READY_MODULES)}/{len(EXPECTED_MODULES)})")
                 
-                if len(READY_MODULES) >= len(EXPECTED_MODULES):
+                if len(READY_MODULES) < len(EXPECTED_MODULES):
+                    publish_boot_state(False)
+                else:
                     SYSTEM_HAS_ANNOUNCED = True
+                    publish_boot_state(True)
                     print("\n" + "="*50)
                     print("[SUPERVISOR] ALL EXPECTED MODULES ONLINE.")
                     print("[SUPERVISOR] ALL SYSTEMS GO!")

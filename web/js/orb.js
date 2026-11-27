@@ -14,7 +14,10 @@ const STATES = {            // opacity, amplitude, frequency, speed, scale
   ATTENTION:  { op: 0.3,  amp: 15, freq: 0.015, speed: 0.05, scale: 0.5 },
   RECORDING:  { op: 0.8,  amp: 20, freq: 0.02,  speed: 0.1,  scale: 1.0 },
   PROCESSING: { op: 1.0,  amp: 25, freq: 0.08,  speed: 0.15, scale: 0.5 },
+  // the startup cover (boot.js): the orb alone, big, its rings turning slowly; it swells with the "System online" announcement
+  BOOTING:    { op: 1.0,  amp: 16, freq: 0.02,  speed: 0.04, scale: 1.6 },
 };
+const BOOT_SWELL = 0.18;
 
 export function startOrb(canvas, getUnit) {
   const g = canvas.getContext("2d");
@@ -50,13 +53,16 @@ export function startOrb(canvas, getUnit) {
     const v = !overlay() || overlayVisible(o.opacity, o.tOpacity);
     if (shell && v !== shown) { shown = v; shell.setVisible(v); }
   }
+  const booting = () => document.documentElement.dataset.boot === "1" && !overlay();     // the overlay stays hidden while the system starts
   function setState(state) {
+    if (booting()) state = "BOOTING";
     const c = STATES[state] || STATES.IDLE, rest = restingLook(overlay());
     o.state = state;
     o.tOpacity = c.op ?? rest.op; o.tAmp = c.amp; o.freq = c.freq; o.speed = c.speed; o.tScale = c.scale ?? rest.scale;
     reportVisible();
   }
   brain.listeners.add(setState); setState(brain.state);
+  window.addEventListener("jarvis-boot", () => setState(brain.state));
   window.addEventListener("jarvis-mode", () => {                      // the shell switched between overlay and dashboard
     if (overlay() && o.state === "IDLE") { o.opacity = 0; o.scale = 0.5; g.clearRect(0, 0, canvas.width, canvas.height); }       // no fade-out: the window should be gone at once
     setState(o.state);
@@ -64,6 +70,10 @@ export function startOrb(canvas, getUnit) {
 
   const maxAmpFor = () => (H > 100 ? Math.min(W, H) / 4 / getUnit() : 150);
   function applyVolume() {
+    if (o.state === "BOOTING") {                                      // an Ultron head is not enlarged; the orb swells with the voice
+      o.tScale = (activeSkin() === "ultron" ? 1 : STATES.BOOTING.scale) * (1 + (brain.state === "SPEAKING" ? BOOT_SWELL * Math.min(1, brain.vol / 100) : 0));
+      return;
+    }
     // The loudest wave, in design px (drawing multiplies by the unit). The Qt orb used height / 4, which is 270 on a 1080-tall
     // screen but 480 on a 1920-tall portrait one (and doubled on a 4K screen); the short edge gives the same size either way up.
     const maxAmp = maxAmpFor(), v = brain.vol;
@@ -135,10 +145,11 @@ export function startOrb(canvas, getUnit) {
     g.beginPath(); g.arc(0, 0, 50 * u, 0, 7); g.stroke(); g.restore();
     g.restore();
 
-    // waves
+    // waves (not in the boot look: the orb alone)
+    const bare = o.state === "BOOTING";
     const phases = [0, 2, 4], amps = [o.amp, o.amp * 0.6, o.amp * 0.3], step = Math.max(1, 6 * u);
     g.setLineDash([]);
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < (bare ? 0 : 3); i++) {
       const [r, gr, b, a] = P.waves[i];
       const lg = g.createLinearGradient(0, 0, W, 0);
       lg.addColorStop(0, `rgba(${r},${gr},${b},0)`); lg.addColorStop(0.2, `rgba(${r},${gr},${b},${a / 255})`);
@@ -155,7 +166,7 @@ export function startOrb(canvas, getUnit) {
     g.shadowBlur = 0;
 
     // particles
-    for (const p of o.particles) {
+    if (!bare) for (const p of o.particles) {
       const env = Math.sin(Math.PI * p.x / W);
       const y = cy + Math.sin(p.x * o.freq + o.time) * o.amp * env + p.dy;
       const a = p.life * o.opacity * env;

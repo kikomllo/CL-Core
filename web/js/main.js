@@ -20,6 +20,7 @@ import { claudeWindow } from "./claude.js";
 import { startCalendar } from "./calendar.js";
 import { startShell, currentMode, inShell, startedAsRestart } from "./shell.js";
 import { bindPillLabel } from "./pillmarquee.js";
+import { startBoot } from "./boot.js";
 import "./lyrics.js";
 
 // One fluid unit (UIScaler.scale_for): min(long/1920, short/1080), so a screen scales the same turned either way.
@@ -119,6 +120,7 @@ if (new URLSearchParams(location.search).get("open")?.split(",").includes("calen
 setUnit(); addEventListener("resize", setUnit); addEventListener("jarvis-zoom", setUnit); startZoomInput();
 startShell(setUnit);          // in the desktop shell: <html data-mode> follows the window's mode, ui_control switches it
 startOrb(document.getElementById("orb"), () => U);
+startBoot();                  // the startup cover: windows and dock wait until the system is online (jarvis/sys/boot_state)
 
 // "show the logs" / "show my todo list" (jarvis/sys/ui_control): in the dashboard the window opens there; while only the overlay is up it floats as a
 // window of its own on top of other apps, like an unpinned Qt widget, and the overlay stays as it is.
