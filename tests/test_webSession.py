@@ -56,3 +56,20 @@ class TestSavedChoice:
 
     def test_without_an_allowed_list_any_value_counts(self):
         assert call("savedChoice", {"todo.list": "Groceries"}, "todo.list", None, "My To-Do List") == "Groceries"
+
+
+class TestEveryStartRestoresTheWindows:
+    """A cold start used to open only the pinned windows (and then saved that short list over the real one); the dashboard now reopens in its saved
+    mode on every start, so its windows come back as the last session left them. Read as text: the page needs a browser."""
+
+    def read(self, *parts):
+        with open(os.path.join(ROOT, *parts), "r", encoding="utf-8") as f:
+            return f.read()
+
+    def test_the_dashboard_restores_every_saved_window_at_every_start(self):
+        main = self.read("web", "js", "main.js")
+        assert "restoreAll: true" in main and "continuing" not in main
+
+    def test_the_shell_brings_back_the_floating_windows_on_a_cold_start_too(self):
+        main = self.read("shell", "main.js")
+        assert "if (!TEST) for (const [id, b] of Object.entries(saved.floating)) openFloat(id, b);" in main

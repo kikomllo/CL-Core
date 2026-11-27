@@ -1,6 +1,5 @@
 // What the dashboard puts back after the page is reloaded, the shell restarts, or the mode changes (tests/test_webSession.py runs this under
-// node). Every window that was open comes back when the session
-// continues (a reload, a restart of the UI, a crash recovery), but not on a cold start of the whole ecosystem, which opens clean like the overlay.
+// node). Every window that was open comes back at every start (a reload, a restart of the UI, a crash recovery, a cold start of the ecosystem).
 
 /** A saved list of window ids, whatever was stored: only non-empty strings, no repeats. */
 export function parseIds(raw) {

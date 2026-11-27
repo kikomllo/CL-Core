@@ -246,7 +246,7 @@ Promise.all([app.whenReady(), acquireLock()]).then(([, locked]) => {
   displayId = saved.displayId;
   mode = TEST ? (process.env.JARVIS_SHELL_MODE === "fullscreen" ? "fullscreen" : "overlay") : geo.startMode(saved);
   createWindow();
-  if (!TEST && process.env.JARVIS_REBOOT === "1") for (const [id, b] of Object.entries(saved.floating)) openFloat(id, b);      // a restart or crash recovery puts them back; a cold start opens clean
+  if (!TEST) for (const [id, b] of Object.entries(saved.floating)) openFloat(id, b);      // the floating windows come back as the last session left them, on a cold start too
   const refit = () => { if (loaded) setMode(mode); };                      // a monitor was added, removed or changed its resolution
   screen.on("display-added", refit); screen.on("display-removed", refit); screen.on("display-metrics-changed", refit);
   if (PARENT && !TEST) setInterval(() => { try { process.kill(PARENT, 0); } catch { app.quit(); } }, 2000);   // the supervisor killed the launcher: go too

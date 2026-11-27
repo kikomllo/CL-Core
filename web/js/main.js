@@ -18,7 +18,7 @@ import { logsWindow } from "./logs.js";
 import { updatesWindow } from "./updates.js";
 import { claudeWindow } from "./claude.js";
 import { startCalendar } from "./calendar.js";
-import { startShell, currentMode, inShell, startedAsRestart } from "./shell.js";
+import { startShell, currentMode } from "./shell.js";
 import { bindPillLabel } from "./pillmarquee.js";
 import { startBoot } from "./boot.js";
 import "./lyrics.js";
@@ -156,13 +156,11 @@ bridge.on("jarvis/sys/ui_control", (p) => {
 
 // pinned windows come back after a restart; ?open=media,... opens more (handy for screenshots)
 const byId = (id) => WIDGETS.find(x => x.def && (x.def.id === id || x.label.toLowerCase() === id));
-// A continuing session (a page reload: sessionStorage survives it; a shell restart or crash recovery: JARVIS_REBOOT) puts back every window that
-// was open; a cold start of the ecosystem opens only the pinned ones. A plain browser tab has no restart signal, so it always restores.
-let continuing = !inShell;
-try { continuing = continuing || startedAsRestart || sessionStorage.getItem("jarvis.seen") === "1"; sessionStorage.setItem("jarvis.seen", "1"); } catch { /* private mode */ }
+// Every start puts back the windows that were open, like the last session left them (the dashboard itself reopens in the mode it was in, so a
+// cold start of the ecosystem is no different from a restart or a page reload).
 let lastOpen = [];
 try { lastOpen = parseIds(localStorage.getItem(OPEN_KEY)); } catch { /* private mode */ }
-for (const id of windowsToRestore({ open: lastOpen, restoreAll: continuing })) { const w = byId(id); if (w && !floating.has(w.def.id)) openWindow(w.def); }      // the floating ones are restored by the shell
+for (const id of windowsToRestore({ open: lastOpen, restoreAll: true })) { const w = byId(id); if (w && !floating.has(w.def.id)) openWindow(w.def); }      // the floating ones are restored by the shell
 for (const id of (new URLSearchParams(location.search).get("open") || "").split(",").filter(Boolean)) {
   const w = byId(id); if (w && !isOpen(w.def.id)) openWindow(w.def);
 }
