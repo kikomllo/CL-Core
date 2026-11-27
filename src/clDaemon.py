@@ -69,6 +69,8 @@ class CentralDaemon:
         self.tts_audio_ready: bool = False   # TTS has audio to play now (not merely "working on it"): only then is the music ducked
         self.mic_state: str = "idle"
         self._trace: Optional[LatencyTrace] = None  # current voice command's latency stamps
+        self._partial: Optional[Tuple[str, float]] = None  # a command that stopped mid-phrase, waiting for the rest
+        self._light_asks: Tuple[int, float] = (0, 0.0)     # (times in a row we asked "which light?", when last)
         self.is_ducked: bool = False
         self.attention_mode: bool = False
         self.pending_mic_request: bool = False
@@ -380,6 +382,72 @@ class CentralDaemon:
             return " ".join(words[half:])
         return text
 
+    # Words a finished command never ends on: the speaker paused mid-phrase and the recording closed.
+    _DANGLING_WORDS = frozenset({"the", "a", "an", "my", "our", "your", "to", "and", "or", "then", "of", "at", "in", "for", "with", "than"})
+    PARTIAL_JOIN_SECONDS = 12.0
+
+    @classmethod
+    def is_truncated(cls, text: str) -> bool:
+        """True when a transcript visibly stops mid-phrase: Whisper's trailing dash/ellipsis, or an
+        article/preposition/conjunction as the last word ("turn on the-")."""
+        text = text.strip()
+        if not text:
+            return False
+        if text.endswith(("-", "–", "—", "…", "...")):
+            return True
+        last = re.sub(r"[^\w]", "", text.split()[-1]).lower()
+        return last in cls._DANGLING_WORDS
+
+    def join_or_hold_partial(self, text: str, has_wake_word: bool) -> Tuple[str, bool]:
+        """Returns (text_to_route, hold). A cut-off command is held (never run: "turn on the" used to
+        light every light) and the next utterance is joined onto it; a second cut-off, a new wake word
+        or a stale fragment is not joined, so nothing is held forever."""
+        pending, self._partial = self._partial, None
+        if pending and text and not has_wake_word and time.time() - pending[1] <= self.PARTIAL_JOIN_SECONDS:
+            return f"{pending[0]} {text}", False
+        if self.is_truncated(text):
+            self._partial = (re.sub(r"[\s\-–—….]+$", "", text), time.time())
+            return "", True
+        return text, False
+
+    _LIGHT_VERBS = {"on": "turn on", "off": "turn off", "toggle": "toggle"}
+    _ALL_WORDS = frozenset({"all", "everything", "every", "both", "everywhere"})
+
+    async def _ask_light_target(self, client: aiomqtt.Client, pending: Dict[str, Any], message: str) -> None:
+        """Asks which light a light command was for, then runs `pending` on the answer (context
+        "light_target_clarify"). Gives up after two asks in a row so a name that matches nothing
+        can't loop."""
+        tries, at = self._light_asks
+        tries = tries + 1 if time.time() - at < 60.0 else 1
+        self._light_asks = (tries, time.time())
+        if tries > 2:
+            self._light_asks = (0, 0.0)
+            await client.publish("jarvis/sys/speak", json.dumps({"text": "I still can't tell which light you mean, so I've left them as they are.", "request_reply": False}))
+            return
+        self.active_context = {"type": "light_target_clarify", "expires_at": time.time() + 30.0, "pending": dict(pending)}
+        await client.publish("jarvis/sys/speak", json.dumps({"text": message, "request_reply": True}))
+
+    async def _expire_partial(self, client: aiomqtt.Client) -> None:
+        """A cut-off command never got its ending. If it was a plain light on/off/toggle ("turn on the"),
+        ask which light instead of dropping it silently; anything else is dropped (never run)."""
+        text, _ = self._partial
+        self._partial = None
+        for cmd, action_id in self.nlp.parse(self.nlp.normalize_text(text)):
+            if action_id == "light.set" and set(cmd) == {"action"} and cmd["action"] in self._LIGHT_VERBS:
+                logging.info(f"[VOICE INPUT] Cut-off '{text}' never finished: asking which light.")
+                await self._ask_light_target(client, cmd, f"Which light should I {self._LIGHT_VERBS[cmd['action']]}?")
+                return
+        logging.info(f"[VOICE INPUT] Cut-off '{text}' never finished: dropped.")
+
+    def _spoken_light_target(self, clean_text: str) -> str:
+        """The answer to "which light?": an all-word means every light; otherwise the name, minus filler."""
+        words = clean_text.split()
+        if any(w in self._ALL_WORDS for w in words):
+            return "all"
+        while words and words[0] in ("the", "my", "in", "just", "uh", "um", "its"):
+            words.pop(0)
+        return " ".join(words)
+
     def strip_wake_word(self, text: str) -> Tuple[str, bool]:
         """Strips a leading 'hey/hi/ok/... jarvis' wake word. [.,!?\\s]+
         (not \\s+) tolerates Whisper punctuating a speech pause as
@@ -489,6 +557,17 @@ class CentralDaemon:
             if clean_text.lower() == "skip" or self.nlp.is_abort_command(clean_text):
                 return [({"action": "abort"}, "system.abort")], None
             return [({"action": "intent_rename_light", "target_str": f"{temp_name} to {clean_text}"}, "light.set")], None
+
+        if self.active_context["type"] == "light_target_clarify":
+            pending = self.active_context.get("pending") or {}
+            self.active_context["type"] = None
+            if self.nlp.is_abort_command(clean_text): return [({"action": "abort"}, "system.abort")], None
+            # An all-word is the answer ("everything" alone would otherwise parse as restart-all); a phrase
+            # that is a command of its own ("play music") is routed as one instead of being taken as a light.
+            if not any(w in self._ALL_WORDS for w in clean_text.split()) and self.nlp.parse(clean_text):
+                logging.info(f"[DAEMON] '{clean_text}' is a new command, not a light name.")
+            else:
+                return [({**pending, "light_target": self._spoken_light_target(clean_text)}, "light.set")], None
 
         if self.active_context["type"] == "light_remove_target":
             self.active_context["type"] = None
@@ -625,6 +704,8 @@ class CentralDaemon:
     async def monitor_timeouts(self, client: aiomqtt.Client):
         while True:
             await asyncio.sleep(1)
+            if self._partial and time.time() - self._partial[1] > self.PARTIAL_JOIN_SECONDS:
+                await self._expire_partial(client)
             if self.active_context["type"] and time.time() > self.active_context["expires_at"]:
                 logging.info(f"[STATE] Active context '{self.active_context['type']}' expired passively.")
                 self.active_context = {"type": None, "expires_at": 0.0}
@@ -875,11 +956,16 @@ class CentralDaemon:
                             captured_actions: List[Dict[str, Any]] = []
                             raw_payload = self.sanitize_transcription(text_payload)
                             raw_payload, is_wakeword_present = self.strip_wake_word(raw_payload)
+                            raw_payload, hold_partial = self.join_or_hold_partial(raw_payload, is_wakeword_present)
+                            if hold_partial:
+                                logging.info(f"[VOICE INPUT] Cut off mid-phrase ('{self._partial[0]}'): holding it and listening for the rest.")
                             clean_text = self.nlp.normalize_text(raw_payload)
                             logging.info(f"[VOICE INPUT] Raw: '{text_payload}' | Extracted: '{raw_payload}' | Normalized: '{clean_text}'")
                             
                             # Standalone Wake Word Check
-                            if is_wakeword_present and not raw_payload:
+                            if hold_partial:
+                                intents = []
+                            elif is_wakeword_present and not raw_payload:
                                 import random
                                 speak_responses = self.responses_data.get("mqtt", {}).get("jarvis/sys/speak", {})
                                 choices = speak_responses.get("standalone_wakeword", ["Yes sir?"])
@@ -1031,6 +1117,8 @@ class CentralDaemon:
 
                             await client.publish("jarvis/sys/audio_process", json.dumps({"state": "idle"}))
                             await client.publish("jarvis/sys/mic_state", json.dumps({"state": "idle"}))
+                            if hold_partial:
+                                await client.publish("jarvis/sys/mic_control", json.dumps({"action": "open_window"}))
                         
                         elif topic == "jarvis/feedback":
                             try:
@@ -1113,6 +1201,9 @@ class CentralDaemon:
                                 elif device == 'smart_lights' and fb.get('action') == 'request_light_action':
                                     msg = fb.get('message', '')
                                     await client.publish("jarvis/sys/speak", json.dumps({"text": msg, "request_reply": True}))
+
+                                elif device == 'smart_lights' and fb.get('action') == 'request_light_target':
+                                    await self._ask_light_target(client, fb.get('pending') or {}, msg)
 
                                 elif device == 'smart_lights' and fb.get('action') == 'request_light_remove':
                                     self.active_context = {"type": "light_remove_target", "expires_at": time.time() + 30.0}

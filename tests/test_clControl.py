@@ -877,3 +877,51 @@ class TestTheServiceDoesNotDecideBrightness:
         manager.color_matrix = {"purple": {"type": "rgb", "r": 128, "g": 0, "b": 128}}
         await manager._apply_tapo(device, False, True, False, "purple", 80, None)
         device.set_brightness.assert_awaited_once_with(80)
+
+
+class TestUnknownLightTarget:
+    """A named light that matches none of the saved ones used to fall through to the legacy default bulb:
+    the wrong light changed, silently. The caller now asks which one was meant."""
+
+    @pytest.fixture
+    def three(self, manager):
+        manager.lights = {"living_room": {"ip": "192.168.1.9", "mac": "AA", "type": "wiz"},
+                          "bedroom": {"ip": "192.168.1.10", "mac": "BB", "type": "wiz"},
+                          "kitchen": {"ip": "192.168.1.11", "mac": "CC", "type": "wiz"}}
+        return manager
+
+    @pytest.mark.parametrize("target", ["garage", "the lamp", "porch light"])
+    def test_a_name_that_matches_no_light_is_unknown(self, three, target):
+        assert three.unknown_target(target) is True
+
+    @pytest.mark.parametrize("target", [None, "", "all", "lights", "the light", "everything", "bedroom", "the bedroom light", "living room", "KITCHEN"])
+    def test_generic_and_known_names_are_not(self, three, target):
+        assert three.unknown_target(target) is False
+
+    def test_without_saved_lights_nothing_is_unknown(self, manager):
+        manager.lights = {}
+        assert manager.unknown_target("garage") is False
+
+    def test_the_question_lists_the_saved_lights(self, three):
+        assert three.light_names_spoken() == "living room, bedroom or kitchen"
+        three.lights = {"lamp": {}}
+        assert three.light_names_spoken() == "lamp"
+
+    @pytest.mark.asyncio
+    async def test_the_listener_asks_instead_of_touching_any_light(self, three, mock_mqtt, message_stream, mocker):
+        from clControl import mqtt_service_listener
+        control = mocker.patch.object(three, "control_bulb", new=mocker.AsyncMock())
+        mock_mqtt.messages = message_stream([
+            ("home/room/all/set", json.dumps({"action": "on", "light_target": "garage", "color": "red"})),
+        ])
+
+        task = __import__("asyncio").create_task(mqtt_service_listener(three))
+        await __import__("asyncio").sleep(0.2)
+        task.cancel()
+
+        control.assert_not_called()
+        feedback = [json.loads(c[0][1]) for c in mock_mqtt.publish.call_args_list if c[0][0] == "jarvis/feedback"]
+        asks = [f for f in feedback if f.get("action") == "request_light_target"]
+        assert len(asks) == 1
+        assert "garage" in asks[0]["message"] and "kitchen" in asks[0]["message"]
+        assert asks[0]["pending"] == {"action": "on", "color": "red"}

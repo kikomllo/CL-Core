@@ -339,7 +339,7 @@ class TestRecordCommandEndpointing:
         s._publish = MagicMock()
         s._chunk = np.zeros(1280, dtype=np.int16)
         s._read_chunk = lambda *a, **k: s._chunk.tobytes()
-        s.vad_cfg = {"engine": "silero", "end_silence_ms": 700, "speech_threshold": 0.5}
+        s.vad_cfg = {"engine": "silero", "end_silence_ms": 700, "speech_threshold": 0.5, "wake_wait_ms": 1600}
         return s
 
     @staticmethod
@@ -388,6 +388,15 @@ class TestRecordCommandEndpointing:
         result = sensor._record_command(115, 110, bypass_wakeword=False, wakeword_triggered=True)
 
         assert result == "hey jarvis"
+
+    def test_a_command_after_a_pause_following_the_wake_word_is_kept(self, sensor):
+        # ~1.1s of quiet after "Jarvis" (it used to time out at 0.8s and play "How can I help?")
+        sensor.vad = FakeVad([0.0] * 14 + [0.9] * 6)
+        result = sensor._record_command(115, 110, bypass_wakeword=False, wakeword_triggered=True)
+
+        assert result == ""
+        chunks, _ = self.dispatched_chunks(sensor)
+        assert chunks == 14 + 6 + 9
 
     def test_push_to_talk_is_never_cut_by_silence(self, sensor):
         sensor.vad = FakeVad([0.9] * 3)
@@ -612,7 +621,7 @@ class TestBargeIn:
         """The first moments after an interruption still carry the end of JARVIS's own voice."""
         import base64
         sensor.tts_busy = False
-        sensor.vad_cfg = {"engine": "silero", "end_silence_ms": 700, "speech_threshold": 0.5}
+        sensor.vad_cfg = {"engine": "silero", "end_silence_ms": 700, "speech_threshold": 0.5, "wake_wait_ms": 1600}
         sensor.vad = FakeVad([0.9] * 3)
         sensor.aec = FakeAec()
         sensor.ref.add(time.time() - 0.5, 0, np.full(32000, 4000, dtype=np.int16))
@@ -625,7 +634,7 @@ class TestBargeIn:
 
     def test_the_level_of_the_users_voice_is_learned_from_commands(self, sensor):
         sensor.tts_busy = False
-        sensor.vad_cfg = {"engine": "silero", "end_silence_ms": 700, "speech_threshold": 0.5}
+        sensor.vad_cfg = {"engine": "silero", "end_silence_ms": 700, "speech_threshold": 0.5, "wake_wait_ms": 1600}
         sensor._chunk = np.full(1280, 1000, dtype=np.int16)      # ~0.03 of full scale
         for _ in range(3):
             sensor.vad = FakeVad([0.9] * 8)

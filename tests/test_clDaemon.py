@@ -696,6 +696,157 @@ class TestClaudeBridge:
         assert any(json.loads(c[0][1])["text"] == "Sending that to Claude." for c in speak_calls)
 
 
+class TestCutOffCommands:
+    """Live log 2026-11-27: the recording closed on a pause after "turn on the" and the fragment ran as
+    "turn on all lights". A visibly unfinished transcript is held and the next utterance joined onto it."""
+
+    @pytest.mark.parametrize("text", [
+        "turn on the-", "turn on the", "set the lights to", "play jazz and", "turn on the...", "turn on my…",
+    ])
+    def test_unfinished_phrases_are_detected(self, daemon, text):
+        assert daemon.is_truncated(text) is True
+
+    @pytest.mark.parametrize("text", [
+        "turn on the lights", "turn on", "turn off.", "pause music", "what time is it?", "",
+    ])
+    def test_finished_phrases_are_not(self, daemon, text):
+        assert daemon.is_truncated(text) is False
+
+    def test_the_rest_of_the_command_is_joined_onto_the_fragment(self, daemon):
+        assert daemon.join_or_hold_partial("turn on the-", False) == ("", True)
+        assert daemon.join_or_hold_partial("lights", False) == ("turn on the lights", False)
+        assert daemon._partial is None
+
+    def test_a_new_wake_word_or_a_stale_fragment_is_not_joined(self, daemon):
+        daemon.join_or_hold_partial("turn on the-", False)
+        assert daemon.join_or_hold_partial("play music", True) == ("play music", False)
+
+        daemon.join_or_hold_partial("turn on the-", False)
+        daemon._partial = (daemon._partial[0], time.time() - daemon.PARTIAL_JOIN_SECONDS - 1)
+        assert daemon.join_or_hold_partial("lights", False) == ("lights", False)
+
+    def test_a_second_cut_off_is_routed_not_held_forever(self, daemon):
+        daemon.join_or_hold_partial("turn on the-", False)
+        assert daemon.join_or_hold_partial("living room and", False) == ("turn on the living room and", False)
+
+    @pytest.mark.asyncio
+    async def test_a_cut_off_command_runs_nothing_and_reopens_the_mic(self, daemon, mock_mqtt, message_stream):
+        mock_mqtt.messages = message_stream([
+            ("jarvis/sensor/voice", json.dumps({"text": "Hey Jarvis, turn on the-"})),
+        ])
+
+        await daemon.run()
+
+        topics = [c[0][0] for c in mock_mqtt.publish.call_args_list]
+        assert not any(t.startswith("home/") for t in topics)
+        opens = [json.loads(c[0][1]) for c in mock_mqtt.publish.call_args_list if c[0][0] == "jarvis/sys/mic_control"]
+        assert {"action": "open_window"} in opens
+
+    @pytest.mark.asyncio
+    async def test_the_continuation_completes_the_command(self, daemon, mock_mqtt, message_stream):
+        mock_mqtt.messages = message_stream([
+            ("jarvis/sensor/voice", json.dumps({"text": "Hey Jarvis, turn on the-"})),
+            ("jarvis/sensor/voice", json.dumps({"text": "lights"})),
+        ])
+
+        await daemon.run()
+
+        lights = [json.loads(c[0][1]) for c in mock_mqtt.publish.call_args_list if c[0][0] == "home/room/all/set"]
+        assert len(lights) == 1 and lights[0]["action"] == "on"
+
+
+class TestWhichLightQuestion:
+    """When a light command has no usable target the daemon asks which light, instead of dropping it
+    (a cut-off "turn on the") or hitting the wrong one (a name no saved light matches)."""
+
+    @staticmethod
+    def spoken(client):
+        return [json.loads(c[0][1]) for c in client.publish.call_args_list if c[0][0] == "jarvis/sys/speak"]
+
+    @pytest.mark.asyncio
+    async def test_an_unfinished_light_command_asks_which_light(self, daemon):
+        client = MagicMock(publish=AsyncMock())
+        daemon._partial = ("turn on the", time.time() - 60)
+
+        await daemon._expire_partial(client)
+
+        assert daemon._partial is None
+        assert daemon.active_context["type"] == "light_target_clarify"
+        assert daemon.active_context["pending"] == {"action": "on"}
+        assert self.spoken(client) == [{"text": "Which light should I turn on?", "request_reply": True}]
+
+    @pytest.mark.asyncio
+    async def test_an_unfinished_non_light_command_is_dropped_silently(self, daemon):
+        client = MagicMock(publish=AsyncMock())
+        daemon._partial = ("play some music by the", time.time() - 60)
+
+        await daemon._expire_partial(client)
+
+        assert daemon._partial is None and daemon.active_context["type"] is None
+        client.publish.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("answer, target", [
+        ("kitchen", "kitchen"), ("the bedroom", "bedroom"), ("in the living room", "living room"),
+        ("all", "all"), ("everything", "all"), ("both of them", "all"),
+    ])
+    async def test_the_answer_runs_the_pending_command_on_that_light(self, daemon, answer, target):
+        daemon.active_context = {"type": "light_target_clarify", "expires_at": time.time() + 30, "pending": {"action": "off"}}
+
+        intents, _ = await daemon.route_voice_command(answer)
+
+        assert intents == [({"action": "off", "light_target": target}, "light.set")]
+        assert daemon.active_context["type"] is None
+
+    @pytest.mark.asyncio
+    async def test_the_pending_colour_survives_the_question(self, daemon):
+        daemon.active_context = {"type": "light_target_clarify", "expires_at": time.time() + 30, "pending": {"action": "on", "color": "red"}}
+
+        intents, _ = await daemon.route_voice_command("kitchen")
+
+        assert intents == [({"action": "on", "color": "red", "light_target": "kitchen"}, "light.set")]
+
+    @pytest.mark.asyncio
+    async def test_a_different_command_is_not_taken_as_a_light_name(self, daemon):
+        daemon.active_context = {"type": "light_target_clarify", "expires_at": time.time() + 30, "pending": {"action": "on"}}
+
+        intents, _ = await daemon.route_voice_command("play music")
+
+        assert [a for _, a in intents] == ["spotify.control"]
+
+    @pytest.mark.asyncio
+    async def test_cancel_drops_the_question(self, daemon):
+        daemon.active_context = {"type": "light_target_clarify", "expires_at": time.time() + 30, "pending": {"action": "on"}}
+
+        intents, _ = await daemon.route_voice_command("cancel")
+
+        assert [a for _, a in intents] == ["system.abort"]
+
+    @pytest.mark.asyncio
+    async def test_control_asking_about_an_unknown_name_opens_the_question(self, daemon, mock_mqtt, message_stream):
+        mock_mqtt.messages = message_stream([
+            ("jarvis/feedback", json.dumps({"device": "smart_lights", "status": "success", "action": "request_light_target",
+                                            "message": "I don't have a light called garage. Which one: bedroom or kitchen?",
+                                            "pending": {"action": "on"}})),
+        ])
+
+        await daemon.run()
+
+        spoken = [json.loads(c[0][1]) for c in mock_mqtt.publish.call_args_list if c[0][0] == "jarvis/sys/speak"]
+        assert spoken == [{"text": "I don't have a light called garage. Which one: bedroom or kitchen?", "request_reply": True}]
+        assert daemon.active_context["type"] == "light_target_clarify"
+
+    @pytest.mark.asyncio
+    async def test_it_gives_up_after_two_questions_in_a_row(self, daemon):
+        client = MagicMock(publish=AsyncMock())
+        for _ in range(3):
+            await daemon._ask_light_target(client, {"action": "on"}, "Which light?")
+
+        said = [s["text"] for s in self.spoken(client)]
+        assert said[:2] == ["Which light?", "Which light?"]
+        assert "left them as they are" in said[2]
+
+
 class TestSttTrainingCapture:
     """The Debug tab's 'Save correct STT-to-action pairs' toggle: a voice
     command that resolves to a real action should be written out as a

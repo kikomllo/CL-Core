@@ -226,8 +226,9 @@ class VoiceSensor:
 
     def _load_vad_settings(self) -> Dict[str, Any]:
         """core.json -> vad_settings. engine: "silero" (neural endpointing) or "rms" (volume thresholds);
-        end_silence_ms: non-speech that ends a command; speech_threshold: Silero score counted as speech."""
-        cfg = {"engine": "silero", "end_silence_ms": 700, "speech_threshold": 0.5}
+        end_silence_ms: non-speech that ends a command; speech_threshold: Silero score counted as speech;
+        wake_wait_ms: how long after the wake word the command may take to start before it counts as a bare "Jarvis"."""
+        cfg = {"engine": "silero", "end_silence_ms": 700, "speech_threshold": 0.5, "wake_wait_ms": 1600}
         config_path = os.path.abspath(os.path.join(self.base_dir, "..", "config", "core.json"))
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
@@ -491,7 +492,9 @@ class VoiceSensor:
 
         # --- Dynamic wait limit for standalone wake words ---
         if wakeword_triggered and not is_already_speaking:
-            wait_limit = 0.8
+            # 0.8s was shorter than the natural beat after "Jarvis": the command that followed was lost and a
+            # "How can I help?" played over it.
+            wait_limit = self.vad_cfg["wake_wait_ms"] / 1000.0
         elif bypass_wakeword:
             wait_limit = 5.0
         else:

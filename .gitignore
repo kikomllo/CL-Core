@@ -79,6 +79,7 @@ unsloth_compiled_cache/
 
 # Voice dataset (training/tools/collect_voice.py)
 training/data/voice_dataset/
+training/data/voice_overnight
 training/data/voice_ref/
 training/data/voice_export/
 training/data/voice_export_ultron/

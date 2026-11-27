@@ -438,6 +438,19 @@ class LightManager:
             raise ValueError("No matching lights found to execute command.")
         return targets
 
+    def unknown_target(self, target_name: str) -> bool:
+        """True when a light was named that matches none of the saved ones. Left alone the command would
+        fall through to the legacy default bulb -- the wrong light, silently -- so the caller asks instead."""
+        name = str(target_name or "").lower().replace('_', ' ').strip()
+        generic = {"", "all", "light", "the light", "lights", "the lights", "all lights", "all the lights", "everything", "every light"}
+        if not self.lights or name in generic:
+            return False
+        return not any(name in n or n in name for n in (k.lower().replace('_', ' ').strip() for k in self.lights))
+
+    def light_names_spoken(self) -> str:
+        names = [k.replace('_', ' ').lower() for k in self.lights]
+        return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " or " + names[-1]
+
     async def _run_on_targets(self, targets, worker) -> None:
         """Runs `worker` on every target, letting one failure not stop the others, then raises
         LightCommandError naming the lights that failed so the caller doesn't report success."""
@@ -991,6 +1004,15 @@ async def mqtt_service_listener(manager: LightManager) -> None:
                                 }
                             manager.poll_trigger.set()           # success or not, the dashboard should show what the light really is
                             await _publish_feedback(mqtt_client, feedback)
+
+                        if manager.unknown_target(payload.get("light_target")):
+                            asked = payload.get("light_target", "")
+                            await mqtt_client.publish("jarvis/feedback", json.dumps({
+                                "device": "smart_lights", "status": "success", "action": "request_light_target",
+                                "message": f"I don't have a light called {asked}. Which one: {manager.light_names_spoken()}?",
+                                "pending": {k: payload[k] for k in ("action", "color", "lum", "temp", "rgb") if k in payload},
+                            }))
+                            continue
 
                         task = asyncio.create_task(execute_hardware(payload, action))
                         background_tasks.add(task)           # a task nobody references can be garbage-collected mid-run
