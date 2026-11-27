@@ -1,0 +1,45 @@
+/* settings */
+.set-pages { flex: 1; min-height: 0; overflow: auto; margin-top: calc(6 * var(--u)); }
+.set-section { margin-top: calc(14 * var(--u)); padding-bottom: calc(6 * var(--u)); font-size: calc(11 * var(--u)); font-weight: 800; letter-spacing: 1.5px; text-transform: uppercase; color: var(--title-accent); border-bottom: 1px solid var(--divider); }
+.set-row { display: flex; align-items: center; justify-content: space-between; gap: calc(12 * var(--u)); min-height: calc(40 * var(--u)); cursor: pointer; }
+.set-label { flex: 1; min-width: 0; font-size: calc(13 * var(--u)); color: var(--text); }
+.mod-select { flex: 0 1 calc(170 * var(--u)); min-width: 0; height: calc(30 * var(--u)); font: inherit; font-size: calc(12 * var(--u)); padding: 0 calc(8 * var(--u)); background: rgba(35,17,4,.85); color: var(--text); border: 1px solid rgba(255,160,0,.35); border-radius: calc(8 * var(--u)); outline: none; }
+.mod-select:focus { border-color: var(--accent); }
+.mod-select option { background: #1b0d03; color: var(--text); }
+/* settings: keybinds, audio and presence tabs */
+.set-note { margin: calc(6 * var(--u)) 0; font-size: calc(11 * var(--u)); line-height: 1.5; user-select: text; }
+.set-text { margin: calc(6 * var(--u)) 0; font-size: calc(12.5 * var(--u)); color: var(--text); user-select: text; }
+.set-steps { white-space: pre-wrap; }
+.set-btnrow { display: flex; flex-wrap: wrap; gap: calc(8 * var(--u)); margin: calc(8 * var(--u)) 0; }
+.set-panel { margin: calc(8 * var(--u)) 0; padding-bottom: calc(6 * var(--u)); }
+.set-valrow { margin: calc(8 * var(--u)) 0; }
+.set-valline { display: flex; align-items: center; gap: calc(8 * var(--u)); }
+.set-value { flex: 1; min-width: 0; word-break: break-all; user-select: text; font-size: calc(14 * var(--u)); font-weight: 800; color: var(--accent); }
+.set-lights { display: flex; flex-direction: column; }
+.kb-row { cursor: default; gap: calc(8 * var(--u)); }
+.kb-row .set-label { flex: 1 1 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kb-capture { flex: 2 1 0; font-size: calc(12 * var(--u)); text-align: center; cursor: pointer; caret-color: transparent; }
+.kb-capture:focus { border-color: var(--accent-hover); box-shadow: 0 0 0 1px var(--accent-hover); }
+.kb-mode { flex: 0 0 calc(120 * var(--u)); }
+.kb-test { display: flex; align-items: center; gap: calc(6 * var(--u)); margin: calc(4 * var(--u)) 0; font-size: calc(11 * var(--u)); cursor: pointer; }
+.kb-test input { accent-color: var(--accent); width: calc(14 * var(--u)); height: calc(14 * var(--u)); margin: 0; }
+/* settings: Lights and Spotify tabs */
+.field-col { display: flex; flex-direction: column; gap: calc(3 * var(--u)); margin: calc(8 * var(--u)) 0; }
+.field-label { font-size: calc(11 * var(--u)); }
+.field-col .mod-input { width: 100%; font-size: calc(12 * var(--u)); }
+.err-note { color: #ff8a6a; min-height: 1.2em; }
+.dev-nets { display: flex; flex-direction: column; gap: calc(14 * var(--u)); margin-top: calc(14 * var(--u)); }
+.dev-net { display: flex; flex-direction: column; gap: calc(8 * var(--u)); }
+.dev-net-head { display: flex; align-items: center; justify-content: space-between; gap: calc(10 * var(--u)); padding-bottom: calc(6 * var(--u)); border-bottom: 1px solid var(--divider); }
+.dev-net-name { font-weight: 800; color: var(--accent); font-size: calc(13 * var(--u)); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dev-light { border: 1px solid var(--divider); border-radius: calc(8 * var(--u)); background: rgba(35,17,4,.5); }
+.dev-light-head { width: 100%; text-align: left; padding: calc(8 * var(--u)) calc(10 * var(--u)); background: none; border: 0; font-size: calc(12 * var(--u)); font-weight: 700; color: var(--text); border-radius: calc(8 * var(--u)); }
+.dev-light-head:hover { background: var(--row-hover); }
+.dev-light-body { padding: 0 calc(12 * var(--u)) calc(10 * var(--u)); border-top: 1px solid var(--divider); }
+.dev-light-body .btn { margin-top: calc(8 * var(--u)); }
+.dev-prompt { display: flex; align-items: center; gap: calc(8 * var(--u)); }
+.dev-prompt > .mod-input { flex: 1; min-width: 0; }
+.dev-prompt > .btn.dashed { flex: 1; }
+.set-zoom { display: inline-flex; align-items: center; gap: calc(10 * var(--u)); }
+.set-zoom .slider { width: calc(140 * var(--u)); }
+.set-zoom .set-val { min-width: calc(40 * var(--u)); text-align: right; }

@@ -1,0 +1,3 @@
+#conn { position: fixed; right: calc(14 * var(--u)); bottom: calc(10 * var(--u)); font-size: var(--f-tiny);
+  color: var(--text-dim); transition: opacity .4s; pointer-events: none; }
+#conn:not(.off) { opacity: 0; }

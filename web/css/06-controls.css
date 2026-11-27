@@ -1,0 +1,37 @@
+/* ---------- shared bits ---------- */
+.panel { background: var(--panel-glass); border: 1px solid var(--panel-border); border-radius: calc(14 * var(--u)); }
+.dim { color: var(--text-dim); font-size: var(--f-small); }
+.btn { white-space: nowrap; background: rgba(35,18,5,.8); color: var(--accent); border: 1px solid rgba(255,160,0,.4); border-radius: calc(6 * var(--u)); padding: calc(4 * var(--u)) calc(10 * var(--u)); font-weight: 700; }
+.btn:hover { background: rgba(255,150,0,.3); border-color: var(--accent); color: #fff; }
+.round { border-radius: 50%; display: grid; place-items: center; padding: 0; background: rgba(35,18,5,.8); border: 1px solid rgba(255,160,0,.4); color: var(--accent); transition: background .15s, border-color .15s, transform .08s; }
+.round:hover { background: rgba(255,150,0,.35); border-color: var(--accent); color: #fff; }
+.round:active { transform: scale(.92); }
+.bare { background: none; border: 0; color: var(--text-dim); padding: calc(2 * var(--u)); display: grid; place-items: center; }
+.bare:hover { color: var(--accent); }
+/* filled-track slider: the thumb is invisible, the filled bar is the feedback (--fill set from JS) */
+.slider { --fill: 65%; -webkit-appearance: none; appearance: none; height: calc(3 * var(--u)); border-radius: 2px; outline: none; cursor: pointer;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent) var(--fill), rgba(255,255,255,.12) var(--fill)); }
+.slider::-webkit-slider-thumb { -webkit-appearance: none; width: calc(9 * var(--u)); height: calc(9 * var(--u)); background: transparent; border: 0; cursor: pointer; }
+.slider:disabled { opacity: .35; }
+.switch { position: relative; width: calc(42 * var(--u)); height: calc(24 * var(--u)); flex: none; padding: 0; border-radius: 999px; border: 1px solid rgba(255,230,204,.4); background: transparent; transition: background .15s, border-color .15s; }
+.switch i { position: absolute; top: calc(2 * var(--u)); left: calc(2 * var(--u)); width: calc(18 * var(--u)); height: calc(18 * var(--u)); border-radius: 50%; background: var(--text); transition: left .15s, background .15s; }
+.switch.on { background: var(--accent); border-color: var(--accent); }
+.switch.on i { left: calc(20 * var(--u)); background: #180a02; }
+.switch:disabled { opacity: .4; cursor: default; }
+.tabs-pill { margin: calc(12 * var(--u)) 0 calc(4 * var(--u)); display: flex; gap: 3px; padding: 3px; align-self: flex-start; max-width: 100%; overflow-x: auto; flex: none;
+  background: rgba(35,17,4,.85); border: 1px solid rgba(255,160,0,.35); border-radius: 999px; }
+.tab-pill { height: calc(24 * var(--u)); padding: 0 calc(12 * var(--u)); border-radius: 999px; border: 0; background: transparent; color: var(--text-dim); font-size: calc(11 * var(--u)); font-weight: 800; white-space: nowrap; }
+.tab-pill[aria-pressed="true"] { background: var(--accent); color: #180a02; }
+.btn.danger, .bare.danger:hover { color: #ff8a6a; }
+.bare.danger { color: #a8604a; }
+.btn.dashed { background: transparent; border-style: dashed; color: var(--text-dim); }
+.btn.dashed:hover { color: #fff; border-color: var(--accent); }
+.menu { position: fixed; z-index: 99999; display: flex; flex-direction: column; padding: calc(4 * var(--u)); background: rgba(20,10,0,.97); border: 1px solid var(--panel-border); border-radius: 10px; }
+.menu button { background: none; border: 0; text-align: left; padding: calc(6 * var(--u)) calc(10 * var(--u)); color: var(--text); border-radius: 6px; }
+.menu button:hover { background: rgba(255,150,0,.24); color: #fff; }
+/* audio device menu: one line per device, the current one marked */
+.device-menu { max-width: calc(380 * var(--u)); }
+.device-menu button { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.device-menu button.on { color: var(--accent); }
+.device-menu button.on::before { content: "\2713  "; }
+.device-menu button:not(.on) { padding-left: calc(10 * var(--u) + 2ch); }

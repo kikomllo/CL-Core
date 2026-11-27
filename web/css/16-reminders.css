@@ -1,0 +1,9 @@
+/* reminders */
+.rem-grid { flex: 1; min-height: 0; overflow: auto; margin-top: calc(10 * var(--u)); display: grid; grid-template-columns: repeat(auto-fill, minmax(calc(150 * var(--u)), 1fr)); gap: calc(14 * var(--u)); align-content: start; }
+.rem-cell { display: flex; flex-direction: column; align-items: center; gap: calc(6 * var(--u)); padding: calc(8 * var(--u)); border-radius: calc(12 * var(--u)); background: rgba(255,150,0,.05); }
+.rem-dial { position: relative; width: 100%; max-width: calc(150 * var(--u)); }
+.rem-dial svg { width: 100%; display: block; overflow: visible; }
+.rem-track, .rem-arc { fill: none; stroke-width: 12; stroke-linecap: butt; }
+.rem-track { stroke: rgba(70,35,0,.8); } .rem-arc { stroke: var(--accent); filter: drop-shadow(0 0 4px rgba(255,150,0,.45)); }
+.rem-time { position: absolute; left: 0; right: 0; top: 38%; text-align: center; font-size: calc(17 * var(--u)); font-weight: 800; color: var(--accent); }
+.rem-text { text-align: center; word-break: break-word; }

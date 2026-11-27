@@ -1,0 +1,11 @@
+/* ---- Desktop shell, overlay mode (shell/main.js): the orb alone in a small click-through box, the rest of the page not drawn at all ---- */
+/* a floating (unpinned) window's page (widget.html): the window fills the page, and its title bar moves the window; no lyrics here */
+html[data-mode="widget"], html[data-mode="widget"] body { background: transparent !important; }
+html[data-mode="widget"] #lyrics { display: none !important; }
+html[data-mode="widget"] .win-head { -webkit-app-region: drag; cursor: default; }
+html[data-mode="widget"] .win-head button { -webkit-app-region: no-drag; }
+/* a mode switch is under way (web/js/shell.js): nothing of the old layout may show in the window's new size */
+html.switching, html.switching body { background: transparent !important; }
+html.switching body > * { visibility: hidden !important; }
+html[data-mode="overlay"], html[data-mode="overlay"] body { background: transparent !important; }
+html[data-mode="overlay"] body > :not(#orb) { display: none !important; }

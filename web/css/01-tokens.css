@@ -1,0 +1,30 @@
+/* One fluid unit, like UIScaler: --u is 1px at 1920x1080 (long edge / 1920, short edge / 1080, whichever is smaller),
+   set from JS so a portrait screen scales the same as a landscape one. Sizes are calc(N * var(--u)).
+   Palette = the "Media Widget Concept" / "Ecosystem Palette Preview" artifacts. */
+:root {
+  --u: 1px;
+  --ub: 1px;                      /* the unit without the zoom: window frames are made of it (ui.js baseUnit) */
+  --ug: 1px;                      /* the same, kept apart: a window with a zoom of its own sets --u to calc(var(--ug) * zoom) */
+  --bg-0: #050200;
+  --panel: #1b0d03;
+  --panel-glass: rgba(27, 13, 3, .94);
+  --panel-border: rgba(255, 150, 0, .32);
+  --panel-border-strong: rgba(255, 150, 0, .6);
+  --accent: #ffaa00;
+  --accent-hover: #ffcc00;
+  --title-accent: #ff7700;
+  --text: #ffe6cc;
+  --text-dim: #a89a8c;
+  --cream: #fff4e6;
+  --divider: rgba(255, 150, 0, .18);
+  --row-hover: rgba(255, 150, 0, .08);
+  --row-active: rgba(255, 150, 0, .16);
+  --success: #88ff88;
+  --font: "JetBrains Mono", "DejaVu Sans Mono", "Courier New", monospace;
+  /* a few aliases the widgets use */
+  --primary: var(--accent); --primary-hover: var(--accent-hover); --title: var(--title-accent);
+  --border: var(--panel-border); --border-focus: rgba(255, 180, 0, .59); --primary-dim: rgba(255, 170, 0, .59);
+  --bg-panel: var(--panel-glass);
+  --f-tiny: calc(11 * var(--u)); --f-small: calc(12 * var(--u)); --f-normal: calc(14 * var(--u));
+  --f-large: calc(16 * var(--u)); --f-title: calc(18 * var(--u));
+}

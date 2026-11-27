@@ -1,0 +1,13 @@
+/* ---------- System Updates ---------- */
+.up-status { margin: calc(8 * var(--u)) 0 calc(6 * var(--u)); flex: none; }
+.up-bar { position: relative; flex: none; height: calc(4 * var(--u)); margin-bottom: calc(6 * var(--u)); border-radius: 2px; background: rgba(255,255,255,.08); overflow: hidden; }
+.up-bar i { position: absolute; top: 0; bottom: 0; width: 35%; border-radius: 2px; background: var(--accent); animation: up-slide 1.2s ease-in-out infinite; }
+@keyframes up-slide { 0% { left: -35%; } 100% { left: 100%; } }
+@media (prefers-reduced-motion: reduce) { .up-bar i { animation: none; left: 0; width: 100%; opacity: .5; } }
+.up-list { margin-top: 0; }
+.up-row { gap: calc(10 * var(--u)); min-height: calc(44 * var(--u)); }
+.up-name { flex: 1; min-width: 0; font-size: calc(12.5 * var(--u)); word-break: break-word; user-select: text; }
+.up-install { flex: none; height: calc(26 * var(--u)); font-size: calc(11 * var(--u)); color: var(--success); border-color: rgba(136,255,136,.4); }
+.up-install:hover { background: rgba(136,255,136,.18); color: #fff; border-color: var(--success); }
+.up-log { flex: 1; min-height: 0; }
+.mod > .btn.mod-wide:disabled { opacity: .45; cursor: default; }

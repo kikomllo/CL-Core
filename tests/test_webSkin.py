@@ -1,6 +1,7 @@
 """The web dashboard's skin: the stylesheet is recoloured on the server with clSkin, and colours built in JS use a port of
 the same mapping (web/js/skin.js). These tests keep the two in step and check the route."""
 import json
+from webcss import web_css
 import os
 import shutil
 import subprocess
@@ -80,8 +81,7 @@ class TestStylesheetRoute:
         monkeypatch.setattr(clWebUI, "active_skin", lambda: "jarvis")
         r = await client.get("/style.css")
         assert r.status == 200 and r.content_type == "text/css"
-        with open(os.path.join(ROOT, "web", "style.css"), encoding="utf-8") as f:
-            assert await r.text() == f.read()
+        assert await r.text() == web_css()
 
     async def test_the_ultron_skin_recolours_the_orange(self, client, monkeypatch):
         import clWebUI

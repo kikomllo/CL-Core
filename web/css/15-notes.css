@@ -1,0 +1,9 @@
+/* notes */
+.round.add { background: linear-gradient(135deg, #ffb92e, #ff8c00); border: 0; color: #180a02; width: calc(34 * var(--u)); height: calc(34 * var(--u)); }
+.note-row { padding: calc(12 * var(--u)) 0; border-top: 1px solid var(--divider); cursor: pointer; }
+.note-row:hover { background: var(--row-hover); }
+.note-top { display: flex; align-items: center; justify-content: space-between; gap: calc(10 * var(--u)); }
+.note-body { margin-top: calc(4 * var(--u)); font-size: calc(12 * var(--u)); line-height: 1.5; color: #c9bcab; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.note-title { flex: 1; min-width: 0; background: none; border: 0; border-bottom: 1px solid var(--divider); outline: none; padding: calc(6 * var(--u)) 0; font-size: calc(16 * var(--u)); font-weight: 800; color: #fff; user-select: text; }
+.note-text { flex: 1; min-height: 0; margin-top: calc(10 * var(--u)); resize: none; background: rgba(35,17,4,.5); border: 1px solid var(--divider); border-radius: calc(10 * var(--u)); padding: calc(10 * var(--u)); outline: none; font: inherit; line-height: 1.5; user-select: text; color: var(--text); }
+.note-text:focus { border-color: var(--border-focus); }

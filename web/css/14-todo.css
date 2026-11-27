@@ -1,0 +1,10 @@
+/* to-do */
+.todo-row { display: flex; align-items: center; gap: calc(14 * var(--u)); min-height: calc(44 * var(--u)); border: 0; border-top: 1px solid var(--divider); background: none; text-align: left; width: 100%;
+  font-size: calc(13 * var(--u)); font-weight: 600; color: var(--text); cursor: pointer; }
+.todo-row:hover { background: var(--row-hover); }
+.todo-text { flex: 1; min-width: 0; user-select: text; word-break: break-word; padding: calc(4 * var(--u)) 0; }
+.ring { width: calc(18 * var(--u)); height: calc(18 * var(--u)); flex: none; border-radius: 50%; border: 1px solid rgba(255,230,204,.6); }
+.todo-row.done { color: #8f8173; } .todo-row.done .todo-text { text-decoration: line-through; }
+.todo-row.done .ring { border-color: #ffcc66; background: linear-gradient(135deg, #ff8c00, #e65c00); }
+.todo-row.add { color: var(--text-dim); } .todo-row.add .mod-input { height: calc(30 * var(--u)); }
+.plus { width: calc(18 * var(--u)); text-align: center; font-size: calc(20 * var(--u)); line-height: 1; }

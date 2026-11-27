@@ -1,0 +1,19 @@
+/* ---------- scrollbars: one custom style for every scrolling area (windows, lists, the calendar, the log terminal, popups) ----------
+   No track and no arrows: just a slim rounded thumb that floats off the edge. It is faint at rest (so you can see an area scrolls),
+   brighter while the area is hovered, thickens under the pointer and lights up while dragged. Chromium/WebKit draw it with the
+   pseudo-elements (a transparent border + background-clip makes the thumb narrower than its gutter, which is what lets it thicken);
+   Firefox gets the standard thin version. The colours are the accent's, so the skin recolours them with everything else. */
+:root { --sb-gutter: max(9px, calc(12 * var(--u))); --sb-inset: max(3px, calc(4 * var(--u))); }
+::-webkit-scrollbar { width: var(--sb-gutter); height: var(--sb-gutter); background: transparent; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+::-webkit-scrollbar-thumb { min-height: 34px; min-width: 34px; border: var(--sb-inset) solid transparent; border-radius: 999px; background: rgba(255,170,0,.22); background-clip: padding-box; transition: background-color .15s; }
+*:hover::-webkit-scrollbar-thumb { background: rgba(255,170,0,.42); background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { border-width: max(1.5px, calc(var(--sb-inset) / 2)); background: rgba(255,190,40,.78); background-clip: padding-box; }
+::-webkit-scrollbar-thumb:active { background: var(--accent-hover); background-clip: padding-box; }
+@supports not selector(::-webkit-scrollbar) { * { scrollbar-width: thin; scrollbar-color: rgba(255,170,0,.4) transparent; } }
+/* a row of tab pills scrolls sideways when it must (mouse wheel, see enableTabScroll in ui.js), but needs no bar under it: a fade at an edge says there are more tabs past it */
+.tabs-pill.fade-r { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 26 * var(--u)), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 26 * var(--u)), transparent); }
+.tabs-pill.fade-l { -webkit-mask-image: linear-gradient(90deg, transparent, #000 26px); mask-image: linear-gradient(90deg, transparent, #000 26px); }
+.tabs-pill.fade-l.fade-r { -webkit-mask-image: linear-gradient(90deg, transparent, #000 26px, #000 calc(100% - 26px), transparent); mask-image: linear-gradient(90deg, transparent, #000 26px, #000 calc(100% - 26px), transparent); }
+.tabs-pill { scrollbar-width: none; } .tabs-pill::-webkit-scrollbar { display: none; }

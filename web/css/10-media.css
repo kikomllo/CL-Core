@@ -1,0 +1,58 @@
+/* ---------- media widget (the "Media Widget Redesign" artifact) ---------- */
+.media { position: relative; padding: calc(14 * var(--u)) calc(18 * var(--u)) calc(12 * var(--u)); display: flex; flex-direction: column; }
+.m-top { display: flex; align-items: flex-start; gap: calc(8 * var(--u)); }
+.m-badge { font-size: calc(11 * var(--u)); letter-spacing: .14em; color: var(--accent); height: calc(20 * var(--u)); line-height: calc(20 * var(--u)); text-transform: uppercase; font-weight: 800; }
+.dot-toggle { position: relative; width: calc(20 * var(--u)); height: calc(25 * var(--u)); display: grid; place-items: center; background: none; border: 0; color: #8a7a66; padding: 0; transition: color .12s; }
+.dot-toggle:hover { color: var(--accent-hover); } .dot-toggle.on { color: var(--accent); }
+.dot-toggle i { position: absolute; bottom: 0; left: 50%; margin-left: calc(-2 * var(--u)); width: calc(4 * var(--u)); height: calc(4 * var(--u)); border-radius: 50%; background: var(--accent); opacity: 0; }
+.dot-toggle.on i { opacity: 1; } .dot-toggle.pending { opacity: .55; } .dot-toggle.pending i { background: none; border: 1px solid var(--accent); }
+.m-title { margin-top: calc(6 * var(--u)); font-size: calc(18 * var(--u)); font-weight: 800; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.m-artist { font-size: calc(16 * var(--u)); font-weight: 700; color: var(--title-accent); margin-top: calc(2 * var(--u)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.m-transport { margin-top: calc(10 * var(--u)); display: flex; align-items: center; justify-content: center; gap: calc(18 * var(--u)); }
+.round.sm { width: calc(32 * var(--u)); height: calc(32 * var(--u)); }
+.round.lg { width: calc(40 * var(--u)); height: calc(40 * var(--u)); background: linear-gradient(135deg, #ff9a2a, #ff6a00); border-color: rgba(255,200,120,.55); color: #fff; }
+.round.lg:hover { background: linear-gradient(135deg, #ffa01a, #ff701a); }
+.round.xs { width: calc(22 * var(--u)); height: calc(22 * var(--u)); }
+.m-seek { margin-top: calc(12 * var(--u)); display: flex; align-items: center; gap: calc(10 * var(--u)); padding-right: 0; transition: padding-right .2s; }
+.m-seek .dim { min-width: calc(30 * var(--u)); } .m-seek .dim:last-child { text-align: right; }
+.seek { --p: 0%; flex: 1; height: calc(16 * var(--u)); display: flex; align-items: center; cursor: pointer; }
+.seek-track { position: relative; width: 100%; height: calc(4 * var(--u)); border-radius: 3px; background: #363636; transition: height .12s; }
+.seek:hover .seek-track { height: calc(6 * var(--u)); }
+.seek-fill { height: 100%; width: var(--p); border-radius: 3px; background: linear-gradient(90deg, #ff9900, #ffcc00); }
+.seek-knob { position: absolute; top: 50%; left: var(--p); width: calc(12 * var(--u)); height: calc(12 * var(--u)); margin: calc(-6 * var(--u)) 0 0 calc(-6 * var(--u)); border-radius: 50%; background: var(--text); border: 2px solid var(--accent); opacity: 0; transition: opacity .12s; }
+.seek:hover .seek-knob { opacity: 1; } .seek.locked { cursor: default; opacity: .6; } .seek.locked .seek-knob { display: none; }
+/* Spotify's own volume: a vertical fader that appears on hover, drawn over the right edge so nothing shifts */
+.fader { position: absolute; right: calc(8 * var(--u)); top: calc(34 * var(--u)); width: calc(28 * var(--u)); display: flex; flex-direction: column; align-items: center; gap: calc(8 * var(--u));
+  opacity: 0; pointer-events: none; transition: opacity .2s; }
+.media:hover .fader { opacity: 1; pointer-events: auto; }
+/* the fader is drawn over the widget's right edge (8 + 28 px in, from the padding edge): while it shows, the seek row (the time, the bar, the total) steps left of it,
+   or the mute button would sit on the song's total time */
+.media:hover .m-seek { padding-right: calc(26 * var(--u)); }
+.slider.v { writing-mode: vertical-lr; direction: rtl; width: calc(4 * var(--u)); height: calc(104 * var(--u));
+  background: linear-gradient(to top, var(--accent) 0%, var(--accent) var(--fill), rgba(255,255,255,.12) var(--fill)); }
+.mute { width: calc(18 * var(--u)); height: calc(18 * var(--u)); }
+/* the three tabs sit 50 apart when there is room and close up to 8 when there is not, so this row never sets the window's minimum width */
+.m-tabs { margin: calc(14 * var(--u)) auto 0; width: 100%; max-width: calc(176 * var(--u)); box-sizing: border-box; display: flex; justify-content: space-between; align-items: center; gap: calc(8 * var(--u)); padding-bottom: calc(6 * var(--u)); }
+.tab { position: relative; width: calc(24 * var(--u)); height: calc(24 * var(--u)); color: #8a7a66; border-color: rgba(255,140,0,.28); background: rgba(255,120,0,.08); }
+.tab.mid { width: calc(28 * var(--u)); height: calc(28 * var(--u)); }
+.tab.on { color: var(--accent); border-color: var(--accent); background: rgba(255,170,0,.2); }
+.tab i { position: absolute; bottom: calc(-6 * var(--u)); left: 50%; margin-left: calc(-2 * var(--u)); width: calc(4 * var(--u)); height: calc(4 * var(--u)); border-radius: 50%; background: var(--accent); opacity: 0; }
+.tab.on i { opacity: 1; }
+.drawer { margin-top: calc(10 * var(--u)); display: flex; flex-direction: column; gap: calc(8 * var(--u)); }
+.m-capbar { display: flex; align-items: center; gap: calc(8 * var(--u)); } .m-capbar .dim { flex: 1; }
+.q-rows { display: flex; flex-direction: column; gap: calc(8 * var(--u)); transition: opacity .2s; }
+.q-row { display: flex; align-items: center; gap: calc(8 * var(--u)); text-align: left; background: none; border: 0; border-radius: 8px; padding: calc(2 * var(--u)) calc(4 * var(--u)); width: 100%; }
+.q-row:not(:disabled):hover { background: var(--row-hover); }
+.q-n { width: calc(20 * var(--u)); text-align: center; }
+.q-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.q-info span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.q-t { font-size: calc(14 * var(--u)); font-weight: 700; color: var(--title-accent); }
+.q-next { font-size: calc(10 * var(--u)); letter-spacing: .06em; color: var(--accent); border: 1px solid rgba(255,140,0,.5); border-radius: 10px; padding: 1px calc(7 * var(--u)); }
+.av-rows { display: flex; flex-direction: column; gap: calc(10 * var(--u)); }
+.av-row { display: flex; align-items: center; gap: calc(8 * var(--u)); border-radius: 8px; }
+.av-info { flex: 1; min-width: 0; overflow: hidden; } .av-name { font-size: calc(16 * var(--u)); font-weight: 700; color: var(--title-accent); }
+/* ellipsised, so the minimum-size measure (ui.js fitMin) leaves the app's name and now-playing out: the row's floor is the icon and its buttons */
+.av-name, .av-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.av-row.tight .av-name, .av-row.tight .av-sub { visibility: hidden; }          /* too narrow to read: hidden, still taking its place so the row does not jump (set in media.js) */
+.app-ph { width: calc(20 * var(--u)); height: calc(20 * var(--u)); border-radius: 5px; border: 1px dashed rgba(255,170,0,.3); flex: none; }
+.av-vol { flex: 0 1 calc(60 * var(--u)); min-width: calc(30 * var(--u)); height: calc(4 * var(--u)); }       /* shrinks to a minimum bar before the window stops (ELASTIC in ui.js) */

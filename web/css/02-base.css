@@ -1,0 +1,14 @@
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; color: var(--text);
+  font: 400 var(--f-normal)/1.35 var(--font); user-select: none; -webkit-font-smoothing: antialiased; }
+/* The Qt overlay's background (clUI.paintEvent): near-black, a faint honeycomb (flat-top hexagons, r = 25 at 1080p) and a warm
+   orange tint that fades out from the centre (max(w, h) * 0.7). */
+body { background:
+  url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='75' height='43.3013' viewBox='0 0 75 43.3013' fill='none' stroke='%23324355' stroke-opacity='.2' stroke-width='1'%3E%3Cpath id='h' d='M25 0 L12.5 21.6506 L-12.5 21.6506 L-25 0 L-12.5 -21.6506 L12.5 -21.6506 Z'/%3E%3Cpath d='M25 0 L12.5 21.6506 L-12.5 21.6506 L-25 0 L-12.5 -21.6506 L12.5 -21.6506 Z' transform='translate(75 0)'/%3E%3Cpath d='M25 0 L12.5 21.6506 L-12.5 21.6506 L-25 0 L-12.5 -21.6506 L12.5 -21.6506 Z' transform='translate(0 43.3013)'/%3E%3Cpath d='M25 0 L12.5 21.6506 L-12.5 21.6506 L-25 0 L-12.5 -21.6506 L12.5 -21.6506 Z' transform='translate(75 43.3013)'/%3E%3Cpath d='M25 0 L12.5 21.6506 L-12.5 21.6506 L-25 0 L-12.5 -21.6506 L12.5 -21.6506 Z' transform='translate(37.5 21.6506)'/%3E%3C/svg%3E")
+    0 0 / calc(75 * var(--u)) calc(43.3013 * var(--u)),
+  radial-gradient(circle calc(max(100vw, 100vh) * .7) at 50% 50%, rgba(255,150,0,.07) 0%, rgba(255,140,0,.045) 30%, rgba(255,110,0,.015) 80%, rgba(255,100,0,0) 100%),
+  var(--bg-0); }
+button { font: inherit; color: inherit; cursor: pointer; }
+input { font: inherit; color: inherit; }
+[hidden] { display: none !important; }
+:focus-visible { outline: 2px solid var(--accent-hover); outline-offset: 2px; }

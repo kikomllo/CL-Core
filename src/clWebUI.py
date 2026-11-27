@@ -28,6 +28,7 @@ from utils.clActionRouter import ActionRouter  # noqa: E402
 from utils.clConfigLoader import ConfigLoader  # noqa: E402
 from utils import clAutostart, clBeacon, clLogTail, clWebDevices, clWebSettings  # noqa: E402
 import clSkin  # noqa: E402
+from utils import clWebCss  # noqa: E402
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("JARVIS_WEB_PORT", "8765"))
@@ -202,12 +203,11 @@ def active_skin():
 
 
 async def style_handler(request):
-    """The stylesheet, recoloured by the same mapping as the Qt UI (src/clSkin.py): written in JARVIS orange, so the default
+    """The stylesheet (web/css/*.css joined, see clWebCss), recoloured by the same mapping as the Qt UI (src/clSkin.py): written in JARVIS orange, so the default
     skin is the file as it is and any other skin is a deterministic recolour of every colour in it. Doing it here means the
     page never flashes the wrong palette and the mapping exists in one place."""
     def build():
-        with open(os.path.join(WEB_DIR, "style.css"), "r", encoding="utf-8") as f:
-            return clSkin.recolor_css(f.read(), active_skin())
+        return clSkin.recolor_css(clWebCss.bundle(WEB_DIR), active_skin())
     css = await asyncio.to_thread(build)
     return web.Response(text=css, content_type="text/css", charset="utf-8")
 

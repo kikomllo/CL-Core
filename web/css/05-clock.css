@@ -1,0 +1,9 @@
+/* ---------- clock: anchored to the window's vertical centre (the orb), not the top ---------- */
+#clock { position: fixed; left: 50%; top: calc(50% - 282 * var(--u)); transform: translateX(-50%);
+  width: calc(900 * var(--u)); text-align: center; pointer-events: none; color: var(--accent); }
+#clock .time { position: relative; display: inline-flex; align-items: baseline; font-weight: 400; font-size: calc(84 * var(--u)); line-height: 1; color: rgba(255,170,0,.92);
+  text-shadow: 0 0 calc(36 * var(--u)) rgba(255,140,0,.42), 0 0 calc(6 * var(--u)) rgba(255,170,0,.35); }
+#clock .colon { margin: 0 calc(4 * var(--u)); }
+#clock .secs { position: absolute; left: 100%; bottom: calc(10 * var(--u)); margin-left: calc(16 * var(--u)); font-size: calc(26 * var(--u)); line-height: 1; color: rgba(255,170,0,.55); text-shadow: none; }
+#clock .rule { width: calc(420 * var(--u)); height: 1px; margin: calc(14 * var(--u)) auto; background: linear-gradient(90deg, transparent, rgba(255,170,0,.55), transparent); }
+#clock .date { font-size: calc(16 * var(--u)); line-height: 1; letter-spacing: .34em; padding-left: .34em; white-space: nowrap; color: rgba(255,170,0,.62); }

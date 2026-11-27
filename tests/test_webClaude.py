@@ -1,5 +1,6 @@
 """The web Claude window's pure logic (web/js/claude-model.js), run under node."""
 import json
+from webcss import web_css
 import os
 import re
 import shutil
@@ -184,7 +185,7 @@ class TestNeverScrollsSideways:
             return f.read()
 
     def test_the_screen_hides_horizontal_overflow(self):
-        css = self._read("web", "style.css")
+        css = web_css()
         rule = re.search(r"\.cl-screen \{[^}]*\}", css).group(0)
         assert "overflow-x: hidden" in rule and "overflow-y: auto" in rule
 

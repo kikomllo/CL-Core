@@ -1,5 +1,6 @@
 """The colour wheel and the customisable swatches of the light picker (web/js/swatch-model.js under node)."""
 import json
+from webcss import web_css
 import os
 import shutil
 import subprocess
@@ -107,7 +108,7 @@ class TestWheelPaint:
     def test_the_wheel_has_no_border_because_the_gradient_repeats_into_it(self):
         """A border on the wheel painted the opposite side's colours as slivers at the top, bottom, left and right; the ring is a box-shadow."""
         import re
-        css = open(os.path.join(ROOT, "web", "style.css"), encoding="utf-8").read()
+        css = web_css()
         rule = re.search(r"(?m)^\.wh-disc\s*\{([^}]*)\}", css).group(1)
         rule = re.sub(r"/\*.*?\*/", "", rule, flags=re.S)
         assert not re.search(r"(?<![-\w])border\s*:", rule) and "box-shadow" in rule

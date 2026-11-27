@@ -1,7 +1,8 @@
 import os
+from webcss import web_css
 import re
 
-CSS = open(os.path.join(os.path.dirname(__file__), "..", "web", "style.css"), encoding="utf-8").read()
+CSS = web_css()
 
 
 def z(selector):

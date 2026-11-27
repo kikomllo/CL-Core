@@ -1,0 +1,28 @@
+/* lights */
+.disc { width: calc(36 * var(--u)); height: calc(36 * var(--u)); flex: none; border-radius: 50%; display: grid; place-items: center; background: rgba(255,150,0,.13); color: var(--text); transition: background .2s, box-shadow .2s; }
+.disc.on { color: #180a02; }
+button.disc { border: 0; padding: 0; cursor: pointer; }                                  /* the disc is the colour button */
+/* the ring is drawn INSIDE the disc (negative offset): the list scrolls, so anything outside the disc's own box is clipped at the list's edge; light, so it shows on any bulb colour */
+button.disc:not(:disabled):hover, button.disc:not(:disabled):focus-visible { outline: 2px solid rgba(255,255,255,.9); outline-offset: -3px; }
+button.disc:disabled { cursor: default; }
+.picker { position: fixed; z-index: 99998; width: calc(250 * var(--u)); padding: calc(14 * var(--u)); display: flex; flex-direction: column; gap: calc(12 * var(--u)); background: rgba(20,10,0,.97); }
+.pk-title { font-weight: 800; color: #fff; }
+.pk-swatches { display: flex; gap: calc(8 * var(--u)); }
+.sw { flex: 1; height: calc(26 * var(--u)); border-radius: calc(8 * var(--u)); border: 1px solid rgba(255,255,255,.3); background: var(--c); font-size: calc(10 * var(--u)); font-weight: 800; color: rgba(0,0,0,.65); padding: 0; }
+.sw:hover { border-color: #fff; }
+.wheel-pop { width: calc(190 * var(--u)); z-index: 99999; }
+.wh-disc { position: relative; align-self: center; width: calc(150 * var(--u)); height: calc(150 * var(--u)); border-radius: 50%; touch-action: none; cursor: crosshair;
+  box-shadow: 0 0 0 1px rgba(255,255,255,.3);  /* a ring outside, not a border: the gradient repeats into a border and showed the opposite side's colours as slivers at the four points */
+  /* real colours, never the skin's: hue round from the right, clockwise, white in the middle (the same maths as swatch-model.js) */
+  background: radial-gradient(circle closest-side, #fff, rgba(255,255,255,0)), conic-gradient(from 90deg, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00); }
+.rgb-rows { display: flex; flex-direction: column; gap: calc(7 * var(--u)); }
+.rgb-row { display: grid; grid-template-columns: calc(12 * var(--u)) 1fr calc(28 * var(--u)); align-items: center; gap: calc(8 * var(--u)); font-size: var(--f-tiny); }
+.rgb-l { font-weight: 800; color: #fff; } .rgb-v { text-align: right; }
+.slider.rgb-slider { width: 100%; height: calc(6 * var(--u)); border-radius: 999px; background: linear-gradient(90deg, var(--lo, #000), var(--hi, #fff)); }   /* real colours, set by the script */
+.slider.rgb-slider::-webkit-slider-thumb { width: calc(13 * var(--u)); height: calc(13 * var(--u)); border-radius: 50%; background: #fff; border: 2px solid rgba(0,0,0,.6); }
+.wh-knob { position: absolute; width: calc(14 * var(--u)); height: calc(14 * var(--u)); margin: calc(-7 * var(--u)) 0 0 calc(-7 * var(--u)); border-radius: 50%;
+  border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.65); pointer-events: none; }
+.pk-row { display: flex; gap: calc(8 * var(--u)); justify-content: space-between; }
+.pk-slider { display: flex; flex-direction: column; gap: calc(6 * var(--u)); } .pk-cap { display: flex; justify-content: space-between; letter-spacing: 1px; font-size: var(--f-tiny); }
+.pk-slider .slider { width: 100%; height: calc(5 * var(--u)); }
+.pk-slider.locked { opacity: .45; } .pk-slider.locked .slider { cursor: not-allowed; }

@@ -1,5 +1,6 @@
 """The orb's rules for the desktop shell's overlay window (web/js/orb-model.js, under node) and the page's stacking order."""
 import json
+from webcss import web_css
 import os
 import re
 import shutil
@@ -63,7 +64,7 @@ class TestOverlayVisibility:
 
 
 def _css_z(selector):
-    css = open(os.path.join(ROOT, "web", "style.css"), encoding="utf-8").read()
+    css = web_css()
     rule = re.search(re.escape(selector) + r"\s*\{[^}]*\}", css).group(0)
     return int(re.search(r"z-index:\s*(\d+)", rule).group(1))
 

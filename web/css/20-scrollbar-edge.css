@@ -1,0 +1,8 @@
+/* ---------- scrollbars sit at the window's right edge, not beside the content ----------
+   A scrolling area inside a padded panel reaches out to the panel's edge (negative margin) and keeps its padding inside, so the bar is
+   flush on the right and the content stays exactly where it was. Same amounts as the parent's padding: .mod 20, the calendar sheet 22. */
+.mod-list, .rem-grid, .set-pages { margin-right: calc(-20 * var(--u)); padding-right: calc(20 * var(--u)); }
+.cal-events { margin-right: calc(-22 * var(--u)); padding-right: calc(22 * var(--u)); }
+.cal-stack { margin-right: calc(-22 * var(--u)); }
+.cal-page { padding-right: calc(22 * var(--u)); }
+.cal-page .mod-list, .cal-page .rem-grid { margin-right: 0; padding-right: 0; }          /* inside the drawer the page itself is the scroller */

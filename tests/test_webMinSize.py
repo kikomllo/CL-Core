@@ -2,6 +2,7 @@
 The measurement itself needs a real layout engine; it was checked by rendering all nine widgets at their measured minimums in the desktop shell
 (JARVIS_SHELL_TEST, see docs/web_ui_plan.md). These tests keep the rules that make that measurement meaningful from being undone."""
 import glob
+from webcss import web_css
 import os
 import re
 
@@ -14,7 +15,7 @@ def read(*parts):
 
 
 UI = read("web", "js", "ui.js")
-CSS = read("web", "style.css")
+CSS = web_css()
 
 
 class TestFitToContent:

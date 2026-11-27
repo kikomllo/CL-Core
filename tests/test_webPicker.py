@@ -1,5 +1,6 @@
 """The lights widget: the bulb disc is the colour button (no separate swatch), and the popover lines up with it (web/js/picker-spot.js under node)."""
 import json
+from webcss import web_css
 import os
 import re
 import shutil
@@ -47,7 +48,7 @@ class TestPickerSpot:
 
 class TestLightRow:
     js = re.sub(r"//[^\n]*", "", read("web", "js", "lights.js"))
-    css = read("web", "style.css")
+    css = web_css()
 
     def test_the_separate_colour_swatch_is_gone(self):
         assert "swatch-btn" not in self.js and "swatch-btn" not in self.css

@@ -1,0 +1,19 @@
+/* ---------- floating windows: title bar with glowing dot, label, pin, close ---------- */
+#widgets { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+#widgets > .win { pointer-events: auto; }
+.win.panel { border-radius: calc(7 * var(--u)); }
+.win { position: absolute; display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 0 calc(30 * var(--u)) calc(70 * var(--u)) calc(-25 * var(--u)) rgba(0,0,0,.8), 0 0 0 1px rgba(0,0,0,.4); }
+.win-head { display: flex; align-items: center; height: calc(26 * var(--u)); padding: 0 calc(6 * var(--u)) 0 calc(14 * var(--u)); flex: none; cursor: grab;
+  background: rgba(255,120,0,.10); border-bottom: 1px solid var(--panel-border); }
+.win-head:active { cursor: grabbing; }
+.win-dot { width: calc(6 * var(--u)); height: calc(6 * var(--u)); border-radius: 50%; background: var(--accent); margin-right: calc(9 * var(--u)); flex: none;
+  box-shadow: 0 0 calc(5 * var(--u)) 1px rgba(255,170,0,.65), 0 0 calc(12 * var(--u)) calc(4 * var(--u)) rgba(255,140,0,.32); }
+.win-title { white-space: nowrap; flex: 1; font-size: calc(12 * var(--u)); font-weight: 400; color: var(--accent); }
+.chrome-btn { width: calc(22 * var(--u)); height: calc(22 * var(--u)); border: 0; background: transparent; color: var(--accent); display: grid; place-items: center; border-radius: 6px; padding: 0; }
+.chrome-btn:hover { background: rgba(255,60,0,.35); color: #fff; }
+.chrome-btn.pin:hover { background: rgba(255,150,0,.25); }
+.chrome-btn.pin:not(.on) { opacity: .55; }
+.win-body { flex: 1; min-height: 0; overflow: auto; }
+.win-grip { position: absolute; right: 0; bottom: 0; width: calc(16 * var(--u)); height: calc(16 * var(--u)); cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 55%, rgba(255,180,0,.45) 55% 62%, transparent 62% 75%, rgba(255,180,0,.45) 75% 82%, transparent 82%); }

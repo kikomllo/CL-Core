@@ -1,0 +1,2 @@
+/* the orb's state, shown only in debug mode (clUI._paint_state_text) */
+#state { position: fixed; left: calc(10 * var(--u)); top: calc(6 * var(--u)); font-size: calc(13 * var(--u)); color: rgba(255,255,255,.6); pointer-events: none; z-index: 6000; }

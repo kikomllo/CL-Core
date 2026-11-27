@@ -1,0 +1,18 @@
+/* ---------- list modules: Lights / To-Do / Notes / Reminders (the "Brand*" module artifacts) ---------- */
+.mod { height: 100%; display: flex; flex-direction: column; padding: calc(16 * var(--u)) calc(20 * var(--u)) calc(14 * var(--u)); background: linear-gradient(180deg, #1b0c03, #0e0500); }
+.mod-head { display: flex; align-items: center; justify-content: space-between; gap: calc(10 * var(--u)); flex: none; }
+.mod-title { white-space: nowrap; display: flex; align-items: baseline; gap: calc(10 * var(--u)); font-size: calc(20 * var(--u)); font-weight: 800; color: #fff; }
+.mod-count { white-space: nowrap; font-size: calc(11 * var(--u)); font-weight: 800; letter-spacing: 2px; color: var(--text-dim); }
+.mod-list { flex: 1; min-height: 0; overflow: auto; margin-top: calc(10 * var(--u)); display: flex; flex-direction: column; }
+.mod-list > * { flex: none; }
+.mod-empty { padding: calc(14 * var(--u)) 0; font-style: italic; }
+.mod-row { display: flex; align-items: center; gap: calc(12 * var(--u)); min-height: calc(58 * var(--u)); border-top: 1px solid var(--divider); }
+.mod-row.offline { opacity: .55; }
+.mod-main { flex: 1; min-width: 0; line-height: 1.4; }
+.mod-name { font-size: calc(13 * var(--u)); font-weight: 800; color: #fff; }
+.mod-wide { height: calc(38 * var(--u)); border-radius: calc(10 * var(--u)); margin-top: calc(10 * var(--u)); flex: none; background: transparent; color: var(--text); border-color: rgba(255,230,204,.35); }
+.mod-input { flex: 1; min-width: 0; height: calc(34 * var(--u)); padding: 0 calc(12 * var(--u)); background: rgba(35,17,4,.85); border: 1px solid rgba(255,160,0,.35); border-radius: calc(9 * var(--u)); outline: none; user-select: text; }
+.mod-input:focus { border-color: var(--accent); }
+.mod-compose { display: flex; gap: calc(8 * var(--u)); align-items: center; margin: calc(6 * var(--u)) 0; flex: none; }
+.mod-foot { display: flex; align-items: center; justify-content: space-between; gap: calc(10 * var(--u)); flex: none; font-size: var(--f-tiny); color: var(--text-dim); padding-top: calc(8 * var(--u)); border-top: 1px solid var(--divider); }
+.mod-foot span:nth-child(2) { flex: 1; text-align: right; }

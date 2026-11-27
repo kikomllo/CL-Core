@@ -1,0 +1,31 @@
+/* ---------- Live Logs: a terminal screen with a filter prompt ---------- */
+.logs { height: 100%; display: flex; flex-direction: column; padding: calc(10 * var(--u)); gap: calc(8 * var(--u)); background: linear-gradient(180deg, #1b0c03, #0e0500); }
+.log-head { display: flex; align-items: center; gap: calc(10 * var(--u)); flex: none; }
+.log-note { flex: 1; min-width: 0; text-align: center; }
+.log-tool { height: calc(26 * var(--u)); font-size: calc(11 * var(--u)); }
+.log-tool[aria-pressed="false"] { color: var(--text-dim); border-color: var(--divider); background: transparent; }
+.t-wrap { position: relative; flex: 1; min-height: 0; display: flex; }
+.t-screen { flex: 1; min-width: 0; overflow: auto; user-select: text; padding: calc(10 * var(--u)) calc(12 * var(--u)); background: #070300; border: 1px solid var(--divider); border-radius: calc(8 * var(--u));
+  font-size: calc(11.5 * var(--u)); line-height: 1.5; color: #d8c8b4; box-shadow: inset 0 0 calc(30 * var(--u)) rgba(0,0,0,.6); }
+/* like a terminal: a line that is wider than the screen wraps at the edge, mid-word if it has to (no horizontal scroll) */
+.t-screen { white-space: pre-wrap; word-break: break-all; overflow-x: hidden; }
+.t-screen:focus-visible { outline: 1px solid var(--border-focus); outline-offset: 0; }
+.t-prompt { color: #9a8c7c; } .t-ps { color: #5fd75f; font-weight: 800; }
+.t-line { min-height: 1.5em; } .t-line:hover { background: rgba(255,255,255,.04); }
+.t-stamp { color: #7d7164; }
+.t-tag { font-weight: 700; } .t-tag.c0 { color: #5fd75f; } .t-tag.c1 { color: #4fc3d9; } .t-tag.c2 { color: #d070d0; } .t-tag.c3 { color: #6c9cff; } .t-tag.c4 { color: #e5c07b; } .t-tag.c5 { color: #cfcfcf; }
+.t-topic { color: #4fc3d9; }
+.t-line.err { color: #ff7b72; } .t-line.warn { color: #e5c07b; }
+.t-line mark { background: rgba(255,204,0,.28); color: #fff; border-radius: 2px; }
+.t-empty { color: var(--text-dim); font-style: italic; padding: calc(6 * var(--u)) 0; }
+.t-endline { height: 1.5em; } .t-cursor { display: inline-block; width: .6em; height: 1.15em; vertical-align: text-bottom; background: #d8c8b4; animation: t-blink 1.1s steps(1) infinite; }
+@keyframes t-blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .t-cursor { animation: none; } }
+.t-follow { position: absolute; right: calc(16 * var(--u)); bottom: calc(10 * var(--u)); height: calc(24 * var(--u)); padding: 0 calc(12 * var(--u)); border-radius: 999px; border: 1px solid var(--accent);
+  background: rgba(20,10,0,.92); color: var(--accent); font-size: calc(11 * var(--u)); font-weight: 700; }
+.t-follow:hover { background: var(--accent); color: #180a02; }
+.t-bar { flex: none; display: flex; align-items: center; gap: calc(8 * var(--u)); height: calc(32 * var(--u)); padding: 0 calc(12 * var(--u)); background: #070300; border: 1px solid var(--divider); border-radius: calc(8 * var(--u)); cursor: text; }
+.t-bar:focus-within { border-color: var(--border-focus); }
+.t-filter { flex: 1; min-width: 0; background: none; border: 0; outline: none; user-select: text; font-size: calc(12 * var(--u)); color: var(--text); }
+.t-filter::placeholder { color: var(--text-dim); }
+.t-count { flex: none; font-size: calc(11 * var(--u)); } .t-clear { font-size: calc(16 * var(--u)); line-height: 1; }

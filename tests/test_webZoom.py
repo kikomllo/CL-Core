@@ -1,6 +1,7 @@
 """Zoom of the whole UI (web/js/zoom-model.js under node): a factor on the fluid unit, so windows, text and the orb are laid out again at the
 new size. Per-window zoom comes in a later part of the same feature."""
 import json
+from webcss import web_css
 import os
 import shutil
 import subprocess
@@ -111,7 +112,7 @@ def test_a_window_zoom_is_a_unit_of_its_own_and_never_changes_its_frame():
     assert "export function fitMin(el, u = unitOf(el))" in ui                        # what must fit is measured in the window's own unit
     assert "const unitOf = (el) => unit() * getWidget(el.dataset.id);" in ui
     assert "toLayout(r, baseUnit()," in ui, "saved frames are made of the unit without any zoom, so no zoom ever reaches the layout"
-    assert "--ug: 1px;" in _read("web", "style.css"), "calc(var(--ug) * z) must never be invalid"
+    assert "--ug: 1px;" in web_css(), "calc(var(--ug) * z) must never be invalid"
     assert 'addEventListener("jarvis-widget-zoom"' in ui and '"jarvis-widget-zoom"' in zoom
 
 
@@ -130,4 +131,4 @@ def test_frames_are_made_of_the_unzoomed_unit_so_a_global_zoom_leaves_them_alone
     assert 'setProperty("--ub", base + "px")' in main and 'setProperty("--ub", base + "px")' in widget
     assert "const u = baseUnit(), layout = widgetMode" in ui and "const u = baseUnit(), layouts = loadLayout();" in ui
     assert "resizeSelf" not in widget, "a floating window's OS window no longer follows the global zoom"
-    assert "--ub: 1px;" in _read("web", "style.css")
+    assert "--ub: 1px;" in web_css()

@@ -1,0 +1,4 @@
+/* the zoom badge (zoom.js): says the level for a moment; double-click resets */
+.zoom-badge { position: fixed; top: calc(14 * var(--u)); left: 50%; transform: translateX(-50%); z-index: 99990; padding: calc(5 * var(--u)) calc(14 * var(--u)); border-radius: 999px;
+  background: rgba(35,17,4,.94); border: 1px solid rgba(255,160,0,.45); color: var(--accent); font-size: calc(12 * var(--u)); font-weight: 800; cursor: pointer; user-select: none; }
+.zoom-badge[hidden] { display: none; }

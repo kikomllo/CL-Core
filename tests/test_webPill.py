@@ -1,5 +1,6 @@
 """The dock pills' hover label (web/js/pillmarquee.js under node) and the rules that keep it like the Qt pill."""
 import json
+from webcss import web_css
 import os
 import re
 import shutil
@@ -55,7 +56,7 @@ class TestMarqueeFrames:
 
 
 class TestLikeTheQtPill:
-    css = read("web", "style.css")
+    css = web_css()
 
     def test_the_opening_uses_the_qt_timing(self):
         # IconPill: a 260 ms ease-out animation after an 80 ms hover delay (so a pointer sweeping past opens nothing)
@@ -73,7 +74,7 @@ class TestLikeTheQtPill:
 
 
 class TestAudioPairLayout:
-    css = read("web", "style.css")
+    css = web_css()
 
     def test_the_audio_pills_are_a_centred_pair_above_the_text_bar(self):
         rule = re.search(r"\.right-zone \{[^}]*\}", self.css).group(0)
