@@ -53,6 +53,8 @@
 .av-info { flex: 1; min-width: 0; overflow: hidden; } .av-name { font-size: calc(16 * var(--u)); font-weight: 700; color: var(--title-accent); }
 /* ellipsised, so the minimum-size measure (ui.js fitMin) leaves the app's name and now-playing out: the row's floor is the icon and its buttons */
 .av-name, .av-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.av-row.tight .av-name, .av-row.tight .av-sub { visibility: hidden; }          /* too narrow to read: hidden, still taking its place so the row does not jump (set in media.js) */
+/* too narrow to read the text (media.js sets .tight): it has no width and is not drawn, and the room it held goes to the volume bar, so the icon and the buttons sit close
+   together. It keeps its height (and cancels its own gap with the negative margin), so the rows stay as tall, and as far apart, as when the text shows. */
+.av-row.tight .av-info { flex: 0 0 0; visibility: hidden; margin-left: calc(-8 * var(--u)); } .av-row.tight .av-vol { flex-grow: 1; }
 .app-ph { width: calc(20 * var(--u)); height: calc(20 * var(--u)); border-radius: 5px; border: 1px dashed rgba(255,170,0,.3); flex: none; }
 .av-vol { flex: 0 1 calc(60 * var(--u)); min-width: calc(30 * var(--u)); height: calc(4 * var(--u)); }       /* shrinks to a minimum bar before the window stops (ELASTIC in ui.js) */

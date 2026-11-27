@@ -198,8 +198,15 @@ export const mediaWindow = {
       const info = h("div", { class: "av-info" }, name, sub);
       const el = h("div", { class: "av-row" }, ic, info, dev, pl, mu, sl);
       // the name and now-playing only show when there is room to read some of it (about 3 characters: a character is ~0.6 of the font size wide); narrower, they go and the buttons keep the row
-      const ro = new ResizeObserver(() => el.classList.toggle("tight", info.clientWidth < 1.8 * parseFloat(getComputedStyle(name).fontSize)));
-      ro.observe(info);
+      // what is left of the row after its buttons and a 60u bar is worked out from the row, not from the text's box, which collapses once the text is gone
+      const fit = () => {
+        const fs = parseFloat(getComputedStyle(name).fontSize), gap = parseFloat(getComputedStyle(el).columnGap) || 0;
+        const kids = [...el.children].filter((c) => c !== info && !c.hidden);
+        const used = kids.reduce((s, c) => s + (c === sl ? 60 * fs / 16 : c.offsetWidth), 0) + gap * kids.length;
+        el.classList.toggle("tight", el.clientWidth - used < 1.8 * fs);
+      };
+      const ro = new ResizeObserver(fit);
+      ro.observe(el);
       return {
         el, stop: () => ro.disconnect(),
         update(a) {
@@ -207,7 +214,7 @@ export const mediaWindow = {
           pl.hidden = !a.media_player; pl.firstChild.setIcon(a.is_playing === false ? "play.svg" : "pause.svg");
           mu.firstChild.setIcon(a.muted ? "speaker_mute.svg" : "speaker.svg"); mu.style.color = a.muted ? "var(--title-accent)" : "";
           if (document.activeElement !== sl) sl.value = a.volume ?? sl.value;
-          setFill(sl);
+          setFill(sl); fit();
         },
       };
     }
