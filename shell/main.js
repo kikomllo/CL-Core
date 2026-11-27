@@ -2,7 +2,7 @@
 // served by src/clWebUI.py. Two modes, like the Qt dashboard it replaces: "overlay" (a small always-on-top click-through box at the
 // bottom right of the primary monitor, only the orb) and "fullscreen" (the whole dashboard on one monitor, interactive). The page asks
 // for a switch when jarvis/sys/ui_control says so (web/js/shell.js) and this process only moves and re-flags the window.
-// Environment: JARVIS_WEB_PORT, JARVIS_REBOOT ("1" = reopen in the saved mode), JARVIS_SHELL_PARENT (the supervisor's launcher: the
+// Environment: JARVIS_WEB_PORT, JARVIS_REBOOT ("1" = a restart: floating windows and open windows come back), JARVIS_SHELL_PARENT (the supervisor's launcher: the
 // shell quits when it is gone), JARVIS_SHELL_TEST=1 + JARVIS_SHELL_SHOT=<png> (render once without showing anything, save a screenshot; JARVIS_SHELL_EVAL=<js> runs in the page first, JARVIS_SHELL_HOVER=x,y moves the pointer).
 const { app, BrowserWindow, Menu, screen, ipcMain } = require("electron");
 const fs = require("fs");
@@ -78,7 +78,8 @@ async function setMode(next, initial = false) {
     if (seq !== switchSeq || win.isDestroyed()) return;           // a newer switch took over
   }
   const displays = screen.getAllDisplays().map((d) => ({ id: d.id, bounds: d.bounds }));
-  const picked = geo.pickDisplay(next, displays, screen.getPrimaryDisplay().id, displayId, next === "fullscreen" ? screen.getCursorScreenPoint() : null);
+  // the first placement goes back to the monitor the dashboard was on (the primary one if that is gone); a later switch opens where the pointer is
+  const picked = geo.pickDisplay(next, displays, screen.getPrimaryDisplay().id, displayId, next === "fullscreen" && !initial ? screen.getCursorScreenPoint() : null);
   const d = screen.getAllDisplays().find((x) => x.id === picked.id) || screen.getPrimaryDisplay();
   mode = next;
   if (next === "fullscreen") displayId = d.id;
@@ -243,7 +244,7 @@ Promise.all([app.whenReady(), acquireLock()]).then(([, locked]) => {
   if (!locked) { console.log("[SHELL] another shell is already running"); return app.quit(); }
   const saved = readState();
   displayId = saved.displayId;
-  mode = TEST ? (process.env.JARVIS_SHELL_MODE === "fullscreen" ? "fullscreen" : "overlay") : geo.startMode(process.env.JARVIS_REBOOT === "1", saved);
+  mode = TEST ? (process.env.JARVIS_SHELL_MODE === "fullscreen" ? "fullscreen" : "overlay") : geo.startMode(saved);
   createWindow();
   if (!TEST && process.env.JARVIS_REBOOT === "1") for (const [id, b] of Object.entries(saved.floating)) openFloat(id, b);      // a restart or crash recovery puts them back; a cold start opens clean
   const refit = () => { if (loaded) setMode(mode); };                      // a monitor was added, removed or changed its resolution

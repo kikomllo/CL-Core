@@ -58,14 +58,12 @@ class TestOverlayBounds:
 
 
 class TestStartMode:
-    def test_a_cold_start_is_always_the_overlay(self):
-        assert run('console.log(JSON.stringify(g.startMode(false, {mode:"fullscreen"})))') == "overlay"
-
-    def test_a_restart_reopens_the_saved_mode(self):
-        assert run('console.log(JSON.stringify(g.startMode(true, {mode:"fullscreen"})))') == "fullscreen"
+    def test_every_start_reopens_the_saved_mode(self):
+        # a dashboard left fullscreen opens fullscreen on a cold start too (the startup cover is only seen there)
+        assert run('console.log(JSON.stringify([g.startMode({mode:"fullscreen"}), g.startMode({mode:"overlay"})]))') == ["fullscreen", "overlay"]
 
     def test_a_missing_or_broken_state_file_means_the_overlay(self):
-        assert run('console.log(JSON.stringify([g.startMode(true, null), g.startMode(true, {mode:"windowed"}), g.startMode(true, 5)]))') == ["overlay"] * 3
+        assert run('console.log(JSON.stringify([g.startMode(null), g.startMode({mode:"windowed"}), g.startMode(5)]))') == ["overlay"] * 3
 
     def test_normalize_keeps_a_good_state_and_drops_a_bad_display_id(self):
         r = run('console.log(JSON.stringify([g.normalizeState({mode:"fullscreen", displayId: 7}), g.normalizeState({mode:"overlay", displayId:"x"})]))')
@@ -83,6 +81,10 @@ class TestPickDisplay:
 
     def test_without_a_pointer_it_uses_the_saved_display_then_the_primary(self):
         assert run(self.DISPLAYS + 'console.log(JSON.stringify([g.pickDisplay("fullscreen", d, 1, 2, null).id, g.pickDisplay("fullscreen", d, 1, 9, null).id]))') == [2, 1]
+
+    def test_the_first_placement_goes_back_to_the_saved_monitor_and_to_the_primary_when_it_is_gone(self):
+        # no pointer is passed for it: the dashboard reopens where it was, not where the mouse happens to be
+        assert run(self.DISPLAYS + 'console.log(JSON.stringify([g.pickDisplay("fullscreen", d, 1, 2, null).id, g.pickDisplay("fullscreen", d, 1, 42, null).id]))') == [2, 1]
 
     def test_an_unknown_primary_falls_back_to_the_first_display(self):
         assert run(self.DISPLAYS + 'console.log(g.pickDisplay("overlay", d, 99, null, null).id)') == 1

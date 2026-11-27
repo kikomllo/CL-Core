@@ -1,6 +1,6 @@
 // The shell's pure logic (tests/test_shellGeometry.py runs it under node): where the window goes in each mode, which display, which
 // mode to start in. Mirrors the Qt dashboard (src/clUI.py): the overlay is a 200x200 box (the Qt one is 200x400 with the orb in its middle, which sat 200 px up the screen; the orb's bloom ends 100 px from its centre and its loudest wave is 50, so a square holds it) scaled by UIScaler, 20 px in from the bottom
-// right of the primary monitor's available area; a cold start opens the overlay, a supervisor restart reopens the saved mode.
+// right of the primary monitor's available area; the saved mode is reopened on every start (the overlay on a first run).
 
 const OVERLAY_W = 200, OVERLAY_H = 200, MARGIN = 20;
 const MODES = ["overlay", "fullscreen"];
@@ -53,8 +53,9 @@ function floatBounds(req, displays, primaryWorkArea, index = 0) {
   return fit(wa.x + wa.width - w - 40 - step, wa.y + wa.height - h - OVERLAY_H - MARGIN - 40 - step);
 }
 
-/** The mode to open in: a restart (JARVIS_REBOOT=1) restores the saved one, a cold start is always the overlay. */
-const startMode = (reboot, saved) => (reboot ? normalizeState(saved).mode : "overlay");
+/** The mode to open in: the saved one, on a cold start as on a restart (a dashboard left fullscreen opens fullscreen, on the monitor it was on). A first run, or an
+ *  unusable state file, is the overlay. */
+const startMode = (saved) => normalizeState(saved).mode;
 
 const contains = (b, p) => p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + b.height;
 
