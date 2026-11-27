@@ -164,7 +164,7 @@ export const mediaWindow = {
     const rows = new Map();
     const offApps = bridge.on("jarvis/sys/app_volumes", (d) => {
       const apps = d.apps || [], ids = new Set(apps.map(a => a.id).filter(Boolean));
-      for (const [id, r] of rows) if (!ids.has(id)) { r.el.remove(); rows.delete(id); }
+      for (const [id, r] of rows) if (!ids.has(id)) { r.stop(); r.el.remove(); rows.delete(id); }
       for (const a of apps) {
         if (!a.id) continue;
         let r = rows.get(a.id);
@@ -195,9 +195,13 @@ export const mediaWindow = {
       mu.onclick = () => bridge.act("terminal.app_volume", { action: "toggle_app_mute", target: cur.id, silent: true });
       sl.oninput = () => setFill(sl);
       sl.onchange = () => bridge.act("terminal.app_volume", { action: "set_app_volume", target: cur.id, level: +sl.value, silent: true });
-      const el = h("div", { class: "av-row" }, ic, h("div", { class: "av-info" }, name, sub), dev, pl, mu, sl);
+      const info = h("div", { class: "av-info" }, name, sub);
+      const el = h("div", { class: "av-row" }, ic, info, dev, pl, mu, sl);
+      // the name and now-playing only show when there is room to read some of it (about 3 characters: a character is ~0.6 of the font size wide); narrower, they go and the buttons keep the row
+      const ro = new ResizeObserver(() => el.classList.toggle("tight", info.clientWidth < 1.8 * parseFloat(getComputedStyle(name).fontSize)));
+      ro.observe(info);
       return {
-        el,
+        el, stop: () => ro.disconnect(),
         update(a) {
           cur = a; name.textContent = cap(a.name || "Unknown"); sub.textContent = a.now_playing || ""; sub.hidden = !a.now_playing;
           pl.hidden = !a.media_player; pl.firstChild.setIcon(a.is_playing === false ? "play.svg" : "pause.svg");

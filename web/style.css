@@ -183,7 +183,8 @@ input { font: inherit; color: inherit; }
 .slider.v { writing-mode: vertical-lr; direction: rtl; width: calc(4 * var(--u)); height: calc(104 * var(--u));
   background: linear-gradient(to top, var(--accent) 0%, var(--accent) var(--fill), rgba(255,255,255,.12) var(--fill)); }
 .mute { width: calc(18 * var(--u)); height: calc(18 * var(--u)); }
-.m-tabs { margin-top: calc(14 * var(--u)); display: flex; justify-content: center; align-items: center; gap: calc(50 * var(--u)); padding-bottom: calc(6 * var(--u)); }
+/* the three tabs sit 50 apart when there is room and close up to 8 when there is not, so this row never sets the window's minimum width */
+.m-tabs { margin: calc(14 * var(--u)) auto 0; width: 100%; max-width: calc(176 * var(--u)); box-sizing: border-box; display: flex; justify-content: space-between; align-items: center; gap: calc(8 * var(--u)); padding-bottom: calc(6 * var(--u)); }
 .tab { position: relative; width: calc(24 * var(--u)); height: calc(24 * var(--u)); color: #8a7a66; border-color: rgba(255,140,0,.28); background: rgba(255,120,0,.08); }
 .tab.mid { width: calc(28 * var(--u)); height: calc(28 * var(--u)); }
 .tab.on { color: var(--accent); border-color: var(--accent); background: rgba(255,170,0,.2); }
@@ -201,9 +202,12 @@ input { font: inherit; color: inherit; }
 .q-next { font-size: calc(10 * var(--u)); letter-spacing: .06em; color: var(--accent); border: 1px solid rgba(255,140,0,.5); border-radius: 10px; padding: 1px calc(7 * var(--u)); }
 .av-rows { display: flex; flex-direction: column; gap: calc(10 * var(--u)); }
 .av-row { display: flex; align-items: center; gap: calc(8 * var(--u)); border-radius: 8px; }
-.av-info { flex: 1; min-width: 0; } .av-name { font-size: calc(16 * var(--u)); font-weight: 700; color: var(--title-accent); } .av-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.av-info { flex: 1; min-width: 0; overflow: hidden; } .av-name { font-size: calc(16 * var(--u)); font-weight: 700; color: var(--title-accent); }
+/* ellipsised, so the minimum-size measure (ui.js fitMin) leaves the app's name and now-playing out: the row's floor is the icon and its buttons */
+.av-name, .av-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.av-row.tight .av-name, .av-row.tight .av-sub { visibility: hidden; }          /* too narrow to read: hidden, still taking its place so the row does not jump (set in media.js) */
 .app-ph { width: calc(20 * var(--u)); height: calc(20 * var(--u)); border-radius: 5px; border: 1px dashed rgba(255,170,0,.3); flex: none; }
-.av-vol { width: calc(60 * var(--u)); height: calc(4 * var(--u)); }
+.av-vol { flex: 0 1 calc(60 * var(--u)); min-width: calc(30 * var(--u)); height: calc(4 * var(--u)); }       /* shrinks to a minimum bar before the window stops (ELASTIC in ui.js) */
 .menu { position: fixed; z-index: 99999; display: flex; flex-direction: column; padding: calc(4 * var(--u)); background: rgba(20,10,0,.97); border: 1px solid var(--panel-border); border-radius: 10px; }
 .menu button { background: none; border: 0; text-align: left; padding: calc(6 * var(--u)) calc(10 * var(--u)); color: var(--text); border-radius: 6px; }
 .menu button:hover { background: rgba(255,150,0,.24); color: #fff; }

@@ -124,7 +124,8 @@ export function saveUiState(key, value) {
 // must all be visible. Text that is cut with an ellipsis never forces the window wide (a long song title must not set the minimum).
 const ELASTIC = [
   { sel: ".mod-list, .rem-grid, .set-pages", w: 200, h: 72 },      // vertical lists and pages: a few rows, wide enough that their text does not break up
-  { sel: ".tabs-pill", w: 0 },                              // a row of tabs that scrolls sideways
+  { sel: ".av-vol", w: 30 },                                // an app's volume bar shrinks to a short bar
+  { sel: ".tabs-pill", w: 0 },                            // a row of tabs that scrolls sideways
   { sel: ".t-screen, .cl-screen", w: 350, h: 140 },        // terminals: 40 columns (~310 px) plus the screen's padding, and a few rows
 ];
 // Controls that appear over the content on hover (the volume bar) are drawn absolutely, so they take no room by themselves; while measuring, each one
