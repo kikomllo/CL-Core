@@ -47,6 +47,12 @@
       "prev": [
         "Reverting to the previous track."
       ],
+      "previous": [
+        "Reverting to the previous track."
+      ],
+      "rewind": [
+        "Restarting the track."
+      ],
       "volume": [
         "Adjusting audio to {volume} percent."
       ],

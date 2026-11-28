@@ -42,7 +42,8 @@ class TestDaemonCoreLogic:
         ("play shape of you by ed sheeran", "play", "track_name", "shape of you"),
         ("resume the music please", "play", None, None),
         ("play the next song", "next", None, None),
-        ("go back a song", "prev", None, None),
+        ("go back a song", "previous", None, None),
+        ("rewind the song", "rewind", None, None),
 
         # --- 2. SMART LIGHTING ---
         ("turn the lights on", "on", None, None),

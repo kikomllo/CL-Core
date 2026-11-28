@@ -1951,3 +1951,62 @@ class TestQueueJumpStaleTitle:
         spotify_manager.execute_command("queue_refresh")
         spotify_manager.execute_command("play_queue_item", uri="spotify:track:y", queue_index=1)
         assert spotify_manager._jump_expected is None
+
+
+class TestRewindAndPreviousSong:
+    """Spotify's Previous restarts a track that has played more than 3 s, so "previous song" by voice used to rewind it. "Rewind the song" is
+    now its own command (seek to the start), and "previous song" really goes back: two quick presses, one when the track has just begun."""
+
+    def _playing(self, spotify_manager, position):
+        spotify_manager._local_status = {"found": True, "title": "T", "artist": "A", "status": "Paused", "position": position, "duration": 200.0}
+        spotify_manager._local_status_time = time.time()
+
+    def test_previous_is_two_quick_presses_when_the_track_has_played_a_while(self, spotify_manager, local_media_button, mocker):
+        local_media_button.return_value = True
+        self._playing(spotify_manager, 40.0)
+        sleep = mocker.patch("clSpotify.time.sleep")
+
+        assert spotify_manager.execute_command("previous") == (True, "Returned to previous track.")
+
+        assert [c.args for c in local_media_button.call_args_list] == [("prev",), ("prev",)]
+        sleep.assert_called_once_with(spotify_manager.QUEUE_SKIP_GAP_SECONDS)
+
+    def test_previous_is_one_press_right_after_a_track_started_or_it_would_skip_one_more(self, spotify_manager, local_media_button):
+        local_media_button.return_value = True
+        self._playing(spotify_manager, 1.5)
+        spotify_manager.execute_command("previous")
+        assert [c.args for c in local_media_button.call_args_list] == [("prev",)]
+
+    def test_an_unknown_position_counts_as_played_a_while(self, spotify_manager, local_media_button, mocker):
+        local_media_button.return_value = True
+        mocker.patch.object(spotify_manager, "_get_current_playback", return_value=None)
+        mocker.patch("clSpotify.time.sleep")
+        spotify_manager.execute_command("previous")
+        assert len(local_media_button.call_args_list) == 2
+
+    def test_previous_uses_the_api_when_there_is_no_local_client(self, spotify_manager, mocker):
+        self._playing(spotify_manager, 40.0)
+        mocker.patch("clSpotify.time.sleep")
+        mocker.patch.object(spotify_manager, "_ensure_active_device", return_value="dev")
+        previous = mocker.patch.object(spotify_manager.sp, "previous_track")
+
+        assert spotify_manager.execute_command("previous") == (True, "Returned to previous track.")
+
+        assert previous.call_count == 2
+
+    def test_the_plain_prev_the_buttons_send_is_unchanged_one_press(self, spotify_manager, local_media_button):
+        local_media_button.return_value = True
+        self._playing(spotify_manager, 40.0)
+        spotify_manager.execute_command("prev")
+        assert [c.args for c in local_media_button.call_args_list] == [("prev",)]
+
+    def test_rewind_seeks_to_the_start(self, spotify_manager, local_controls):
+        local_controls.seek.return_value = True
+        assert spotify_manager.execute_command("rewind") == (True, "Restarting the song.")
+        local_controls.seek.assert_called_once_with(0)
+
+    def test_rewind_falls_back_to_the_api(self, spotify_manager, mocker):
+        mocker.patch.object(spotify_manager, "_get_any_device", return_value="dev")
+        seek = mocker.patch.object(spotify_manager.sp, "seek_track")
+        assert spotify_manager.execute_command("rewind") == (True, "Restarting the song.")
+        seek.assert_called_once_with(0, device_id="dev")

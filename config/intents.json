@@ -268,7 +268,23 @@
     ],
     "action_id": "spotify.control",
     "action_args": {
-      "action": "prev"
+      "action": "previous"
+    }
+  },
+  "spotify_rewind": {
+    "priority_words": [
+      "rewind"
+    ],
+    "templates": [
+      "rewind song",
+      "rewind the song",
+      "rewind this song",
+      "rewind the track",
+      "rewind"
+    ],
+    "action_id": "spotify.control",
+    "action_args": {
+      "action": "rewind"
     }
   },
   "spotify_volume": {

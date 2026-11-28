@@ -93,6 +93,9 @@ PHRASE_BANK: Dict[str, List[str]] = {
     "spotify_next": [
         "Skipping ahead sir.", "Next track.", "Onward.", "There we go.",
     ],
+    "spotify_rewind": [
+        "Back to the start sir.", "Rewinding.", "From the top.",
+    ],
     "spotify_prev": [
         "Going back a track.", "Previous track sir.", "Back we go.",
     ],

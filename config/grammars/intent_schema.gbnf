@@ -20,6 +20,9 @@ action-id ::=
     "\"calendar.read\"" |
     "\"light.set\"" |
     "\"mic.state\"" |
+    "\"monitor.pair\"" |
+    "\"monitor.status\"" |
+    "\"monitor.unpair\"" |
     "\"reminder.create\"" |
     "\"reminder.delete\"" |
     "\"reminder.list\"" |
@@ -79,7 +82,8 @@ action-value ::=
     "\"on\"" |
     "\"pause\"" |
     "\"play\"" |
-    "\"prev\"" |
+    "\"previous\"" |
+    "\"rewind\"" |
     "\"silent_mode_off\"" |
     "\"silent_mode_on\"" |
     "\"status_full\"" |

@@ -4,6 +4,7 @@ The one place to see what is still to implement. Updated 2026-11-25. Each item s
 
 ## Owner to-dos (things only you can do)
 
+- [ ] **Retrain both SLMs** for the new `spotify_rewind` intent and the retargeted `spotify_prev` (`previous`): `config/grammars/intent_schema.gbnf` and both `training/data/*.jsonl` are regenerated, the models are not. The fast path already handles the phrases; the SLM only matters for odd wordings. (M, GPU) (`training/CLAUDE.md`)
 - [ ] **Revoke the Hugging Face token** that was pasted in chat (S, security). Nothing needs it any more. (`voice_latency_plan.md`)
 - [ ] **Live-check the Up Next title fix**: click a row in the queue and confirm the player shows the song that really plays. (S)
 - [ ] **Restart the ecosystem once and live-check the web UI work on branch `wip/web-ui-floating-windows`**: pin/unpin a window (no gap, no shift, no growth), "show the logs" / "show my todo list" from the overlay (floats), zoom (Ctrl + / - / 0, Ctrl+wheel over a window, Settings > Display), the overlay orb in the corner, then merge the branch. (S) (`web_ui_plan.md`)
@@ -39,6 +40,7 @@ The one place to see what is still to implement. Updated 2026-11-25. Each item s
 - [ ] **Reorder from Up Next**: playlists you own only (the queue cannot be reordered through the API); needs a new permission scope; 30-minute check first; do together with search. (M) (`spotify_reorder_plan.md`)
 - [ ] **Lyrics sync from audio** (parked until the web UI rebuild is done): lyrics with no timestamps drift, so sample ~4 s of system audio, run Whisper with word timestamps, match against the known lyrics and store corrected timings in the lyrics cache (`aligned`). Start with plain-only tracks ("Cem anos" by Alcool Club is the test), then an offset check for synced ones. (L, 4 slices) (`lyrics_sync_plan.md`)
 - [ ] The Windows media overlay can still show the stale title after a queue jump (only the dashboard is corrected). (S, optional)
+- [ ] **Known edge case, left as is (2026-11-27): Windows' media session for Spotify got stuck on one title.** Read straight from Windows (winsdk), outside JARVIS, it still named the old track (with a position that kept running) while the Web API and the Spotify app named the track really playing; the widget only mirrored Windows. The owner's account of how it started: "previous song" given through JARVIS near the end of a track, so the command raced the track change. A real track change did not clear it, because Windows itself was stuck; so it is not an ecosystem fault. Not fixed in code because every approach needs Web API requests, which the module avoids on purpose (a 20 s check was rejected). If it is picked up: no polling; spot it from the local readings alone (same title as the previous reading but a different duration) and ask the API only then, once, at most a few times per stuck track, and once on the first reading after a start; correct the title and artist for as long as that reading stays the same. What cleared it for the owner was not recorded (restarting the Spotify app is the untested guess). (S)
 
 ## Voice and NLP
 

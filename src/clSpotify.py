@@ -74,6 +74,7 @@ class SpotifyManager:
     JUMP_DURATION_TOLERANCE_MS = 1500   # same margin QueueTracker uses to match a local reading to a queued track
     JUMP_SETTLE_SECONDS = 5.0           # after a queue jump, readings from the tracks skipped over may still trickle in
     QUEUE_SKIP_GAP_SECONDS = 0.12   # between the skips of a queue jump, so the tracks in between are dropped, not heard
+    PREV_RESTART_SECONDS = 3.0      # Spotify's Previous restarts a track that has played longer than this; only a second press goes back
 
     def __init__(self, debug_math: bool = True):
         self.base_dir: str = os.path.dirname(os.path.abspath(__file__))
@@ -1123,6 +1124,38 @@ class SpotifyManager:
         self.sp.seek_track(position_ms, device_id=device)
         return True, message
 
+    def _position_seconds(self) -> Optional[float]:
+        """How far into the current track playback is: the free local session if it is fresh, else one API read; None when neither knows."""
+        local = self._lightweight_status_from_local_session()
+        if local is not None:
+            return local.get("progress_ms", 0) / 1000.0
+        try:
+            playback = self._get_current_playback()
+        except Exception:
+            return None
+        progress = (playback or {}).get("progress_ms")
+        return progress / 1000.0 if isinstance(progress, (int, float)) else None
+
+    def _go_to_previous_track(self) -> Tuple[bool, str]:
+        """Spotify's Previous only restarts a track that has played more than PREV_RESTART_SECONDS, and a second press right after goes back, so the
+        previous track is two quick presses (one when the track has only just started, or it would skip one more). The local client's button
+        first, the API otherwise, like every transport command."""
+        position = self._position_seconds()
+        presses = 1 if position is not None and position <= self.PREV_RESTART_SECONDS else 2
+        device = None
+        for n in range(presses):
+            if n:
+                time.sleep(self.QUEUE_SKIP_GAP_SECONDS)
+            if self._local_first("button", lambda: send_spotify_command("prev")):
+                continue
+            device = device or self._ensure_active_device()
+            if not device:
+                return False, "Spotify is not active."
+            self.sp.previous_track(device_id=device)
+        self._local_playing_state = True
+        self._last_state_change_time = time.time()
+        return True, "Returned to previous track."
+
     # --- QUEUE ---
     def refresh_queue(self) -> bool:
         """The only place the queue costs an API request. False if blocked
@@ -1212,6 +1245,11 @@ class SpotifyManager:
                 return self._set_repeat(mode)
             if action == "seek" and position_ms is not None:
                 return self._seek(position_ms)
+            if action == "rewind":                  # "rewind the song": back to its start (Previous does that too, but only past 3 s)
+                ok, _ = self._seek(0)
+                return ok, "Restarting the song." if ok else "Spotify is not active."
+            if action == "previous":                # "previous song": the one before this, not this one again
+                return self._go_to_previous_track()
 
             if action in ["queue", "queue_refresh"]:
                 if action == "queue_refresh" or not self.queue.loaded:
@@ -1460,7 +1498,7 @@ async def mqtt_service_listener(manager: SpotifyManager) -> None:
                                 
                                 # 2. Always refresh status on explicit playback commands to keep UI synced
                                 # (Skipped after a local button press: clTerminal.py's media listeners already push it, no API needed.)
-                                if action_cmd in ["play", "pause", "toggle", "next", "prev", "status", "play_queue_item"] and not manager.last_command_local:
+                                if action_cmd in ["play", "pause", "toggle", "next", "prev", "previous", "rewind", "status", "play_queue_item"] and not manager.last_command_local:
                                     async def background_refresh():
                                         await asyncio.sleep(1.0)
                                         try:
