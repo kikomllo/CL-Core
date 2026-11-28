@@ -120,7 +120,7 @@ if (new URLSearchParams(location.search).get("open")?.split(",").includes("calen
 setUnit(); addEventListener("resize", setUnit); addEventListener("jarvis-zoom", setUnit); startZoomInput();
 startShell(setUnit);          // in the desktop shell: <html data-mode> follows the window's mode, ui_control switches it
 startOrb(document.getElementById("orb"), () => U);
-startBoot();                  // the startup cover: windows and dock wait until the system is online (jarvis/sys/boot_state)
+const boot = startBoot();     // the startup cover: windows and dock wait until the system is online (jarvis/sys/boot_state)
 
 // "show the logs" / "show my todo list" (jarvis/sys/ui_control): in the dashboard the window opens there; while only the overlay is up it floats as a
 // window of its own on top of other apps, like an unpinned Qt widget, and the overlay stays as it is.
@@ -158,11 +158,15 @@ bridge.on("jarvis/sys/ui_control", (p) => {
 const byId = (id) => WIDGETS.find(x => x.def && (x.def.id === id || x.label.toLowerCase() === id));
 // Every start puts back the windows that were open, like the last session left them (the dashboard itself reopens in the mode it was in, so a
 // cold start of the ecosystem is no different from a restart or a page reload).
-let lastOpen = [];
-try { lastOpen = parseIds(localStorage.getItem(OPEN_KEY)); } catch { /* private mode */ }
-for (const id of windowsToRestore({ open: lastOpen, restoreAll: true })) { const w = byId(id); if (w && !floating.has(w.def.id)) openWindow(w.def); }      // the floating ones are restored by the shell
-for (const id of (new URLSearchParams(location.search).get("open") || "").split(",").filter(Boolean)) {
-  const w = byId(id); if (w && !isOpen(w.def.id)) openWindow(w.def);
-}
-restored = true;
-window.dispatchEvent(new CustomEvent("windows-changed"));       // saves the list as it now is
+// They open once the system is online (boot.js `ready`): each asks its service for its data as it opens, and a service that is still starting
+// does not answer (the To-Do list came back empty until the window was closed and opened again). Until then nothing is saved over the list.
+boot.ready.then(() => {
+  let lastOpen = [];
+  try { lastOpen = parseIds(localStorage.getItem(OPEN_KEY)); } catch { /* private mode */ }
+  for (const id of windowsToRestore({ open: lastOpen, restoreAll: true })) { const w = byId(id); if (w && !floating.has(w.def.id)) openWindow(w.def); }      // the floating ones are restored by the shell
+  for (const id of (new URLSearchParams(location.search).get("open") || "").split(",").filter(Boolean)) {
+    const w = byId(id); if (w && !isOpen(w.def.id)) openWindow(w.def);
+  }
+  restored = true;
+  window.dispatchEvent(new CustomEvent("windows-changed"));       // saves the list as it now is
+});

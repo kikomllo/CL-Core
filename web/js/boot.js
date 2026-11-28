@@ -6,8 +6,15 @@ import { bridge } from "./bridge.js";
 import { h } from "./ui.js";
 import { nextPhase, covering, describe, DEFAULT_TIMEOUT_MS } from "./boot-model.js";
 
+const SETTLE_FALLBACK_MS = 2500;            // no boot state at all (no supervisor): do not hold the windows back for ever
+
+/** Starts the cover. `ready` resolves when the windows may open: the system is online (or the boot gave up waiting, or there is no cover). The
+ *  windows ask for their data when they open, and a service that is still starting does not answer, so they open only after everything is up
+ *  (they stay hidden until the cover lifts anyway). */
 export function startBoot({ readout = true } = {}) {
   const root = document.documentElement;
+  let settle; const ready = new Promise((resolve) => { settle = resolve; });
+  setTimeout(() => { if (!phase) settle(); }, SETTLE_FALLBACK_MS);
   let state = null, phase = null, enabled = true, timeoutMs = DEFAULT_TIMEOUT_MS, loaded = false, el = null, rows = new Map(), timer = 0;
   const ui = {};
 
@@ -51,6 +58,7 @@ export function startBoot({ readout = true } = {}) {
     if (!loaded) return;
     const now = Date.now(), was = phase && covering(phase.phase);
     phase = nextPhase(phase, state, now, timeoutMs);
+    if (!enabled || phase.phase === "online" || phase.phase === "done") settle();
     const on = enabled && covering(phase.phase);
     if (on && readout) { if (!el) build(); render(now - phase.since); el.classList.remove("gone"); }
     else if (el) el.classList.add("gone");
@@ -59,4 +67,5 @@ export function startBoot({ readout = true } = {}) {
     if (on && !timer) timer = setInterval(evaluate, 500);        // the clock alone ends a stalled boot and the "System online" hold
     else if (!on && timer) { clearInterval(timer); timer = 0; }
   }
+  return { ready };
 }
