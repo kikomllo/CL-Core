@@ -90,6 +90,7 @@ class ClaudeBridgeService:
         self._last_terminal_screen = ""
         self._last_published_screen = None
         self._last_question = None
+        self._raw_queue = None            # the session's raw output, in order, on its way to jarvis/claude/out (see _raw_pump)
         self._recovering = False
         self._answered = False
         # Last size the widget asked for (driven by its own resize), so a
@@ -159,6 +160,8 @@ class ClaudeBridgeService:
 
     async def _publish_screen(self, screen_text: str, cursor=None, ansi=None):
         payload = {"text": screen_text, "mode": self._screen_mode()}
+        if getattr(self.bridge, "RAW_STREAM", False):
+            payload["raw"] = True            # the dashboard can draw the session itself (jarvis/claude/out) instead of these snapshots
         idle = self._shell_idle()
         if idle is not None:
             payload["idle"] = idle
@@ -188,10 +191,39 @@ class ClaudeBridgeService:
             cwd=REPO_ROOT, on_screen_update=self._on_claude_screen_update, on_stall=self._on_stall,
             cols=self._cols, rows=self._rows,
         )
+        if getattr(self.bridge, "RAW_STREAM", False):
+            self.bridge.on_raw = self._on_claude_raw
         if force_fresh:
             self.bridge.stop()
         self.bridge.start()
         return True
+
+    def _on_claude_raw(self, data: str):
+        """From the bridge's reader thread: the session's output as it printed, queued in order for _raw_pump."""
+        if self.loop and self._raw_queue is not None:
+            self.loop.call_soon_threadsafe(self._raw_queue.put_nowait, data)
+
+    async def _raw_pump(self, client):
+        """Publishes the queued raw output on jarvis/claude/out in order, a burst as one message."""
+        while True:
+            data = await self._raw_queue.get()
+            while not self._raw_queue.empty() and len(data) < 32768:
+                data += self._raw_queue.get_nowait()
+            try:
+                await client.publish("jarvis/claude/out", json.dumps({"d": data}, ensure_ascii=False))
+            except Exception as e:
+                logging.error(f"[CLAUDE BRIDGE] Failed to publish raw output: {e}")
+                return
+
+    async def _attach(self, client):
+        """A terminal window opened: replay what the session printed lately, at the size it printed it, so the screen is rebuilt exactly."""
+        try:
+            self._ensure_pty_started()
+            replay = self.bridge.raw_replay() if getattr(self.bridge, "RAW_STREAM", False) else ""
+            await client.publish("jarvis/claude/out", json.dumps(
+                {"d": replay, "reset": True, "cols": self.bridge.COLS, "rows": self.bridge.ROWS}, ensure_ascii=False))
+        except Exception as e:
+            logging.error(f"[CLAUDE BRIDGE] Could not attach a terminal: {e}")
 
     def _ensure_terminal_started(self) -> bool:
         """Returns True only if a new terminal session was just started."""
@@ -301,6 +333,7 @@ class ClaudeBridgeService:
 
         logging.info("[CLAUDE BRIDGE] Online. Connecting to MQTT broker...")
         attempt = 0
+        raw_task = None
         while True:
             try:
                 async with aiomqtt.Client("localhost") as client:
@@ -312,6 +345,10 @@ class ClaudeBridgeService:
 
                     await client.subscribe("jarvis/claude/question")
                     await client.subscribe("jarvis/claude/reply")
+                    await client.subscribe("jarvis/claude/input")        # raw keystrokes from a terminal window (xterm.js), straight to the session
+                    await client.subscribe("jarvis/claude/attach")       # a terminal window opened: replay
+                    self._raw_queue = asyncio.Queue()
+                    raw_task = asyncio.create_task(self._raw_pump(client))
                     # NATIVE_SERVICES lists this module as "Claude Bridge" (clJarvis.py), which is
                     # what EXPECTED_MODULES matches against -- without this, the supervisor's
                     # "ALL SYSTEMS GO" announcement (and jarvis/sys/ecosystem_online, which
@@ -321,6 +358,17 @@ class ClaudeBridgeService:
 
                     async for message in client.messages:
                         topic = message.topic.value
+                        if topic == "jarvis/claude/input":
+                            try:
+                                if self._ensure_pty_started():
+                                    await self._wait_until_ready()
+                                self.bridge.send_raw_keys(message.payload.decode("utf-8", "replace"))
+                            except Exception as e:
+                                logging.error(f"[CLAUDE BRIDGE] Failed to inject terminal input: {e}")
+                            continue
+                        if topic == "jarvis/claude/attach":
+                            await self._attach(client)
+                            continue
                         if topic == "jarvis/claude/reply":
                             try:
                                 await self._speak_reply(str(json.loads(message.payload.decode()).get("text", "")))
@@ -393,6 +441,8 @@ class ClaudeBridgeService:
                                 logging.error(f"[CLAUDE BRIDGE] Failed to inject input: {e}")
 
             except (aiomqtt.MqttError, OSError, ConnectionRefusedError) as e:
+                if raw_task is not None:
+                    raw_task.cancel()
                 delay = min(30, 2 ** attempt)
                 logging.error(f"MQTT Connection Error: {e}. Retrying in {delay}s...")
                 attempt += 1

@@ -52,7 +52,7 @@ class TestConsoleService:
 
     def test_attaching_replays_the_recent_output_to_the_new_window(self, svc):
         svc.handle(C.TOPIC_ATTACH, "1")
-        assert (C.TOPIC_OUT, {"d": "earlier output", "reset": True}, False) in svc.sent
+        assert (C.TOPIC_OUT, {"d": "earlier output", "reset": True, "cols": None, "rows": None}, False) in svc.sent
 
     def test_output_is_published_as_it_comes(self, svc):
         svc.handle(C.TOPIC_ATTACH, "1")

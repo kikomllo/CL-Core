@@ -24,11 +24,13 @@ class ClaudeSessionBase:
     STALL_S = 60.0  # a working session redraws its spinner constantly, so this much silence while busy means hung
     READY_QUIET_S = 1.0
     LOG_PREFIX = "CLAUDE SESSION"
+    RAW_STREAM = False   # a backend that can hand over the session's raw output (on_raw, raw_replay) for a real terminal emulator in the dashboard
 
     def __init__(self, cwd: str, on_screen_update: Callable[[str], None],
                  on_stall: Optional[Callable[[str], None]] = None,
                  cols: Optional[int] = None, rows: Optional[int] = None):
         self._cwd = cwd
+        self.on_raw: Optional[Callable[[str], None]] = None      # gets the session's output as it printed (RAW_STREAM backends)
         self._on_screen_update = on_screen_update
         self._on_stall = on_stall
         # Instance-level override of the class defaults -- lets a backend
@@ -63,6 +65,10 @@ class ClaudeSessionBase:
 
     def _apply_resize(self, cols: int, rows: int):
         raise NotImplementedError
+
+    def raw_replay(self) -> str:
+        """What the session printed recently, as printed (RAW_STREAM backends); a terminal emulator that opens later is caught up with it."""
+        return ""
 
     @staticmethod
     def _prompt_row_visible(rows) -> bool:

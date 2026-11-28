@@ -70,7 +70,8 @@ class ConsoleService:
                     self._session.resize(self._cols, self._rows)
             elif topic == TOPIC_ATTACH:
                 session = self._ensure()
-                self._publish(TOPIC_OUT, json.dumps({"d": session.replay(), "reset": True}, ensure_ascii=False))
+                self._publish(TOPIC_OUT, json.dumps({"d": session.replay(), "reset": True, "cols": getattr(session, "_cols", None),
+                                                     "rows": getattr(session, "_rows", None)}, ensure_ascii=False))
             elif topic == TOPIC_CLOSE:
                 with self._lock:
                     session, self._session = self._session, None

@@ -10,13 +10,13 @@ import { bridge } from "./bridge.js";
 import { h } from "./ui.js";
 import { screenRows, cursorCell, cutAfter, hidesSuggestion, keyAction, submitAction, nextShadow, gridFor, isBusy, cellRuns, lineSpans } from "./claude-model.js";
 import { LocalLine } from "./claude-line.js";
-import { loadXterm, createConsole } from "./console.js";
+import { loadXterm, createConsole, SHELL, CLAUDE } from "./console.js";
 
 const RESIZE_DEBOUNCE_MS = 300;
-// The grid follows the window in both directions, so the terminal is exactly as big as the window: no scrollbar, and what it shows on open is the
-// top of the session, not the bottom of a taller grid. (It used to be at least 40 rows tall, which left a short window scrolled to the bottom with
-// the header out of sight.) The floors are only what stays usable: the window's own minimum size is measured from its content anyway.
-const MIN_ROWS = 8, MIN_COLS = 40;
+// The snapshot drawing (a backend with no raw stream: tmux on Linux): the grid follows the window's width, and its rows never go below 40, because
+// Claude draws no input box at all in a grid of about 36 rows or fewer (measured on the live session). A short window scrolls to the bottom instead.
+// On Windows the session is drawn by a real terminal (console.js) that shrinks its text to fit those 40 rows in the window, so there is no scrollbar.
+const MIN_ROWS = 40, MIN_COLS = 40;
 
 /** One span as a DOM node: colours are brightness steps on the skin's accent (see claude-model.js). */
 function spanEl(s) {
@@ -43,6 +43,7 @@ export const claudeWindow = {
   build(body, win) {
     let msg = null, shadow = "", resizeTimer = null, holdTimer = null, lastGrid = "", pinned = true, cell = { w: 8, h: 17 };
     let termView = false, consoleView = null, resetBridge = false;
+    let raw = false, claudeView = null;                                  // raw: the bridge streams the session itself (jarvis/claude/out): drawn by xterm.js like the shell
     const line = new LocalLine();
     const probe = h("div", { class: "cl-row cl-probe", "aria-hidden": "true" }, "M".repeat(100));      // one row of 100 cells: gives the cell width and the row height
     const rowsEl = h("div", { class: "cl-rows" });
@@ -54,24 +55,25 @@ export const claudeWindow = {
     // the title bar carries the state: a mode chip with a busy pulse after the title, the Claude/shell switch before the pin
     const chip = h("span", { class: "cl-chip" }, h("i", { class: "cl-pulse" }), h("span", {}, "…"));
     const termHost = h("div", { class: "cl-term", hidden: true, "aria-label": "Terminal" });
+    const claudeHost = h("div", { class: "cl-term", hidden: true, "aria-label": "Claude session" });
     const swap = h("button", { class: "chrome-btn cl-swap", title: "Switch between the Claude session and a terminal (/terminal, /claude)", "aria-label": "Switch between Claude and a terminal",
       onclick: () => showTerm(!termView) }, ">_");
     win.title.append(chip); win.head.insertBefore(swap, win.pin);
-    body.append(h("div", { class: "cl-wrap" }, screen, hint, termHost));
+    body.append(h("div", { class: "cl-wrap" }, screen, hint, claudeHost, termHost));
 
     const currentMode = () => (termView ? "terminal" : "claude");
-    function showTerm(on) {                                                // the full terminal and the Claude session share the window
-      termView = on;
-      screen.hidden = on; hint.hidden = on; termHost.hidden = !on;
-      if (on) {
-        loadXterm().then(() => {
-          if (!termView) return;
-          if (!consoleView) consoleView = createConsole(termHost);
-          consoleView.fit(); consoleView.focus();
-        }).catch((e) => { termHost.textContent = `The terminal could not be loaded: ${e.message}`; });
-      } else { queueMicrotask(() => { measure(); resize(); screen.focus(); }); }
-      draw();
+    // Three views share the window: the shell (full terminal), the Claude session as a terminal (when the bridge streams it: Windows), and the older
+    // drawing of the bridge's screen snapshots (a backend with no raw stream: tmux on Linux).
+    function layout() {
+      const showShell = termView, showClaude = !termView && raw, showMirror = !termView && !raw;
+      screen.hidden = !showMirror; hint.hidden = !showMirror; claudeHost.hidden = !showClaude; termHost.hidden = !showShell;
+      if (showMirror) { queueMicrotask(() => { measure(); resize(); }); return; }
+      loadXterm().then(() => {
+        if (showShell) { if (!consoleView) consoleView = createConsole(termHost, SHELL); consoleView.fit(); consoleView.focus(); }
+        else if (showClaude) { if (!claudeView) claudeView = createConsole(claudeHost, CLAUDE); claudeView.fit(); claudeView.focus(); }
+      }).catch((e) => { (showShell ? termHost : claudeHost).textContent = `The terminal could not be loaded: ${e.message}`; });
     }
+    function showTerm(on) { termView = on; layout(); updateChip(); }
     function send(kind, value) {
       if (kind === "text" && value.trim() === "/terminal") return showTerm(true);       // typed in the Claude line: a local switch, never sent as text
       if (kind === "text" && value.trim() === "/claude") return showTerm(false);
@@ -96,18 +98,22 @@ export const claudeWindow = {
       rowEls[v.row].replaceWith(next); rowEls[v.row] = next;
       placeCursor(v.cursor);
     }
+    function updateChip() {
+      const m = currentMode();
+      const busy = m === "claude" && isBusy(msg);
+      chip.lastChild.textContent = busy ? "working" : m === "claude" ? "session" : "shell";
+      chip.classList.toggle("busy", busy);
+      swap.classList.toggle("on", m !== "claude");
+    }
     function draw() {
+      if (raw) return updateChip();                                        // the session is drawn by its own terminal: only the state chip comes from the snapshots
       const at = cursorCell(msg), cut = hidesSuggestion(msg);
       spansByRow = screenRows(msg).map((spans, i) => (cut && at && i === at.row ? cutAfter(spans, at.col) : spans));
       rowEls = spansByRow.map((_, i) => rowOf(withLine(i)));
       rowsEl.replaceChildren(...rowEls);
       placeCursor(line.view?.cursor ?? at);
       if (pinned) screen.scrollTop = screen.scrollHeight;
-      const m = currentMode();
-      const busy = m === "claude" && isBusy(msg);
-      chip.lastChild.textContent = busy ? "working" : m === "claude" ? "session" : "shell";
-      chip.classList.toggle("busy", busy);
-      swap.classList.toggle("on", m !== "claude");
+      updateChip();
     }
     function placeCursor(at) {
       cursor.hidden = !at;
@@ -191,9 +197,11 @@ export const claudeWindow = {
       if (!m || typeof m !== "object") return;
       if (m.mode === "terminal" && !resetBridge) { resetBridge = true; bridge.act("claude.ask", { text: "/claude" }); }      // the bridge's old snapshot shell is not used here: back to Claude
       if (m.mode === "terminal") return;
-      msg = m; line.setScreen(m); if (!termView) draw();
+      msg = m;
+      if (m.raw && !raw) { raw = true; layout(); }                          // the bridge can stream the session: switch from the snapshots to a real terminal
+      line.setScreen(m); if (!termView) draw(); else updateChip();
     });
     queueMicrotask(() => { measure(); resize(); });
-    return { onClose: () => { off(); consoleView?.dispose(); ro.disconnect(); window.removeEventListener("jarvis-unit", onUnit); window.removeEventListener("jarvis-widget-zoom", onUnit); clearTimeout(resizeTimer); clearTimeout(holdTimer); } };
+    return { onClose: () => { off(); consoleView?.dispose(); claudeView?.dispose(); ro.disconnect(); window.removeEventListener("jarvis-unit", onUnit); window.removeEventListener("jarvis-widget-zoom", onUnit); clearTimeout(resizeTimer); clearTimeout(holdTimer); } };
   },
 };

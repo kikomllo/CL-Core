@@ -23,7 +23,11 @@ import pyte
 from utils.clClaudeSession import ClaudeSessionBase
 
 
+RAW_SCROLLBACK_CHARS = 400_000     # what a terminal that opens later is replayed
+
+
 class ClaudePtyBridge(ClaudeSessionBase):
+    RAW_STREAM = True
     DEBOUNCE_S = 0.15  # coalesce streamed output into one screen update
     POLL_S = 0.2
     LOG_PREFIX = "PTY BRIDGE"
@@ -58,6 +62,19 @@ class ClaudePtyBridge(ClaudeSessionBase):
         self._lock = threading.Lock()
         self._reader_thread: Optional[threading.Thread] = None
         self._running = False
+        self._raw_scroll = ""
+
+    def raw_replay(self) -> str:
+        return self._raw_scroll
+
+    def _remember_raw(self, data: str) -> None:
+        scroll = self._raw_scroll + data
+        if len(scroll) > RAW_SCROLLBACK_CHARS:
+            scroll = scroll[-RAW_SCROLLBACK_CHARS:]
+            cut = scroll.find("\n")
+            if 0 <= cut < 4000:
+                scroll = scroll[cut + 1:]                 # start on a line, not inside an escape sequence
+        self._raw_scroll = scroll
 
     @staticmethod
     def _resolve_claude_binary() -> str:
@@ -89,6 +106,7 @@ class ClaudePtyBridge(ClaudeSessionBase):
             args.append("--continue")
         settings_path, prompt_path = self._write_session_files(config_dir)
         args += ["--settings", settings_path, "--append-system-prompt-file", prompt_path]
+        self._raw_scroll = ""
         with self._lock:
             self._pty = winpty.PtyProcess.spawn(
                 args,
@@ -141,6 +159,12 @@ class ClaudePtyBridge(ClaudeSessionBase):
                     break
                 if data:
                     self._stream.feed(data)
+                    self._remember_raw(data)
+                    if self.on_raw is not None:
+                        try:
+                            self.on_raw(data)
+                        except Exception as e:
+                            logging.error(f"[PTY BRIDGE] raw output handler failed: {e}")
                     self._last_data_at = time.time()
                     self._stall_reported = False
                     pending = True

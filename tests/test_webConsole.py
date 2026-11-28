@@ -38,7 +38,7 @@ def test_the_page_talks_to_the_service_by_the_same_topics():
 
 def test_the_claude_window_switches_to_it_locally_and_never_sends_the_slash_commands_as_text():
     js = read("web", "js", "claude.js")
-    assert 'import { loadXterm, createConsole } from "./console.js"' in js
+    assert 'import { loadXterm, createConsole, SHELL, CLAUDE } from "./console.js"' in js
     assert 'value.trim() === "/terminal"' in js and "showTerm(true)" in js
     assert "onclick: () => showTerm(!termView)" in js
 
@@ -48,6 +48,20 @@ def test_copy_and_paste_are_handled_in_the_terminal():
     assert "attachCustomKeyEventHandler" in page and "navigator.clipboard" in page and 'k === "v"' in page
 
 
-def test_the_claude_terminal_grid_follows_the_window_in_both_directions():
+def test_claude_gets_at_least_40_rows_because_it_draws_no_input_box_in_a_shorter_grid():
+    assert "const MIN_ROWS = 40, MIN_COLS = 40;" in read("web", "js", "claude.js")
+    page = read("web", "js", "console.js")
+    assert "minRows: 40" in page and "MIN_FONT_PX" in page      # the terminal view shrinks its text to fit them in the window
+
+
+def test_the_claude_session_is_drawn_by_a_terminal_when_the_bridge_streams_it():
     js = read("web", "js", "claude.js")
-    assert "const MIN_ROWS = 8, MIN_COLS = 40;" in js
+    assert "if (m.raw && !raw) { raw = true; layout(); }" in js and "createConsole(claudeHost, CLAUDE)" in js
+    page = read("web", "js", "console.js")
+    for topic in ("jarvis/claude/input", "jarvis/claude/attach", "jarvis/claude/out"):
+        assert topic in page and topic in read("src", "clClaudeBridge.py")
+
+
+def test_a_terminal_whose_service_is_not_running_says_so():
+    page = read("web", "js", "console.js")
+    assert "service.missing" in page and "python boot.py" in page
