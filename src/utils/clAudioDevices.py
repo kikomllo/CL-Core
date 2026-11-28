@@ -1,6 +1,12 @@
 import logging
 import sys
+import warnings
 from typing import Dict, List, Optional
+
+# pycaw warns once for every property an endpoint will not give up (a virtual cable, an unplugged headset): harmless, and it printed ten lines
+# per lookup in the log. A process-wide filter, not warnings.catch_warnings() around the call: that one is not thread-safe, and the input and
+# output lookups run on two threads at once (the Settings audio tab), so one thread's exit put the warnings back for the other.
+warnings.filterwarnings("ignore", message="COMError attempting to get property", category=UserWarning)
 
 SYSTEM_DEFAULT = "System Default"
 

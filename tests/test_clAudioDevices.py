@@ -250,3 +250,15 @@ class TestGetCleanDisplayNames:
              patch('pycaw.pycaw.AudioUtilities.GetAllDevices', side_effect=Exception("COM error")):
             result = get_clean_display_names(["Microphone (Some Device)"], "input")
         assert result == {"Microphone (Some Device)": "Microphone (Some Device)"}
+
+
+class TestPycawNoise:
+    def test_the_unreadable_property_warning_is_filtered_for_the_whole_process(self):
+        # catch_warnings() around the pycaw call is not thread-safe: two lookups at once leaked ten warning lines per pass into the log.
+        # A subprocess, because pytest installs its own warning filters around every test.
+        import subprocess
+        code = ("import sys, warnings; sys.path.insert(0, r'%s'); import utils.clAudioDevices; "
+                "warnings.warn('COMError attempting to get property 57 from device <ptr>: COMError(-1)', UserWarning); "
+                "warnings.warn('something else', UserWarning)") % os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src'))
+        err = subprocess.run([sys.executable, "-W", "default", "-c", code], capture_output=True, text=True, timeout=30).stderr
+        assert "something else" in err and "COMError" not in err

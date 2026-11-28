@@ -21,6 +21,8 @@ from typing import Tuple, Optional, Dict, Any, List
 import sys, os
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..' if 'src' in __file__ else 'src'))
 from utils.clLogging import setup_logging
+import warnings
+warnings.filterwarnings("ignore", message="COMError attempting to get property", category=UserWarning)   # pycaw, per unreadable endpoint property: harmless (see clAudioDevices)
 setup_logging('TERMINAL')
 
 if sys.platform == 'win32':
