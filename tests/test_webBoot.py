@@ -127,3 +127,22 @@ class TestWiring:
 
     def test_it_can_be_switched_off_in_core_json(self):
         assert "c.enabled !== false" in read("web", "js", "boot.js")
+
+
+class TestWindowsOpenWhenTheSystemIsOnline:
+    """Live 2026-11-28: the restored To-Do window asked for its list while the Utilities service was still starting, got no answer, and stayed empty
+    until it was closed and opened again. Windows are restored once the boot says the system is online (or gave up waiting)."""
+
+    def test_the_dashboard_restores_its_windows_after_the_boot(self):
+        main = read("web", "js", "main.js")
+        assert "boot.ready.then(() => {" in main and "windowsToRestore({ open: lastOpen, restoreAll: true })" in main
+        assert main.index("boot.ready.then") < main.index("windowsToRestore({")
+
+    def test_a_floating_window_opens_after_the_boot_too(self):
+        js = read("web", "js", "widget-main.js")
+        assert "boot.ready.then(() => openWindow(def))" in js and "await opened;" in js
+
+    def test_ready_means_online_done_no_cover_or_no_supervisor(self):
+        js = read("web", "js", "boot.js")
+        assert 'if (!enabled || phase.phase === "online" || phase.phase === "done") settle();' in js
+        assert "SETTLE_FALLBACK_MS" in js and "return { ready };" in js

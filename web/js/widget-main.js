@@ -29,18 +29,19 @@ setUnit(); addEventListener("resize", setUnit);
 // the global zoom: the content scales, the window (its frame) stays as it is, like the dashboard's windows (it only grows if its content no longer fits)
 addEventListener("jarvis-zoom", setUnit);
 startZoomInput();
-startBoot({ readout: false });      // while the system starts the window stays clear (the dashboard shows the readout), then comes in
+const boot = startBoot({ readout: false });      // while the system starts the window stays clear (the dashboard shows the readout), then comes in
 
 fetch("/api/config").then((r) => r.json()).catch(() => ({})).then((s) => setSkin(s.theme));
 
 const id = new URLSearchParams(location.search).get("id");
 const def = DEFS.find((d) => d.id === id);
 if (def) {
-  document.title = def.title; openWindow(def);
+  document.title = def.title;
+  const opened = boot.ready.then(() => openWindow(def));        // once the system is online: the window asks its service for data as it opens
   // The shell shows the window only when this says it is built, so what appears is complete: the icons are in, the data connection is up and
   // the first data has arrived (the dashboard's copy stays under it until then). Never later than 1.5 s, whatever is missing.
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const connected = new Promise((r) => bridge.onConnection((up) => up && r()));
-  Promise.race([(async () => { await iconsReady(); await connected; await sleep(180); await iconsReady(); })(), sleep(1500)])
+  Promise.race([(async () => { await opened; await iconsReady(); await connected; await sleep(180); await iconsReady(); })(), sleep(1500)])
     .then(() => window.jarvisShell && window.jarvisShell.floatReady());
 } else if (window.jarvisShell) window.jarvisShell.closeSelf();          // an id that is no window: nothing to show
