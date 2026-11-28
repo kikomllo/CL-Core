@@ -927,6 +927,29 @@ class TestSeekBar:
         w = self._shown(mocker)  # no can_seek key at all
         assert w.progress_bar._seekable is True
 
+    def test_dragging_moves_the_bar_but_seeks_only_on_release(self, qapp, mocker):
+        from PyQt6.QtCore import QPoint, Qt
+        from PyQt6.QtTest import QTest
+        w = self._shown(mocker)
+        bar = w.progress_bar
+        w.router.dispatch.reset_mock()
+        y = bar.height() // 2
+
+        QTest.mousePress(bar, Qt.MouseButton.LeftButton, pos=QPoint(int(bar.width() * 0.25), y))
+        QTest.mouseMove(bar, QPoint(int(bar.width() * 0.75), y))
+        w.update_status({"title": "T", "artist": "A", "position": 10.0, "duration": 200.0, "status": "Playing"})
+
+        w.router.dispatch.assert_not_called()                      # nothing sent while held
+        assert abs(bar.value() - 750) <= 10                        # a status did not pull the bar back
+        assert w.position_lbl.text() == "2:30"
+
+        QTest.mouseRelease(bar, Qt.MouseButton.LeftButton, pos=QPoint(int(bar.width() * 0.75), y))
+
+        call = w.router.dispatch.call_args
+        assert call.kwargs["action"] == "seek"
+        assert abs(call.kwargs["position_ms"] - 150_000) <= 2_000
+        assert w.router.dispatch.call_count == 1
+
     def test_still_reports_its_value_like_a_progress_bar(self, qapp, mocker):
         w = self._shown(mocker, position=50.0, duration=200.0)
         assert w.progress_bar.value() == 250

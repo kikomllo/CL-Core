@@ -247,7 +247,8 @@ class SeekBar(QProgressBar):
     fill when the player can't seek. Still a
     QProgressBar (0-1000), so value()/setValue() work as before."""
 
-    seekRequested = pyqtSignal(float)  # fraction 0..1
+    seekRequested = pyqtSignal(float)  # fraction 0..1, on release only
+    scrubbed = pyqtSignal(float)       # fraction 0..1, while the press / drag moves the bar
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -255,6 +256,7 @@ class SeekBar(QProgressBar):
         self.setTextVisible(False)
         self.setFixedHeight(s(16))
         self._hover = False
+        self._dragging = False
         self._seekable = True
 
     def set_seekable(self, seekable):
@@ -277,17 +279,40 @@ class SeekBar(QProgressBar):
         self._hover = False
         self.update()
 
+    def _scrub_to(self, x):
+        fraction = self._fraction_at(x)
+        self.setValue(int(fraction * 1000))
+        self.scrubbed.emit(fraction)
+
     def mousePressEvent(self, event):
         if self._seekable and event.button() == Qt.MouseButton.LeftButton:
-            self.seekRequested.emit(self._fraction_at(event.position().x()))
+            self._dragging = True
+            self._scrub_to(event.position().x())
             event.accept()
             return
         super().mousePressEvent(event)
 
+    def mouseMoveEvent(self, event):
+        if self._dragging:
+            self._scrub_to(event.position().x())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        # the seek is sent once, here; the press and the drag only move the bar
+        if self._dragging and event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = False
+            self.seekRequested.emit(self._fraction_at(event.position().x()))
+            self.update()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        thickness = s(6) if self._hover else s(4)
+        thickness = s(6) if (self._hover or self._dragging) else s(4)
         track = QRectF(0, (self.height() - thickness) / 2, self.width(), thickness)
         radius = thickness / 2
         p.setPen(Qt.PenStyle.NoPen)
@@ -307,7 +332,7 @@ class SeekBar(QProgressBar):
                 p.setBrush(QColor("#6f6355"))
             p.drawRoundedRect(QRectF(track.left(), track.top(), fill_w, thickness), radius, radius)
 
-        if self._hover:
+        if self._hover or self._dragging:
             knob = s(12)
             p.setPen(QPen(QColor(Theme.C_PRIMARY), 2))
             p.setBrush(QColor(Theme.C_TEXT))
@@ -449,6 +474,7 @@ class MediaWidget(QWidget):
         self.position_lbl.setStyleSheet(Theme.get_style("DimLabel"))
         self.progress_bar = SeekBar()
         self.progress_bar.seekRequested.connect(self._on_seek_requested)
+        self.progress_bar.scrubbed.connect(self._on_scrubbed)
         self.duration_lbl = QLabel("0:00")
         self.duration_lbl.setStyleSheet(Theme.get_style("DimLabel"))
         time_layout.addWidget(self.position_lbl)
@@ -1155,12 +1181,10 @@ class MediaWidget(QWidget):
             self._update_time_label()
 
     def _update_time_label(self):
-        def fmt_time(secs):
-            m = int(secs // 60)
-            s = int(secs % 60)
-            return f"{m}:{s:02d}"
-        self.position_lbl.setText(fmt_time(self.position))
-        self.duration_lbl.setText(fmt_time(self.duration))
+        self.duration_lbl.setText(_fmt_time(self.duration))
+        if self.progress_bar._dragging:   # a status or tick must not pull the bar from under the pointer
+            return
+        self.position_lbl.setText(_fmt_time(self.position))
         progress = self.position / self.duration if self.duration > 0 else 0.0
         self.progress_bar.setValue(int(max(0.0, min(1.0, progress)) * 1000))
 
@@ -1257,8 +1281,14 @@ class MediaWidget(QWidget):
         self._expect_mode("repeat", mode, self.repeat_btn)
         self._dispatch_control(action="repeat", mode=mode)
 
+    def _on_scrubbed(self, fraction):
+        # the time follows the drag; nothing is sent until the release
+        if self.duration > 0:
+            self.position_lbl.setText(_fmt_time(fraction * self.duration))
+
     def _on_seek_requested(self, fraction):
         if self.duration <= 0:
+            self._update_time_label()
             return
         self.position = fraction * self.duration
         self._update_time_label()

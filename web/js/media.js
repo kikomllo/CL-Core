@@ -56,8 +56,9 @@ export const mediaWindow = {
 
     // ----- status -----
     const paint = () => {
-      tPos.textContent = fmt(st.pos); tDur.textContent = fmt(st.dur);
-      seek.style.setProperty("--p", (st.dur > 0 ? Math.max(0, Math.min(1, st.pos / st.dur)) : 0) * 100 + "%");
+      const pos = st.scrub != null ? st.scrub : st.pos;      // while dragging, the pointer owns the bar
+      tPos.textContent = fmt(pos); tDur.textContent = fmt(st.dur);
+      seek.style.setProperty("--p", (st.dur > 0 ? Math.max(0, Math.min(1, pos / st.dur)) : 0) * 100 + "%");
     };
     const showModes = () => {
       shuffleBtn.classList.toggle("on", st.shuffle);
@@ -103,11 +104,22 @@ export const mediaWindow = {
     vol.oninput = () => { setFill(vol); setMute(+vol.value); if (+vol.value > 0) st.lastVol = +vol.value; };
     vol.onchange = sendVol;
     muteBtn.onclick = () => { vol.value = +vol.value > 0 ? 0 : st.lastVol || 100; setFill(vol); setMute(+vol.value); sendVol(); };
+    // drag the knob: the bar and the time follow the pointer, and the seek is sent once, on release
+    const seekAt = (e) => { const r = seek.getBoundingClientRect(); return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * st.dur; };
     seek.addEventListener("pointerdown", (e) => {
-      if (st.dur <= 0 || seek.classList.contains("locked")) return;
-      const r = seek.getBoundingClientRect(), f = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-      st.pos = f * st.dur; paint(); ctl({ action: "seek", position_ms: Math.round(st.pos * 1000) });
+      if (e.button !== 0 || st.dur <= 0 || seek.classList.contains("locked")) return;
+      seek.setPointerCapture(e.pointerId); seek.classList.add("drag");
+      st.scrub = seekAt(e); paint();
     });
+    seek.addEventListener("pointermove", (e) => { if (st.scrub != null) { st.scrub = seekAt(e); paint(); } });
+    const endScrub = (commit) => {
+      if (st.scrub == null) return;
+      const pos = st.scrub; st.scrub = null; seek.classList.remove("drag");
+      if (commit) { st.pos = pos; ctl({ action: "seek", position_ms: Math.round(pos * 1000) }); }
+      paint();
+    };
+    seek.addEventListener("pointerup", () => endScrub(true));
+    seek.addEventListener("pointercancel", () => endScrub(false));
 
     // ----- lyrics switch (the overlay itself lives in lyrics.js) -----
     const showLy = () => lyBtn.classList.toggle("on", lyrics.enabled);

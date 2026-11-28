@@ -20,7 +20,8 @@
 .seek:hover .seek-track { height: calc(6 * var(--u)); }
 .seek-fill { height: 100%; width: var(--p); border-radius: 3px; background: linear-gradient(90deg, #ff9900, #ffcc00); }
 .seek-knob { position: absolute; top: 50%; left: var(--p); width: calc(12 * var(--u)); height: calc(12 * var(--u)); margin: calc(-6 * var(--u)) 0 0 calc(-6 * var(--u)); border-radius: 50%; background: var(--text); border: 2px solid var(--accent); opacity: 0; transition: opacity .12s; }
-.seek:hover .seek-knob { opacity: 1; } .seek.locked { cursor: default; opacity: .6; } .seek.locked .seek-knob { display: none; }
+.seek.drag .seek-track { height: calc(6 * var(--u)); } .seek { touch-action: none; user-select: none; }
+.seek:hover .seek-knob, .seek.drag .seek-knob { opacity: 1; } .seek.locked { cursor: default; opacity: .6; } .seek.locked .seek-knob { display: none; }
 /* Spotify's own volume: a vertical fader that appears on hover, drawn over the right edge so nothing shifts */
 .fader { position: absolute; right: calc(8 * var(--u)); top: calc(34 * var(--u)); width: calc(28 * var(--u)); display: flex; flex-direction: column; align-items: center; gap: calc(8 * var(--u));
   opacity: 0; pointer-events: none; transition: opacity .2s; }
