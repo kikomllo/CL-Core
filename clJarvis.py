@@ -122,6 +122,7 @@ NATIVE_SERVICES.append(("Claude Bridge", "src/clClaudeBridge.py"))
 NATIVE_SERVICES.append(("Monitor", "src/clMonitor.py"))
 NATIVE_SERVICES.append(("Automation", "src/clAutomation.py"))
 NATIVE_SERVICES.append(("Web UI", "src/clWebUI.py"))      # the HTML dashboard (http://127.0.0.1:8765/); "Web UI": false in modules.json turns it off
+NATIVE_SERVICES.append(("Console", "src/clConsole.py"))      # the dashboard's full terminal: one real shell as a stream (web/js/console.js); "Console": false in modules.json turns it off
 NATIVE_SERVICES.append(("Desktop Shell", "src/clShell.py"))      # the window that shows the Web UI (shell/, Electron); replaces "UI" (the Qt dashboard) unless it is not installed
 
 def load_modules_config():

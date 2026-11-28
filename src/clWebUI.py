@@ -47,7 +47,7 @@ def access_log():
 
 
 # one-shot commands: a page that opens later must not be handed an old one (a stale set_overlay would flip the desktop shell's mode)
-NO_REPLAY = {"jarvis/sys/ui_control"}
+NO_REPLAY = {"jarvis/sys/ui_control", "jarvis/console/out"}      # the terminal stream: a stale chunk shown to a new tab would be garbage (it asks for a proper replay with jarvis/console/attach)
 
 
 class MqttBridge:

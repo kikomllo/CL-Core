@@ -429,7 +429,7 @@ def main():
         "clJarvis.py", "clUI.py", "clKeybinds.py", "clUtilities.py",
         "clUpdater.py", "clTrayIcon.py", "clWhisper.py", "clDaemon.py",
         "clSpotify.py", "clTTS.py", "clControl.py", "clMic.py", "clTerminal.py",
-        "clClaudeBridge.py", "clWebUI.py", "clShell.py"
+        "clClaudeBridge.py", "clWebUI.py", "clShell.py", "clConsole.py"
     ]
     for script in ecosystem_scripts:
         if is_windows:

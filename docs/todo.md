@@ -76,6 +76,7 @@ The one place to see what is still to implement. Updated 2026-11-25. Each item s
 
 ## Done recently
 
+- [x] Full terminal in the dashboard's Claude window (branch `feat/full-terminal`): xterm.js on a real shell kept by the new Console service, replacing the slow snapshot mirror for `/terminal` (typing, paste, colours, scrollback); the Claude window's grid now follows its height (no vertical scrollbar). Left: restart the ecosystem and use it for real; run it once on the Linux machine (`pty` backend untested there). (`web_ui_plan.md`)
 - [x] Startup cover for the web dashboard (branch `feat/boot-cover`, off `main`): windows and dock stay off the screen, the orb runs alone and big, and a module readout fills until the supervisor's retained `jarvis/sys/boot_state` says online; then everything slides in filled. Left: live-check with a real restart, then merge. (`web_ui_plan.md`)
 - [x] Shut down the computer by voice, with a spoken confirmation: an exact phrase, "yes", a 20 s delay that "cancel" stops (`daemon-routing.md`). Left: "restart the computer" (not built; today it restarts a module) and a live check of the real shutdown by the owner. Overnight voice capture (`collect_voice.py capture --unattended`, `training/CLAUDE.md`).
 - [x] Customisable colour swatches in the light colour picker (web and Qt): right-click opens a colour wheel that recolours the bulb live and keeps the colour (`core.json` `settings.light_swatches`); Reset per swatch. (`smart_devices_plan.md`)

@@ -3,19 +3,20 @@
 // (or a readline shell prompt) is showing, the line is edited LOCALLY (claude-line.js) and only reaches the session on Enter, so typing
 // never waits for the round trip; everywhere else (menus, a program running in the shell, cmd.exe) it is a pure mirror: each key goes to
 // the session as a terminal would send it and the screen is whatever the next snapshot says.
-// "/terminal" and "/claude" (typed, or the button) switch between Claude and a plain shell; neither session stops on a switch.
+// "/terminal" and "/claude" (typed, or the button) switch between Claude and a full terminal (console.js: xterm.js on a real shell kept by
+// src/clConsole.py); neither session stops on a switch.
 // Resizing the window resizes the real terminal grid (claude.resize, debounced): the columns always fit the window, so it never scrolls sideways.
 import { bridge } from "./bridge.js";
 import { h } from "./ui.js";
 import { screenRows, cursorCell, cutAfter, hidesSuggestion, keyAction, submitAction, nextShadow, gridFor, isBusy, cellRuns, lineSpans } from "./claude-model.js";
 import { LocalLine } from "./claude-line.js";
+import { loadXterm, createConsole } from "./console.js";
 
 const RESIZE_DEBOUNCE_MS = 300;
-// The grid follows the window's width, so there is never a horizontal scrollbar. The rows never go below 40: Claude redraws a frame as tall as
-// the conversation, and in a shorter grid the bottom of it (the input box) falls off the screen, so a short window scrolls vertically to the
-// bottom instead. The columns never go below 40 (the window's own minimum width is about 44). Only one client may size the terminal: with the
-// Qt dashboard's Claude widget also open the two overwrite each other (the Qt UI is off by default now that the desktop shell is the UI).
-const MIN_ROWS = 40, MIN_COLS = 40;
+// The grid follows the window in both directions, so the terminal is exactly as big as the window: no scrollbar, and what it shows on open is the
+// top of the session, not the bottom of a taller grid. (It used to be at least 40 rows tall, which left a short window scrolled to the bottom with
+// the header out of sight.) The floors are only what stays usable: the window's own minimum size is measured from its content anyway.
+const MIN_ROWS = 8, MIN_COLS = 40;
 
 /** One span as a DOM node: colours are brightness steps on the skin's accent (see claude-model.js). */
 function spanEl(s) {
@@ -41,6 +42,7 @@ export const claudeWindow = {
   id: "widget_claude", title: "Claude", w: 760, h: 480,
   build(body, win) {
     let msg = null, shadow = "", resizeTimer = null, holdTimer = null, lastGrid = "", pinned = true, cell = { w: 8, h: 17 };
+    let termView = false, consoleView = null, resetBridge = false;
     const line = new LocalLine();
     const probe = h("div", { class: "cl-row cl-probe", "aria-hidden": "true" }, "M".repeat(100));      // one row of 100 cells: gives the cell width and the row height
     const rowsEl = h("div", { class: "cl-rows" });
@@ -51,13 +53,28 @@ export const claudeWindow = {
 
     // the title bar carries the state: a mode chip with a busy pulse after the title, the Claude/shell switch before the pin
     const chip = h("span", { class: "cl-chip" }, h("i", { class: "cl-pulse" }), h("span", {}, "…"));
-    const swap = h("button", { class: "chrome-btn cl-swap", title: "Switch between the Claude session and a plain shell (/terminal, /claude)", "aria-label": "Switch between Claude and a plain shell",
-      onclick: () => { send("text", currentMode() === "claude" ? "/terminal" : "/claude"); screen.focus(); } }, ">_");
+    const termHost = h("div", { class: "cl-term", hidden: true, "aria-label": "Terminal" });
+    const swap = h("button", { class: "chrome-btn cl-swap", title: "Switch between the Claude session and a terminal (/terminal, /claude)", "aria-label": "Switch between Claude and a terminal",
+      onclick: () => showTerm(!termView) }, ">_");
     win.title.append(chip); win.head.insertBefore(swap, win.pin);
-    body.append(h("div", { class: "cl-wrap" }, screen, hint));
+    body.append(h("div", { class: "cl-wrap" }, screen, hint, termHost));
 
-    const currentMode = () => (msg && msg.mode === "claude" ? "claude" : msg ? "terminal" : "claude");
+    const currentMode = () => (termView ? "terminal" : "claude");
+    function showTerm(on) {                                                // the full terminal and the Claude session share the window
+      termView = on;
+      screen.hidden = on; hint.hidden = on; termHost.hidden = !on;
+      if (on) {
+        loadXterm().then(() => {
+          if (!termView) return;
+          if (!consoleView) consoleView = createConsole(termHost);
+          consoleView.fit(); consoleView.focus();
+        }).catch((e) => { termHost.textContent = `The terminal could not be loaded: ${e.message}`; });
+      } else { queueMicrotask(() => { measure(); resize(); screen.focus(); }); }
+      draw();
+    }
     function send(kind, value) {
+      if (kind === "text" && value.trim() === "/terminal") return showTerm(true);       // typed in the Claude line: a local switch, never sent as text
+      if (kind === "text" && value.trim() === "/claude") return showTerm(false);
       if (kind === "text") bridge.act("claude.ask", { text: value });
       else if (kind === "keys") bridge.act("claude.keys", { keys: value });
       else bridge.act("claude.control_key", { control_key: value });
@@ -87,7 +104,7 @@ export const claudeWindow = {
       placeCursor(line.view?.cursor ?? at);
       if (pinned) screen.scrollTop = screen.scrollHeight;
       const m = currentMode();
-      const busy = isBusy(msg);
+      const busy = m === "claude" && isBusy(msg);
       chip.lastChild.textContent = busy ? "working" : m === "claude" ? "session" : "shell";
       chip.classList.toggle("busy", busy);
       swap.classList.toggle("on", m !== "claude");
@@ -170,8 +187,13 @@ export const claudeWindow = {
     });
     screen.addEventListener("click", () => { if (!getSelection()?.toString()) screen.focus(); });
 
-    const off = bridge.on("jarvis/claude/screen", (m) => { if (m && typeof m === "object") { msg = m; line.setScreen(m); draw(); } });
+    const off = bridge.on("jarvis/claude/screen", (m) => {
+      if (!m || typeof m !== "object") return;
+      if (m.mode === "terminal" && !resetBridge) { resetBridge = true; bridge.act("claude.ask", { text: "/claude" }); }      // the bridge's old snapshot shell is not used here: back to Claude
+      if (m.mode === "terminal") return;
+      msg = m; line.setScreen(m); if (!termView) draw();
+    });
     queueMicrotask(() => { measure(); resize(); });
-    return { onClose: () => { off(); ro.disconnect(); window.removeEventListener("jarvis-unit", onUnit); window.removeEventListener("jarvis-widget-zoom", onUnit); clearTimeout(resizeTimer); clearTimeout(holdTimer); } };
+    return { onClose: () => { off(); consoleView?.dispose(); ro.disconnect(); window.removeEventListener("jarvis-unit", onUnit); window.removeEventListener("jarvis-widget-zoom", onUnit); clearTimeout(resizeTimer); clearTimeout(holdTimer); } };
   },
 };

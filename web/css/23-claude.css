@@ -18,6 +18,13 @@
 .cl-hint { position: absolute; right: calc(24 * var(--u)); bottom: calc(18 * var(--u)); padding: calc(3 * var(--u)) calc(10 * var(--u)); border-radius: 999px; pointer-events: none;
   font-size: calc(10.5 * var(--u)); color: var(--text-dim); background: rgba(20,10,0,.85); border: 1px solid var(--divider); transition: opacity .15s; }
 .cl-screen:focus + .cl-hint { opacity: 0; }
+/* the full terminal (console.js) takes the screen's place: same frame, xterm draws inside */
+.cl-term { position: relative; flex: 1; min-width: 0; min-height: 0; box-sizing: border-box; padding: calc(10 * var(--u)) calc(10 * var(--u)) calc(6 * var(--u)) calc(14 * var(--u));
+  border: 1px solid var(--divider); border-radius: calc(8 * var(--u)); background: radial-gradient(120% 80% at 50% 0%, #130802 0%, #080301 70%); overflow: hidden;
+  box-shadow: inset 0 0 calc(34 * var(--u)) rgba(0,0,0,.65); }
+.cl-term:focus-within { border-color: var(--border-focus); box-shadow: inset 0 0 calc(34 * var(--u)) rgba(0,0,0,.65), 0 0 calc(10 * var(--u)) rgba(255,150,0,.22); }
+.cl-term .xterm { height: 100%; }
+.cl-term .xterm-viewport { background: transparent !important; }      /* its scrollbar is the dashboard's own (07-scrollbars.css) */
 /* title bar: a state chip after the title, a pulse while the session is working */
 .cl-chip { display: inline-flex; align-items: center; gap: calc(6 * var(--u)); margin-left: calc(10 * var(--u)); padding: 0 calc(9 * var(--u)); height: calc(16 * var(--u)); vertical-align: middle;
   border: 1px solid var(--divider); border-radius: 999px; font-size: calc(10 * var(--u)); letter-spacing: .04em; color: var(--text-dim); }
