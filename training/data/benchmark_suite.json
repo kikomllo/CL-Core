@@ -232,5 +232,49 @@
     "prompt": "tell me a joke",
     "state": "Spotify: Paused/Idle | ActiveContext: None | LastTargetLight: desk",
     "expected_actions": []
+  },
+  {
+    "category": "Spotify Previous",
+    "prompt": "previous song",
+    "state": "Spotify: Playing ('Resonance') | ActiveContext: None | LastTargetLight: desk",
+    "expected_actions": [
+      {
+        "action_id": "spotify.control",
+        "action": "previous"
+      }
+    ]
+  },
+  {
+    "category": "Spotify Previous",
+    "prompt": "go back to the last song",
+    "state": "Spotify: Playing ('Resonance') | ActiveContext: None | LastTargetLight: desk",
+    "expected_actions": [
+      {
+        "action_id": "spotify.control",
+        "action": "previous"
+      }
+    ]
+  },
+  {
+    "category": "Spotify Rewind",
+    "prompt": "rewind the song",
+    "state": "Spotify: Playing ('Resonance') | ActiveContext: None | LastTargetLight: desk",
+    "expected_actions": [
+      {
+        "action_id": "spotify.control",
+        "action": "rewind"
+      }
+    ]
+  },
+  {
+    "category": "Spotify Rewind",
+    "prompt": "rewind this song please",
+    "state": "Spotify: Playing ('Resonance') | ActiveContext: None | LastTargetLight: desk",
+    "expected_actions": [
+      {
+        "action_id": "spotify.control",
+        "action": "rewind"
+      }
+    ]
   }
 ]
