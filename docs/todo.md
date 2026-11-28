@@ -4,7 +4,6 @@ The one place to see what is still to implement. Updated 2026-11-25. Each item s
 
 ## Owner to-dos (things only you can do)
 
-- [ ] **Retrain both SLMs** for the new `spotify_rewind` intent and the retargeted `spotify_prev` (`previous`): `config/grammars/intent_schema.gbnf` and both `training/data/*.jsonl` are regenerated, the models are not. The fast path already handles the phrases; the SLM only matters for odd wordings. (M, GPU) (`training/CLAUDE.md`)
 - [ ] **Revoke the Hugging Face token** that was pasted in chat (S, security). Nothing needs it any more. (`voice_latency_plan.md`)
 - [ ] **Live-check the Up Next title fix**: click a row in the queue and confirm the player shows the song that really plays. (S)
 - [ ] **Restart the ecosystem once and live-check the web UI work on branch `wip/web-ui-floating-windows`**: pin/unpin a window (no gap, no shift, no growth), "show the logs" / "show my todo list" from the overlay (floats), zoom (Ctrl + / - / 0, Ctrl+wheel over a window, Settings > Display), the overlay orb in the corner, then merge the branch. (S) (`web_ui_plan.md`)
@@ -76,6 +75,7 @@ The one place to see what is still to implement. Updated 2026-11-25. Each item s
 
 ## Done recently
 
+- [x] Retrained both SLMs for `spotify_rewind` and `spotify_prev` (`previous`) locally (RTX 2060 Super, ~50 min): the benchmark passes every category, including the 4 new cases, where the old action model failed Rewind, Gibberish and the compound reminder. The new GGUFs are in `training/jarvis-*/`; they replace the ones in `models/` the moment the daemon releases the files (an old copy is in `models/backup_before_rewind/`). The other machine needs the two files copied over by hand (`models/` is not in git).
 - [x] Full terminal in the dashboard's Claude window (branch `feat/full-terminal`): xterm.js on a real shell kept by the new Console service, replacing the slow snapshot mirror for `/terminal` (typing, paste, colours, scrollback); the Claude window's grid now follows its height (no vertical scrollbar). Left: restart the ecosystem and use it for real; run it once on the Linux machine (`pty` backend untested there). (`web_ui_plan.md`)
 - [x] Startup cover for the web dashboard (branch `feat/boot-cover`, off `main`): windows and dock stay off the screen, the orb runs alone and big, and a module readout fills until the supervisor's retained `jarvis/sys/boot_state` says online; then everything slides in filled. Left: live-check with a real restart, then merge. (`web_ui_plan.md`)
 - [x] Shut down the computer by voice, with a spoken confirmation: an exact phrase, "yes", a 20 s delay that "cancel" stops (`daemon-routing.md`). Left: "restart the computer" (not built; today it restarts a module) and a live check of the real shutdown by the owner. Overnight voice capture (`collect_voice.py capture --unattended`, `training/CLAUDE.md`).
