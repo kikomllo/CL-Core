@@ -39,13 +39,23 @@ export function loadXterm() {
   }));
 }
 
-const unit = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--u")) || 1;
-const fontPx = () => Math.max(9, Math.round(FONT_PX * unit() * 2) / 2);
+// The unit as the terminal's own window has it (global zoom times the window's zoom), in px: measured with a probe, because a window's --u is a calc().
+function unitsAt(host) {
+  const probe = document.createElement("div");
+  probe.style.cssText = "position:absolute;visibility:hidden;pointer-events:none;width:calc(100 * var(--u));height:0;";
+  const base = document.createElement("div");
+  base.style.cssText = "position:absolute;visibility:hidden;pointer-events:none;width:calc(100 * var(--ub, var(--u)));height:0;";
+  host.append(probe, base);
+  const u = probe.getBoundingClientRect().width / 100 || 1, ub = base.getBoundingClientRect().width / 100 || u;
+  probe.remove(); base.remove();
+  return { u, ub };
+}
+const fontPx = (u) => Math.max(9, Math.round(FONT_PX * u * 2) / 2);
 const FONT = '"Cascadia Mono", "Cascadia Code", "JetBrains Mono", ui-monospace, Consolas, "DejaVu Sans Mono", monospace';
 
 /** A terminal in `host` (an element with a size) on `service` (SHELL or CLAUDE). Returns { fit, focus, dispose }. Needs loadXterm() to have finished. */
 export function createConsole(host, service = SHELL) {
-  const term = new window.Terminal({ fontFamily: FONT, fontSize: fontPx(), theme: theme(), cursorBlink: true, allowTransparency: true, scrollback: SCROLLBACK,
+  const term = new window.Terminal({ fontFamily: FONT, fontSize: fontPx(unitsAt(host).u), theme: theme(), cursorBlink: true, allowTransparency: true, scrollback: SCROLLBACK,
                                      macOptionIsMeta: true, allowProposedApi: true });
   const fitAddon = new window.FitAddon.FitAddon();
   term.loadAddon(fitAddon);
@@ -85,17 +95,26 @@ export function createConsole(host, service = SHELL) {
 
   function fit() {
     if (!host.clientWidth || !host.clientHeight) return;            // hidden: nothing to measure
-    let size = fontPx();
+    const { u, ub } = unitsAt(host);
+    if (!service.minRows) {
+      term.options.fontSize = fontPx(u);
+      if (fitAddon.proposeDimensions()) fitAddon.fit();               // a changed size reaches the service through onResize
+      return;
+    }
+    // A terminal that needs minRows rows: the text is sized to fit them in the window at no zoom, and a zoom (global or this window's) scales that
+    // size, so zooming in makes the text bigger (the grid then keeps its rows and scrolls) instead of being shrunk straight back to fit.
+    const zoom = u / ub;
+    let size = fontPx(ub);
     term.options.fontSize = size;
     let dims = fitAddon.proposeDimensions();
     if (!dims) return;
-    if (service.minRows && dims.rows < service.minRows) {              // too few rows at this size: a smaller font gives the window the rows it needs
+    if (dims.rows < service.minRows) {
       size = Math.max(MIN_FONT_PX, Math.floor(size * dims.rows / service.minRows * 2) / 2);
       term.options.fontSize = size;
-      dims = fitAddon.proposeDimensions() || dims;
     }
-    if (service.minRows) term.resize(dims.cols, Math.max(dims.rows, service.minRows));      // (below MIN_FONT_PX the grid is taller than the window and scrolls)
-    else fitAddon.fit();                                              // a changed size reaches the service through onResize
+    term.options.fontSize = Math.max(MIN_FONT_PX, Math.round(size * zoom * 2) / 2);
+    dims = fitAddon.proposeDimensions() || dims;
+    term.resize(dims.cols, Math.max(dims.rows, service.minRows));      // (when the text is larger than the window fits the grid is taller than it and scrolls)
   }
   const later = () => { clearTimeout(timer); timer = setTimeout(fit, 60); };
   const ro = new ResizeObserver(later); ro.observe(host);

@@ -71,3 +71,11 @@ def test_a_terminal_never_sets_its_windows_minimum_size():
     """Live 2026-11-28: the terminal's own content (40 rows at a font that grows with the window) was counted as the window's fixed content, so the
     minimum size grew with the window (772x492 for a 760x480 window) and it could not be dragged smaller. It is an elastic region like the other terminals."""
     assert '".t-screen, .cl-screen, .cl-term"' in read("web", "js", "ui.js")
+
+
+def test_zooming_scales_the_text_of_a_terminal_that_needs_a_minimum_of_rows():
+    """Live 2026-11-28: the Claude terminal shrank its text straight back to fit 40 rows, so Ctrl + / zoomed nothing. The text is fitted at no zoom
+    and the zoom (global or the window's own, measured with a probe because a window's --u is a calc()) scales that size."""
+    js = read("web", "js", "console.js")
+    assert "const zoom = u / ub;" in js and "function unitsAt(host)" in js
+    assert "Math.round(size * zoom * 2) / 2" in js
