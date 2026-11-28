@@ -26,6 +26,20 @@ sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..' if
 from utils.clLogging import setup_logging
 setup_logging('CONTROL')
 
+
+def _is_status_poll_noise(record: logging.LogRecord) -> bool:
+    """True for the tapo library's own INFO lines about a status read (the poll runs every POLL_INTERVAL, per light):
+    "Get Device info...", its request, and the DeviceInfo response. Commands ("Device info will change to") still log."""
+    if not record.name.startswith("tapo") or record.levelno > logging.INFO:
+        return False
+    msg = record.getMessage()
+    return (msg.startswith("Get Device info") or '"method":"get_device_info"' in msg
+            or (msg.startswith("Device responded with:") and "Some(DeviceInfo" in msg))
+
+
+for _handler in logging.getLogger().handlers:
+    _handler.addFilter(lambda record: not _is_status_poll_noise(record))
+
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
@@ -35,6 +49,13 @@ def _normalize_mac(mac: str) -> str:
         return ""
     return mac.replace(":", "").replace("-", "").strip().lower()
 
+
+# Words that name no particular light: "change the light color to warm" captures "light color" as the target.
+_GENERIC_TARGET_WORDS = {"the", "light", "lights", "color", "colour", "colors", "colours"}
+
+def _is_generic_target(name: str) -> bool:
+    """True for a target that names no specific light (empty, "the light", "light color"): the last-used light applies."""
+    return all(w in _GENERIC_TARGET_WORDS for w in str(name or "").lower().split())
 
 class LightCommandError(Exception):
     """One or more lights couldn't be reached or refused a command; the message is spoken/shown as is."""
@@ -398,11 +419,10 @@ class LightManager:
         entries, handling 'all'/generic-light synonyms and the sticky last-target
         memory used when a target isn't named at all."""
         all_synonyms = {"all", "all lights", "all the lights", "everything", "every light"}
-        generic_targets = {"light", "the light", "lights", "the lights", ""}
 
         target_name_clean = str(target_name).lower().strip() if target_name else ""
 
-        if target_name_clean in generic_targets:
+        if _is_generic_target(target_name_clean):
             effective_target = getattr(self, 'last_target', 'all')
             if target_name_clean and self._is_plug(effective_target):      # "turn on the light" after "the heater" must not switch the heater
                 effective_target = "all"
@@ -442,8 +462,8 @@ class LightManager:
         """True when a light was named that matches none of the saved ones. Left alone the command would
         fall through to the legacy default bulb -- the wrong light, silently -- so the caller asks instead."""
         name = str(target_name or "").lower().replace('_', ' ').strip()
-        generic = {"", "all", "light", "the light", "lights", "the lights", "all lights", "all the lights", "everything", "every light"}
-        if not self.lights or name in generic:
+        generic = {"all", "all lights", "all the lights", "everything", "every light"}
+        if not self.lights or name in generic or _is_generic_target(name):
             return False
         return not any(name in n or n in name for n in (k.lower().replace('_', ' ').strip() for k in self.lights))
 

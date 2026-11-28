@@ -7,6 +7,7 @@
         "branco quente": {"type": "temp", "val": 20},
         "warm white": {"type": "temp", "val": 20},
         "warmwhite": {"type": "temp", "val": 20},
+        "warm": {"type": "temp", "val": 20},
         
         "branco gelo": {"type": "temp", "val": 100},
         "ghost white": {"type": "temp", "val": 100},

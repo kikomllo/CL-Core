@@ -642,6 +642,13 @@ class TestTuyaPlug:
         home.last_target = "heater"
         assert [t[0] for t in home._resolve_targets("")] == ["heater"]          # "turn it off" after "turn on the heater"
 
+    def test_light_color_is_no_target_so_the_last_light_applies(self, home):
+        """"change the light color to warm" captures "light color" as the target."""
+        home.last_target = "bedroom"
+        assert [t[0] for t in home._resolve_targets("light color")] == ["bedroom"]
+        home.last_target = "heater"
+        assert [t[0] for t in home._resolve_targets("the light colour")] == ["bedroom"]   # never the plug
+
     @pytest.mark.asyncio
     async def test_on_and_off_reach_the_plug_with_its_key(self, home):
         await home.control_bulb(on=True, target_name="heater")
@@ -894,7 +901,7 @@ class TestUnknownLightTarget:
     def test_a_name_that_matches_no_light_is_unknown(self, three, target):
         assert three.unknown_target(target) is True
 
-    @pytest.mark.parametrize("target", [None, "", "all", "lights", "the light", "everything", "bedroom", "the bedroom light", "living room", "KITCHEN"])
+    @pytest.mark.parametrize("target", [None, "", "all", "lights", "the light", "light color", "the light colour", "everything", "bedroom", "the bedroom light", "living room", "KITCHEN"])
     def test_generic_and_known_names_are_not(self, three, target):
         assert three.unknown_target(target) is False
 
@@ -925,3 +932,35 @@ class TestUnknownLightTarget:
         assert len(asks) == 1
         assert "garage" in asks[0]["message"] and "kitchen" in asks[0]["message"]
         assert asks[0]["pending"] == {"action": "on", "color": "red"}
+
+
+class TestStatusPollLogNoise:
+    """The 25 s status poll made the tapo library log three INFO lines per light each time."""
+
+    @staticmethod
+    def _rec(msg, name="tapo.api.protocol", level=20):
+        import logging
+        return logging.LogRecord(name, level, __file__, 1, msg, None, None)
+
+    @pytest.mark.parametrize("msg", [
+        "Get Device info...",
+        'Request: {"method":"get_device_info","params":null}',
+        'Device responded with: TapoResponse { error_code: 0, result: Some(DeviceInfoColorLightResult { avatar: "x" }) }',
+    ])
+    def test_status_read_lines_are_dropped(self, msg):
+        from clControl import _is_status_poll_noise
+        assert _is_status_poll_noise(self._rec(msg)) is True
+
+    @pytest.mark.parametrize("msg", [
+        "Device info will change to: Object {}",
+        'Request: {"method":"set_device_info","params":{"device_on":true}}',
+        "Device responded with: TapoResponse { error_code: 0, result: None }",
+    ])
+    def test_command_lines_are_kept(self, msg):
+        from clControl import _is_status_poll_noise
+        assert _is_status_poll_noise(self._rec(msg)) is False
+
+    def test_other_loggers_and_warnings_are_kept(self):
+        from clControl import _is_status_poll_noise
+        assert _is_status_poll_noise(self._rec("Get Device info...", name="other")) is False
+        assert _is_status_poll_noise(self._rec("Get Device info...", level=30)) is False
