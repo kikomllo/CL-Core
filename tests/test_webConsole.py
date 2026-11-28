@@ -65,3 +65,9 @@ def test_the_claude_session_is_drawn_by_a_terminal_when_the_bridge_streams_it():
 def test_a_terminal_whose_service_is_not_running_says_so():
     page = read("web", "js", "console.js")
     assert "service.missing" in page and "python boot.py" in page
+
+
+def test_a_terminal_never_sets_its_windows_minimum_size():
+    """Live 2026-11-28: the terminal's own content (40 rows at a font that grows with the window) was counted as the window's fixed content, so the
+    minimum size grew with the window (772x492 for a 760x480 window) and it could not be dragged smaller. It is an elastic region like the other terminals."""
+    assert '".t-screen, .cl-screen, .cl-term"' in read("web", "js", "ui.js")
